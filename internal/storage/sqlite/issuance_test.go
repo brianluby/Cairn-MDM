@@ -106,7 +106,10 @@ func TestCompleteWrongKeyRejected(t *testing.T) {
 	}
 }
 
-func TestFailIsRecoverable(t *testing.T) {
+// FAILED is terminal for a grant: a grant binds exactly once and is NOT
+// auto-recovered, because FAILED can hide an ambiguous CA outcome where a cert
+// was actually issued (recovering would double-issue). Retry = a new grant.
+func TestFailIsTerminalNoReissue(t *testing.T) {
 	ctx := context.Background()
 	db := newGrantDB(t)
 	gid := mkGrant(t, db)
@@ -114,16 +117,17 @@ func TestFailIsRecoverable(t *testing.T) {
 	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.FailIssuance(ctx, gid, "txn1", "spki1", "req1", "ca timeout"); err != nil {
+	if err := db.FailIssuance(ctx, gid, "txn1", "spki1", "req1", "ca timeout (ambiguous)"); err != nil {
 		t.Fatal(err)
 	}
-	// A fresh request may rebind the FAILED slot (offline retry / reissue).
-	iss, idem, err := db.BeginIssuance(ctx, gid, "txn2", "spki2", "req2")
-	if err != nil {
-		t.Fatalf("recovery BeginIssuance: %v", err)
+	// A DIFFERENT request must NOT reissue on the same grant.
+	if _, _, err := db.BeginIssuance(ctx, gid, "txn2", "spki2", "req2"); !errors.Is(err, ErrIssuanceConflict) {
+		t.Fatalf("reissue after FAILED: err=%v, want ErrIssuanceConflict (no double-issue)", err)
 	}
-	if idem || iss.State != IssuanceIssuing {
-		t.Fatalf("recovery: idem=%v state=%q, want fresh ISSUING", idem, iss.State)
+	// The SAME request idempotently reports FAILED (not a reissue).
+	iss, idem, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1")
+	if err != nil || !idem || iss.State != IssuanceFailed {
+		t.Fatalf("same-key after FAILED: idem=%v state=%q err=%v, want idempotent FAILED", idem, iss.State, err)
 	}
 }
 
@@ -251,23 +255,27 @@ func TestRevokeVoidsIssuing(t *testing.T) {
 	}
 }
 
-// A FAILED slot cannot be recovered if the grant is no longer valid.
-func TestFailedRecoveryRejectedIfGrantRevoked(t *testing.T) {
+// Regression for the adversarial-review HIGH finding: after an ambiguous outcome
+// recorded as FAILED (where the CA may in fact have issued), a second request must
+// not produce a second certificate. The grant binds once; a different request is
+// rejected and exactly one issuance row remains, bound to the first attempt.
+func TestNoDoubleIssueAfterAmbiguousFailure(t *testing.T) {
 	ctx := context.Background()
 	db := newGrantDB(t)
 	gid := mkGrant(t, db)
-	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
+
+	if _, _, err := db.BeginIssuance(ctx, gid, "txnA", "spkiA", "reqA"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.FailIssuance(ctx, gid, "txn1", "spki1", "req1", "ca error"); err != nil {
+	if err := db.FailIssuance(ctx, gid, "txnA", "spkiA", "reqA", "timeout"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.RevokeGrant(ctx, gid); err != nil {
-		t.Fatal(err)
+	if _, _, err := db.BeginIssuance(ctx, gid, "txnB", "spkiB", "reqB"); !errors.Is(err, ErrIssuanceConflict) {
+		t.Fatalf("second attempt after ambiguous FAILED: err=%v, want ErrIssuanceConflict", err)
 	}
-	_, _, err := db.BeginIssuance(ctx, gid, "txn2", "spki2", "req2")
-	if !errors.Is(err, ErrGrantInvalid) {
-		t.Fatalf("recovery of revoked grant: err=%v, want ErrGrantInvalid", err)
+	iss, err := db.GetIssuance(ctx, gid)
+	if err != nil || !iss.matches("txnA", "spkiA", "reqA") {
+		t.Fatalf("issuance row should still be attempt A: %+v err=%v", iss, err)
 	}
 }
 

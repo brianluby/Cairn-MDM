@@ -52,9 +52,11 @@ const grantValidPredicate = `revoked_at IS NULL AND expires_at > datetime('now')
 //   - Grant valid, prior ISSUING/ISSUED with the SAME triple (a retry) → returns
 //     that row and (row, true, nil). Never a second issuance; ISSUING reads as
 //     pending, ISSUED returns the cached certificate serial.
-//   - Prior ISSUING/ISSUED with a DIFFERENT triple → ErrIssuanceConflict (spent).
-//   - Grant valid, prior FAILED row → the FAILED slot is rebound to this request
-//     as ISSUING (recovery); returns (row, false, nil).
+//   - Any prior binding (ISSUING/ISSUED/FAILED) with a DIFFERENT triple →
+//     ErrIssuanceConflict. A grant binds EXACTLY ONCE; FAILED is terminal and is
+//     NOT auto-recovered (a FAILED slot may hide an ambiguous CA outcome where a
+//     cert was actually issued — reissuing would double-issue). Retry a failed
+//     enrollment with a NEW grant.
 //   - Grant unknown/revoked/expired and not already bound → ErrGrantInvalid.
 //
 // The bool result is "idempotent": true iff this call matched an existing binding.
@@ -89,36 +91,16 @@ func (db *DB) BeginIssuance(ctx context.Context, grantID int64, txnID, spki, req
 		return Issuance{}, false, err
 	}
 
-	if cur.State == IssuanceFailed {
-		// Recover: rebind the FAILED slot to this request — but only if the grant
-		// is STILL valid (recovery is a fresh claim). Guard the concurrent-rebind
-		// race: only one UPDATE flips FAILED→ISSUING.
-		rres, err := db.sql.ExecContext(ctx,
-			`UPDATE cert_issuance
-			    SET txn_id=?, spki_sha256=?, request_hash=?, state='ISSUING',
-			        cert_serial='', fail_reason='', updated_at=datetime('now')
-			  WHERE grant_id=? AND state='FAILED'
-			    AND EXISTS (SELECT 1 FROM enrollment_grants WHERE id=? AND `+grantValidPredicate+`)`,
-			txnID, spki, requestHash, grantID, grantID)
-		if err != nil {
-			return Issuance{}, false, err
-		}
-		cur, err = db.getIssuance(ctx, grantID)
-		if err != nil {
-			return Issuance{}, false, err
-		}
-		if n, _ := rres.RowsAffected(); n == 1 {
-			return cur, false, nil // we recovered it
-		}
-		// Recovery affected no row: either the grant is no longer valid (still
-		// FAILED) or a concurrent caller rebound it first.
-		if cur.State == IssuanceFailed {
-			return Issuance{}, false, ErrGrantInvalid
-		}
-		// else: rebound by someone else — fall through to the key comparison.
-	}
+	// A binding already exists for this grant. A grant binds EXACTLY ONCE: we do
+	// NOT auto-recover a FAILED slot to a new request. FAILED may follow an
+	// ambiguous CA outcome where a certificate WAS in fact issued; silently
+	// rebinding and reissuing would double-issue. Retrying a failed enrollment
+	// therefore requires a NEW grant (the self-service / offline-device model);
+	// an ambiguous outcome is left ISSUING for a reconciler to resolve against the
+	// CA. So the only non-error outcomes here are idempotent retries of the SAME
+	// request (returning the existing ISSUING/ISSUED/FAILED row).
 	if cur.matches(txnID, spki, requestHash) {
-		return cur, true, nil // idempotent retry (ISSUING=pending, ISSUED=cached)
+		return cur, true, nil // idempotent (ISSUING=pending, ISSUED=cached, FAILED=report)
 	}
 	return Issuance{}, false, ErrIssuanceConflict
 }

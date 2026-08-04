@@ -135,3 +135,23 @@ func TestGrantSingleUseEnforced(t *testing.T) {
 		t.Errorf("MaxUses = %d, want 1 (single-use enforced)", g.MaxUses)
 	}
 }
+
+// Durable single-use: the DB trigger blocks a multi-use grant even via direct SQL
+// (rollback-safe — enforcement lives in the schema, not the application binary).
+func TestSingleUseTriggerBlocksMultiUse(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	_, hash := NewGrantToken()
+	if _, err := db.sql.ExecContext(ctx,
+		`INSERT INTO enrollment_grants (token_hash, expires_at, max_uses) VALUES (?, ?, 5)`,
+		hash, future()); err == nil {
+		t.Fatal("trigger should reject a direct insert with max_uses <> 1")
+	}
+	// A single-use direct insert is allowed.
+	_, hash2 := NewGrantToken()
+	if _, err := db.sql.ExecContext(ctx,
+		`INSERT INTO enrollment_grants (token_hash, expires_at, max_uses) VALUES (?, ?, 1)`,
+		hash2, future()); err != nil {
+		t.Fatalf("single-use direct insert should be allowed: %v", err)
+	}
+}
