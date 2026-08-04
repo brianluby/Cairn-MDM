@@ -92,7 +92,9 @@ dedicated profile + issuing CA, `clientAuth`-only EKU, `basicConstraints
 CA:FALSE`, short fixed validity, namespace/name constraints, and a **policy OID**
 so consumers can *require* "broker-issued" — and verify the relying party
 (e.g. RADIUS) actually **enforces** the OID, not merely the issuer. The issued
-certificate carries **exactly one canonical `rfc822Name`**; the device's requested
+certificate's identity is constructed from policy: a **user** certificate carries
+**exactly one canonical `rfc822Name`** (its owner), while a **user-less device**
+certificate carries **none**; either way the device's requested
 SANs/subject/extensions are dropped. The backend must independently refuse a
 double/unauthorized issuance — e.g. a Cairn-signed, short-TTL, key-bound
 authorization token validated at the CA (stateless, with strict canonical
