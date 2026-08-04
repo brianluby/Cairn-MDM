@@ -126,9 +126,28 @@ constructing fields from policy (rule 1). CA key custody is the crux:
   unaffected.
 - Same reconstruct-don't-validate and short-validity rules apply.
 
-Prefer **broker over embedded** wherever a PKI exists — don't put a signing key on
-an internet-adjacent MDM host. The embedded CA is a deliberate, security-load-
-bearing choice, not a frictionless default.
+### The CA backend is a capability interface — no CA is required
+Cairn is **CA-agnostic**. The no-double-issue guarantee is defined over *required
+backend capabilities* (an atomic identity-slot reservation, and a **terminal,
+mutually-exclusive "signed / not-signed" outcome** from the authority that controls
+signing), never over any specific product. Backends provide these to differing
+degrees, and Cairn **fails closed** when a capability is missing — if a backend
+cannot prove a request was *not* signed, the affected enrollment is held
+(quarantined) rather than risk a second certificate.
+
+- **Embedded (`generate`/`import`) is the reference — and the *most capable* — backend:**
+  Cairn is the signer, so "signed / not-signed" is a single local atomic fact. The
+  strongest guarantee is available with **no external PKI at all** (the zero-PKI
+  default).
+- **External SCEP/PKI backends (OpenXPKI, NDES, …) are optional integrations,** each
+  with a capability level discovered per backend and the same fail-closed fallback.
+  None is required.
+
+The tradeoff, not a blanket rule: **embedded** gives the strongest guarantee but you
+operate a CA key (offline root, above); **external** keeps the signing key in your
+existing PKI (nothing on the MDM host) at the cost of a backend-dependent guarantee
+that degrades to quarantine. Choose per deployment; the embedded CA remains a
+deliberate, security-load-bearing choice, not a frictionless default.
 
 ## Who authorizes the identity — self-service (primary model)
 
