@@ -308,3 +308,79 @@ func TestDeleteExpiredPreservesGrantsWithIssuance(t *testing.T) {
 		t.Errorf("issuance row for A should be intact: %v", err)
 	}
 }
+
+// Completion must carry a serial — no "issued without a serial" state.
+func TestCompleteEmptySerialRejected(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", ""); err == nil {
+		t.Fatal("CompleteIssuance with empty serial must be rejected")
+	}
+	// State must remain ISSUING (not a half-completed ISSUED).
+	iss, _ := db.GetIssuance(ctx, gid)
+	if iss.State != IssuanceIssuing {
+		t.Fatalf("state = %q, want ISSUING (completion rejected)", iss.State)
+	}
+}
+
+// Timeout-after-signing: the CA signed but the response was lost; the client
+// resends the identical SCEP request. The binding stays ISSUING (pending), the
+// resend is idempotent, and once the reconciler records the serial the next
+// resend returns the cached certificate.
+func TestTimeoutAfterSigningThenComplete(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+
+	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
+		t.Fatal(err)
+	}
+	// Resend before completion → still pending, idempotent, no second issuance.
+	iss, idem, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1")
+	if err != nil || !idem || iss.State != IssuanceIssuing {
+		t.Fatalf("resend before complete: idem=%v state=%q err=%v, want pending idempotent", idem, iss.State, err)
+	}
+	// Reconciler records the serial.
+	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xLATE"); err != nil {
+		t.Fatal(err)
+	}
+	// Resend after completion → cached cert.
+	iss, idem, err = db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1")
+	if err != nil || !idem || iss.State != IssuanceIssued || iss.CertSerial != "0xLATE" {
+		t.Fatalf("resend after complete: idem=%v state=%q serial=%q, want cached ISSUED", idem, iss.State, iss.CertSerial)
+	}
+}
+
+// The DB-level CHECK constraints are the last line of defense if code is wrong:
+// no unknown state, and no ISSUED row without a serial (or non-ISSUED with one).
+func TestIssuanceSchemaConstraints(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+
+	// ISSUED with an empty serial must be rejected by the CHECK.
+	_, err := db.sql.ExecContext(ctx,
+		`INSERT INTO cert_issuance (grant_id, txn_id, spki_sha256, request_hash, state, cert_serial)
+		 VALUES (?, 't', 's', 'r', 'ISSUED', '')`, gid)
+	if err == nil {
+		t.Error("CHECK should reject ISSUED with empty serial")
+	}
+	// Unknown state must be rejected.
+	_, err = db.sql.ExecContext(ctx,
+		`INSERT INTO cert_issuance (grant_id, txn_id, spki_sha256, request_hash, state)
+		 VALUES (?, 't', 's', 'r', 'BOGUS')`, gid)
+	if err == nil {
+		t.Error("CHECK should reject an unknown state")
+	}
+	// ISSUING with a stray serial must be rejected.
+	_, err = db.sql.ExecContext(ctx,
+		`INSERT INTO cert_issuance (grant_id, txn_id, spki_sha256, request_hash, state, cert_serial)
+		 VALUES (?, 't', 's', 'r', 'ISSUING', '0xSTRAY')`, gid)
+	if err == nil {
+		t.Error("CHECK should reject ISSUING with a serial")
+	}
+}

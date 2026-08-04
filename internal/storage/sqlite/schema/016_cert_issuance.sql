@@ -24,7 +24,11 @@ CREATE TABLE cert_issuance (
     fail_reason  TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (grant_id)
+    UNIQUE (grant_id),
+    CHECK (state IN ('ISSUING', 'ISSUED', 'FAILED')),
+    -- A serial exists exactly when ISSUED: ISSUING/FAILED carry no serial, and an
+    -- ISSUED row cannot exist without one (no "issued but empty serial" state).
+    CHECK ((state = 'ISSUED') = (length(cert_serial) > 0))
 );
 
 CREATE INDEX idx_issuance_txn ON cert_issuance (txn_id);

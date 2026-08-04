@@ -125,8 +125,12 @@ func (db *DB) BeginIssuance(ctx context.Context, grantID int64, txnID, spki, req
 
 // CompleteIssuance transitions the grant's ISSUING binding to ISSUED and records
 // the certificate serial. Only the exact bound request (matching idempotency
-// triple) in state ISSUING may complete; otherwise ErrIssuanceConflict.
+// triple) in state ISSUING may complete; otherwise ErrIssuanceConflict. A
+// non-empty certSerial is required — there is no "issued without a serial" state.
 func (db *DB) CompleteIssuance(ctx context.Context, grantID int64, txnID, spki, requestHash, certSerial string) error {
+	if grantID <= 0 || txnID == "" || spki == "" || requestHash == "" || certSerial == "" {
+		return errors.New("sqlite: CompleteIssuance requires grantID>0 and non-empty txnID/spki/requestHash/certSerial")
+	}
 	res, err := db.sql.ExecContext(ctx,
 		`UPDATE cert_issuance
 		    SET state='ISSUED', cert_serial=?, updated_at=datetime('now')
