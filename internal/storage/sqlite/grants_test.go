@@ -74,7 +74,7 @@ func TestGrantExpiredAndRevoked(t *testing.T) {
 
 	// Revoked grant cannot be redeemed.
 	rawRev, hashRev := NewGrantToken()
-	id, _ := db.CreateGrant(ctx, Grant{ExpiresAt: future(), MaxUses: 5, CreatedBy: "a"}, hashRev)
+	id, _ := db.CreateGrant(ctx, Grant{ExpiresAt: future(), MaxUses: 1, CreatedBy: "a"}, hashRev)
 	if err := db.RevokeGrant(ctx, id); err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +114,24 @@ func TestGrantConcurrentRedeemNoDoubleSpend(t *testing.T) {
 	wg.Wait()
 	if wins != 1 {
 		t.Fatalf("concurrent redemptions succeeded %d times, want exactly 1", wins)
+	}
+}
+
+// Grants are single-use: CreateGrant pins max_uses to 1 regardless of the
+// requested value (the issuance model binds one certificate per grant).
+func TestGrantSingleUseEnforced(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	_, hash := NewGrantToken()
+	id, err := db.CreateGrant(ctx, Grant{ExpiresAt: future(), MaxUses: 25, CreatedBy: "a"}, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := db.GetGrant(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.MaxUses != 1 {
+		t.Errorf("MaxUses = %d, want 1 (single-use enforced)", g.MaxUses)
 	}
 }

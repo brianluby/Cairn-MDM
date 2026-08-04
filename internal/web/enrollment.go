@@ -53,10 +53,6 @@ func (a *App) handleGrantCreate(w http.ResponseWriter, r *http.Request) {
 	default:
 		platform = "any"
 	}
-	maxUses, _ := strconv.Atoi(f("max_uses"))
-	if maxUses <= 0 {
-		maxUses = 1
-	}
 	hours, _ := strconv.Atoi(f("expires_hours"))
 	if hours <= 0 {
 		hours = 24
@@ -70,7 +66,6 @@ func (a *App) handleGrantCreate(w http.ResponseWriter, r *http.Request) {
 		Owner:          strings.TrimSpace(f("owner")),
 		CreatedBy:      sessionFrom(r).Identity.Username,
 		ExpiresAt:      expiresAt,
-		MaxUses:        maxUses,
 		ExpectedSerial: strings.TrimSpace(f("expected_serial")),
 	}, hash)
 	if err != nil {
@@ -83,7 +78,7 @@ func (a *App) handleGrantCreate(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("enrollment grant created", "id", id, "owner", f("owner"), "platform", platform,
 		"user", sessionFrom(r).Identity.Username) // never logs the raw token
 
-	created := map[string]any{"Link": link, "QR": qrDataURI(link), "ExpiresHours": hours, "MaxUses": maxUses}
+	created := map[string]any{"Link": link, "QR": qrDataURI(link), "ExpiresHours": hours}
 	a.renderEnrollment(w, r, created)
 }
 

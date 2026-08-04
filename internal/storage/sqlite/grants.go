@@ -73,9 +73,11 @@ func HashGrantToken(raw string) string {
 // CreateGrant inserts a grant and returns its ID. tokenHash must come from
 // NewGrantToken/HashGrantToken.
 func (db *DB) CreateGrant(ctx context.Context, g Grant, tokenHash string) (int64, error) {
-	if g.MaxUses <= 0 {
-		g.MaxUses = 1
-	}
+	// Grants are single-use: one grant authorizes exactly one device enrollment
+	// and one certificate issuance (issuance state machine, schema 016). A
+	// multi-use grant could never issue past the first device (UNIQUE(grant_id)),
+	// so max_uses is pinned to 1 regardless of the requested value.
+	g.MaxUses = 1
 	if g.Platform == "" {
 		g.Platform = "any"
 	}

@@ -12,7 +12,7 @@
     {{with .Created}}
     <div class="card" style="padding:24px">
       <h2 style="margin-top:0">Enrollment link created</h2>
-      <p class="sub">Shown once — copy it now. It works {{.MaxUses}} time(s) and expires in {{.ExpiresHours}} hour(s).</p>
+      <p class="sub">Shown once — copy it now. Single-use — it works once and expires in {{.ExpiresHours}} hour(s).</p>
       <p><input type="text" class="mono" style="width:100%" readonly value="{{.Link}}" onclick="this.select()"></p>
       {{if .QR}}<p><img src="{{.QR}}" alt="Enrollment QR code" width="256" height="256"></p>{{end}}
       <p class="sub">Open the link in Safari on the target device (or scan the QR) to install the enrollment profile.</p>
@@ -73,7 +73,6 @@
               <option value="ios">iOS/iPadOS</option>
             </select>
           </label>
-          &nbsp;<label>Uses <input type="number" name="max_uses" value="1" min="1" max="100" style="width:5em"></label>
           &nbsp;<label>Expires in (hours) <input type="number" name="expires_hours" value="24" min="1" max="8760" style="width:6em"></label>
         </p>
         <p><input type="text" name="expected_serial" placeholder="Bind to serial (optional)" size="24" class="mono"></p>
