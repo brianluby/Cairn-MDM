@@ -54,6 +54,17 @@ on the same grant fails; a CA timeout keeps the transaction recoverable (poll by
 transaction id) rather than lost. `ISSUED` records the certificate serial,
 closing a **grant → CSR → certificate** audit chain.
 
+Per-grant idempotency is necessary but **not sufficient**: two grants for the same
+device (different keypairs) could each pass their own check and both be signed. The
+durable no-double-issue guarantee is anchored on a **canonical device identity**
+(a stable, immutable identifier — not a mutable UPN or a device-asserted serial)
+and enforced by an **atomic claim-and-issue at the CA**: the CA serializes at most
+one active certificate per identity and consumes the authorization in the *same*
+step. A preflight "does a cert already exist?" query followed by a separate issue
+is a race and must not be used. Ambiguous outcomes (a response lost after the CA
+may have signed) are **quarantined** — never relabeled a definitive failure, and
+never retried as a fresh issuance.
+
 ### 2a. Renewal
 Short lifetimes demand a reliable renewal path — and short lifetimes cannot
 compensate for an unreliable one. Renewal authenticates with the **existing
@@ -86,7 +97,10 @@ SANs/subject/extensions are dropped. The backend must independently refuse a
 double/unauthorized issuance — e.g. a Cairn-signed, short-TTL, key-bound
 authorization token validated at the CA (stateless, with strict canonical
 encoding + an HSM-protected signing key + a nonce ledger), or a per-transaction
-record the CA atomically creates-and-burns. Both **prevent replay and constrain
+record the CA atomically creates-and-burns. Whichever is chosen, it must
+**atomically claim the canonical device-identity slot** as part of issuing — merely
+burning one token/transaction is not enough, since a second token for the *same*
+identity would still be honored. Both **prevent replay and constrain
 issuance but do not make the CA independent of a *fully compromised* Cairn** — a
 compromised broker can still authorize arbitrary in-namespace identities, which is
 why the operational controls below are mandatory, not optional.
