@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 )
 
@@ -35,32 +36,41 @@ func (i Issuance) matches(txnID, spki, requestHash string) bool {
 	return i.TxnID == txnID && i.SPKISHA256 == spki && i.RequestHash == requestHash
 }
 
+// grantValidPredicate is the SQL that a grant must satisfy to be claimable at the
+// moment of the claim: it exists, is unrevoked, and is unexpired. Grant
+// platform/expected_serial are immutable once created (no TOCTOU), so device
+// matching is done by the caller; revocation and expiry change over time and so
+// must be checked atomically here, at the claim's linearization point.
+const grantValidPredicate = `revoked_at IS NULL AND expires_at > datetime('now')`
+
 // BeginIssuance atomically binds grantID to a certificate issuance identified by
-// the idempotency triple (txnID, spki, requestHash). The caller must have already
-// validated the grant (unexpired, unrevoked, right platform/serial); this is the
-// storage transition only.
+// the idempotency triple (txnID, spki, requestHash). The grant's validity
+// (unrevoked, unexpired) is re-checked **atomically with the claim**, so a grant
+// revoked or expired after an earlier validation cannot acquire a binding.
 //
-//   - No prior issuance for the grant → inserts ISSUING; returns (row, false, nil).
-//   - A prior ISSUING/ISSUED row with the SAME triple (a retry) → returns that row
-//     and (row, true, nil). Never a second issuance; ISSUING reads as pending,
-//     ISSUED returns the cached certificate serial.
-//   - A prior ISSUING/ISSUED row with a DIFFERENT triple → ErrIssuanceConflict
-//     (the grant is spent by another request).
-//   - A prior FAILED row → the FAILED slot is rebound to this request as ISSUING
-//     (recovery); returns (row, false, nil).
+//   - Grant valid and unbound → inserts ISSUING; returns (row, false, nil).
+//   - Grant valid, prior ISSUING/ISSUED with the SAME triple (a retry) → returns
+//     that row and (row, true, nil). Never a second issuance; ISSUING reads as
+//     pending, ISSUED returns the cached certificate serial.
+//   - Prior ISSUING/ISSUED with a DIFFERENT triple → ErrIssuanceConflict (spent).
+//   - Grant valid, prior FAILED row → the FAILED slot is rebound to this request
+//     as ISSUING (recovery); returns (row, false, nil).
+//   - Grant unknown/revoked/expired and not already bound → ErrGrantInvalid.
 //
-// The bool result is "idempotent": true iff this call matched an existing binding
-// rather than creating a new one.
+// The bool result is "idempotent": true iff this call matched an existing binding.
 func (db *DB) BeginIssuance(ctx context.Context, grantID int64, txnID, spki, requestHash string) (Issuance, bool, error) {
 	if grantID <= 0 || txnID == "" || spki == "" || requestHash == "" {
 		return Issuance{}, false, errors.New("sqlite: BeginIssuance requires grantID>0 and non-empty txnID/spki/requestHash")
 	}
-	// Claim the grant. UNIQUE(grant_id) makes exactly one INSERT win a race.
+	// Atomic claim: insert ISSUING only if the grant is currently valid. The
+	// INSERT ... SELECT evaluates the validity predicate and the write at one
+	// point; UNIQUE(grant_id) makes exactly one INSERT win a race.
 	res, err := db.sql.ExecContext(ctx,
 		`INSERT INTO cert_issuance (grant_id, txn_id, spki_sha256, request_hash, state)
-		 VALUES (?, ?, ?, ?, 'ISSUING')
+		 SELECT id, ?, ?, ?, 'ISSUING' FROM enrollment_grants
+		  WHERE id = ? AND `+grantValidPredicate+`
 		 ON CONFLICT(grant_id) DO NOTHING`,
-		grantID, txnID, spki, requestHash)
+		txnID, spki, requestHash, grantID)
 	if err != nil {
 		return Issuance{}, false, err
 	}
@@ -69,20 +79,27 @@ func (db *DB) BeginIssuance(ctx context.Context, grantID int64, txnID, spki, req
 		return cur, false, err // fresh binding
 	}
 
-	// A row already existed for this grant.
+	// Zero rows inserted: either the grant was not claimable, or a binding already
+	// exists. Distinguish by whether a row exists.
 	cur, err := db.getIssuance(ctx, grantID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Issuance{}, false, ErrGrantInvalid // grant unknown/revoked/expired, unbound
+	}
 	if err != nil {
 		return Issuance{}, false, err
 	}
+
 	if cur.State == IssuanceFailed {
-		// Recover: rebind the FAILED slot to this request. Guard the race where a
-		// concurrent caller rebinds first — only one UPDATE flips FAILED→ISSUING.
+		// Recover: rebind the FAILED slot to this request — but only if the grant
+		// is STILL valid (recovery is a fresh claim). Guard the concurrent-rebind
+		// race: only one UPDATE flips FAILED→ISSUING.
 		rres, err := db.sql.ExecContext(ctx,
 			`UPDATE cert_issuance
 			    SET txn_id=?, spki_sha256=?, request_hash=?, state='ISSUING',
 			        cert_serial='', fail_reason='', updated_at=datetime('now')
-			  WHERE grant_id=? AND state='FAILED'`,
-			txnID, spki, requestHash, grantID)
+			  WHERE grant_id=? AND state='FAILED'
+			    AND EXISTS (SELECT 1 FROM enrollment_grants WHERE id=? AND `+grantValidPredicate+`)`,
+			txnID, spki, requestHash, grantID, grantID)
 		if err != nil {
 			return Issuance{}, false, err
 		}
@@ -93,7 +110,12 @@ func (db *DB) BeginIssuance(ctx context.Context, grantID int64, txnID, spki, req
 		if n, _ := rres.RowsAffected(); n == 1 {
 			return cur, false, nil // we recovered it
 		}
-		// Someone else rebound first; fall through to the key comparison below.
+		// Recovery affected no row: either the grant is no longer valid (still
+		// FAILED) or a concurrent caller rebound it first.
+		if cur.State == IssuanceFailed {
+			return Issuance{}, false, ErrGrantInvalid
+		}
+		// else: rebound by someone else — fall through to the key comparison.
 	}
 	if cur.matches(txnID, spki, requestHash) {
 		return cur, true, nil // idempotent retry (ISSUING=pending, ISSUED=cached)

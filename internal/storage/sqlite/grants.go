@@ -148,30 +148,52 @@ func (db *DB) GetGrant(ctx context.Context, id int64) (Grant, error) {
 		`SELECT `+grantCols+` FROM enrollment_grants WHERE id = ?`, id))
 }
 
-// RevokeGrant marks a grant revoked (idempotent for an already-revoked grant).
+// RevokeGrant marks a grant revoked (idempotent for an already-revoked grant) and
+// atomically voids any in-flight issuance binding (ISSUING → FAILED), so revoking
+// a grant while a certificate request is in flight cannot later complete.
 func (db *DB) RevokeGrant(ctx context.Context, id int64) error {
-	res, err := db.sql.ExecContext(ctx,
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
 		`UPDATE enrollment_grants SET revoked_at = datetime('now')
 		 WHERE id = ? AND revoked_at IS NULL`, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// Either no such grant or already revoked; treat missing as error.
-		if _, gerr := db.GetGrant(ctx, id); errors.Is(gerr, sql.ErrNoRows) {
+		// No row updated: either the grant is missing, or already revoked. Treat a
+		// missing grant as an error; an already-revoked grant still falls through so
+		// any lingering ISSUING binding is voided.
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM enrollment_grants WHERE id = ?`, id).Scan(&one); errors.Is(err, sql.ErrNoRows) {
 			return sql.ErrNoRows
+		} else if err != nil {
+			return err
 		}
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE cert_issuance SET state='FAILED', fail_reason='grant revoked', updated_at=datetime('now')
+		 WHERE grant_id = ? AND state='ISSUING'`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteExpiredGrants purges grants that expired more than the retention window
-// ago (called by the cleanup job). Revoked/used rows are kept for audit until
-// they also age out by expiry.
+// ago (called by the cleanup job). Grants that have an issuance record are kept
+// for audit (and because the FK ON DELETE RESTRICT would refuse the delete and,
+// critically, keeping the row prevents its rowid from being reused by a later
+// grant).
 func (db *DB) DeleteExpiredGrants(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan).UTC().Format("2006-01-02 15:04:05")
 	res, err := db.sql.ExecContext(ctx,
-		`DELETE FROM enrollment_grants WHERE expires_at < ?`, cutoff)
+		`DELETE FROM enrollment_grants
+		  WHERE expires_at < ?
+		    AND id NOT IN (SELECT grant_id FROM cert_issuance)`, cutoff)
 	if err != nil {
 		return 0, err
 	}

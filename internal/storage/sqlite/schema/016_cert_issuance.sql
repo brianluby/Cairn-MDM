@@ -13,7 +13,9 @@
 
 CREATE TABLE cert_issuance (
     id           INTEGER PRIMARY KEY,
-    grant_id     INTEGER NOT NULL,
+    -- ON DELETE RESTRICT: a grant that has an issuance record cannot be deleted,
+    -- so its rowid can never be reused by a later grant and inherit this binding.
+    grant_id     INTEGER NOT NULL REFERENCES enrollment_grants(id) ON DELETE RESTRICT,
     txn_id       TEXT NOT NULL,
     spki_sha256  TEXT NOT NULL,
     request_hash TEXT NOT NULL,

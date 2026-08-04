@@ -196,3 +196,115 @@ func TestConcurrentDifferentKeysOneWinner(t *testing.T) {
 		t.Fatalf("different-key race: won=%d conflict=%d other=%d, want 1/%d/0", won, conflict, other, N-1)
 	}
 }
+
+// A grant revoked between validation and the claim must NOT acquire a binding
+// (the TOCTOU the adversarial review found).
+func TestGrantRevokedBeforeClaim(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+	if err := db.RevokeGrant(ctx, gid); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1")
+	if !errors.Is(err, ErrGrantInvalid) {
+		t.Fatalf("err = %v, want ErrGrantInvalid", err)
+	}
+	if _, gerr := db.GetIssuance(ctx, gid); gerr == nil {
+		t.Fatal("no issuance row should exist for a revoked grant")
+	}
+}
+
+// An expired grant is not claimable.
+func TestGrantExpiredBeforeClaim(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	_, hash := NewGrantToken()
+	gid, err := db.CreateGrant(ctx, Grant{Label: "old", Platform: "macos", Owner: "ndawson@dzsec.net", ExpiresAt: past()}, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1")
+	if !errors.Is(err, ErrGrantInvalid) {
+		t.Fatalf("err = %v, want ErrGrantInvalid", err)
+	}
+}
+
+// Revoking a grant with an in-flight ISSUING binding voids it, so the in-flight
+// request can no longer complete.
+func TestRevokeVoidsIssuing(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RevokeGrant(ctx, gid); err != nil {
+		t.Fatal(err)
+	}
+	iss, err := db.GetIssuance(ctx, gid)
+	if err != nil || iss.State != IssuanceFailed {
+		t.Fatalf("after revoke: state=%q err=%v, want FAILED", iss.State, err)
+	}
+	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xSERIAL"); !errors.Is(err, ErrIssuanceConflict) {
+		t.Fatalf("complete after revoke: err=%v, want ErrIssuanceConflict", err)
+	}
+}
+
+// A FAILED slot cannot be recovered if the grant is no longer valid.
+func TestFailedRecoveryRejectedIfGrantRevoked(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FailIssuance(ctx, gid, "txn1", "spki1", "req1", "ca error"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RevokeGrant(ctx, gid); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := db.BeginIssuance(ctx, gid, "txn2", "spki2", "req2")
+	if !errors.Is(err, ErrGrantInvalid) {
+		t.Fatalf("recovery of revoked grant: err=%v, want ErrGrantInvalid", err)
+	}
+}
+
+// Cleanup preserves grants that have an issuance record (audit + no rowid reuse),
+// and deletes expired grants with no issuance.
+func TestDeleteExpiredPreservesGrantsWithIssuance(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+
+	// Grant A: expired but valid-at-claim window is irrelevant here — create it
+	// unexpired, bind an issuance, then it must survive cleanup even once expired.
+	gidA := mkGrant(t, db) // unexpired
+	if _, _, err := db.BeginIssuance(ctx, gidA, "txnA", "spkiA", "reqA"); err != nil {
+		t.Fatal(err)
+	}
+	// Force A's expiry into the past so the cleanup window would otherwise delete it.
+	if _, err := db.sql.ExecContext(ctx, `UPDATE enrollment_grants SET expires_at=? WHERE id=?`, past(), gidA); err != nil {
+		t.Fatal(err)
+	}
+	// Grant B: expired, no issuance → should be deleted.
+	_, hashB := NewGrantToken()
+	gidB, err := db.CreateGrant(ctx, Grant{Label: "B", Platform: "macos", ExpiresAt: past()}, hashB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.DeleteExpiredGrants(ctx, 0); err != nil {
+		t.Fatalf("DeleteExpiredGrants: %v", err) // must not FK-error on A
+	}
+	if _, err := db.GetGrant(ctx, gidA); err != nil {
+		t.Errorf("grant A (has issuance) should survive cleanup: %v", err)
+	}
+	if _, err := db.GetGrant(ctx, gidB); err == nil {
+		t.Error("grant B (no issuance, expired) should be deleted")
+	}
+	// A's issuance row is intact.
+	if _, err := db.GetIssuance(ctx, gidA); err != nil {
+		t.Errorf("issuance row for A should be intact: %v", err)
+	}
+}
