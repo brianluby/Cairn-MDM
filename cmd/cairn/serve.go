@@ -57,7 +57,7 @@ func runServe(ctx context.Context, args []string) error {
 	deps := server.Deps{MDM: core.Handler()}
 
 	// Configure SCEP + enrollment per ca.mode (generate | import | external).
-	pki, err := wirePKI(ctx, cfg, db.SQL(), db, grantRedeemer{db}, log, &deps)
+	pki, err := wirePKI(ctx, cfg, db, db, grantRedeemer{db}, log, &deps)
 	if err != nil {
 		return err
 	}
@@ -114,6 +114,9 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	console.SetLoginThrottle(loginThrottle)
+	// Local-account management in the console (admin-only). Directory-backed
+	// (LDAP/OIDC) identities are owned by their provider and stay outside this.
+	console.SetUsers(auth.NewLocalStore(db.SQL()))
 
 	// OIDC single sign-on (redirect flow) is wired separately from the
 	// username/password authenticator chain.

@@ -1,10 +1,23 @@
 # Enrollment authorization — design (v1.0 security gate)
 
-**Status: design, pre-implementation.** This is the design for the v1.0 roadmap
-item "one-time SCEP challenges" and the security gate recorded in `STATUS.md` and
-`SECURITY.md`. It extends `enrollment-grants-design.md` (Stage 1). Nothing here is
-implemented yet; a device identity certificate must **not** be trusted as a
-network-access credential (e.g. EAP-TLS) until it is.
+**Status: implementation in progress (Phase A/B) on branch
+`feat/enrollment-authorization`.** This is the design for the v1.0 roadmap item and the
+security gate recorded in `STATUS.md` and `SECURITY.md`; it extends
+`enrollment-grants-design.md` (Stage 1). A device identity certificate must still **not**
+be trusted as a network-access credential (e.g. EAP-TLS) until the full gate (below) is
+met and independently verified.
+
+**Implemented so far (branch, not released):** the `internal/issue` package — the
+CA-backend capability interface, `Reconstruct` (reconstruct-don't-validate), and the
+`Broker` (implements SCEP's `CSRSignerContext`): it resolves the grant from the
+per-enrollment SCEP challenge, reconstructs the certificate from server policy + grant,
+takes an atomic single-use claim (`cert_issuance`), delegates signing to a backend, and
+**fails closed to quarantine** on any ambiguity. The **embedded** backend (Cairn signs)
+is the first backend, wired into the embedded SCEP endpoint; the returned leaf is verified
+against the reconstructed intent (raw SAN/EKU/keyusage/validity/public-key checks). The
+issuance state machine (schema 016 + 019) records `ISSUING → ISSUED | FAILED |
+QUARANTINED` and caches the issued leaf for idempotent retries. **Not yet:** the external
+(broker) backend, renewal/replacement, and the operational controls below.
 
 ## The problem it solves
 

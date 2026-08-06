@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <h1>Quarantine</h1>
+    <p class="sub">Enrollments held after an ambiguous certificate outcome — the CA may
+      have signed, so Cairn refuses to retry rather than risk a second live certificate.
+      Each one waits for an operator to resolve it (fence the signer, enumerate any issued
+      serials, confirm they are rejected at RADIUS). The guided resolution flow is coming;
+      for now this is a read-only view.</p>
+
+    <div class="card">
+      {{if .Items}}
+      <table>
+        <thead>
+          <tr><th>When (UTC)</th><th>Grant</th><th>Backend</th><th>Reason</th><th>Transaction</th><th>Public key (SHA-256)</th></tr>
+        </thead>
+        <tbody>
+          {{range .Items}}
+          <tr>
+            <td class="sub">{{if .QuarantinedAt}}{{.QuarantinedAt}}{{else}}—{{end}}</td>
+            <td class="mono">#{{.GrantID}}</td>
+            <td>{{if .Backend}}{{.Backend}}{{else}}<span class="sub">—</span>{{end}}</td>
+            <td>{{.QuarantineReason}}</td>
+            <td class="mono sub">{{.TxnID}}</td>
+            <td class="mono sub">{{.SPKISHA256}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No quarantined enrollments. Ambiguous certificate outcomes would
+        appear here for resolution.</div>
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>

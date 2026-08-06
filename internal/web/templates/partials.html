@@ -15,7 +15,10 @@
     <a href="/admin/profiles"{{if eq .Title "Profiles"}} class="active"{{end}}>Profiles</a>
     <a href="/admin/groups"{{if eq .Title "Groups"}} class="active"{{end}}>Groups</a>
     <a href="/admin/enrollment"{{if eq .Title "Enrollment"}} class="active"{{end}}>Enrollment</a>
+    {{if .User.Role.AtLeast "admin"}}<a href="/admin/quarantine"{{if eq .Title "Quarantine"}} class="active"{{end}}>Quarantine</a>{{end}}
     <a href="/admin/activity"{{if eq .Title "Activity"}} class="active"{{end}}>Activity</a>
+    {{if .User.Role.AtLeast "admin"}}<a href="/admin/users"{{if eq .Title "Users"}} class="active"{{end}}>Users</a>
+    <a href="/admin/settings"{{if eq .Title "Settings"}} class="active"{{end}}>Settings</a>{{end}}
   </nav>
   <span class="spacer"></span>
   <span class="user">

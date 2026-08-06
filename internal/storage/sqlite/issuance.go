@@ -13,6 +13,11 @@ const (
 	IssuanceIssuing IssuanceState = "ISSUING"
 	IssuanceIssued  IssuanceState = "ISSUED"
 	IssuanceFailed  IssuanceState = "FAILED"
+	// IssuanceQuarantined is a terminal hold for an AMBIGUOUS outcome (a response
+	// lost after the CA may have signed). Distinct from FAILED (proven clean
+	// failure): a quarantined attempt is never retried as a fresh issuance and never
+	// relabeled FAILED — reissuing could double-issue. Resolution is out-of-band.
+	IssuanceQuarantined IssuanceState = "QUARANTINED"
 )
 
 // ErrIssuanceConflict means the grant is already bound to a *different* live
@@ -20,7 +25,7 @@ const (
 // grant is spent and this request must not be issued.
 var ErrIssuanceConflict = errors.New("grant already bound to a different issuance request")
 
-// Issuance is a row of the issuance state machine (schema 016).
+// Issuance is a row of the issuance state machine (schema 016, extended by 019).
 type Issuance struct {
 	GrantID     int64
 	TxnID       string
@@ -29,6 +34,15 @@ type Issuance struct {
 	State       IssuanceState
 	CertSerial  string
 	FailReason  string
+	// Set on QUARANTINED (schema 019).
+	QuarantineReason string
+	QuarantinedAt    string // empty unless QUARANTINED
+	Backend          string
+	BackendTxn       string
+	// LeafDER caches the issued certificate (DER) on ISSUED so an idempotent SCEP
+	// retry returns the identical CertRep without re-hitting the backend. nil until
+	// ISSUED.
+	LeafDER []byte
 }
 
 // matches reports whether i is the same request as the given idempotency triple.
@@ -106,18 +120,20 @@ func (db *DB) BeginIssuance(ctx context.Context, grantID int64, txnID, spki, req
 }
 
 // CompleteIssuance transitions the grant's ISSUING binding to ISSUED and records
-// the certificate serial. Only the exact bound request (matching idempotency
-// triple) in state ISSUING may complete; otherwise ErrIssuanceConflict. A
-// non-empty certSerial is required — there is no "issued without a serial" state.
-func (db *DB) CompleteIssuance(ctx context.Context, grantID int64, txnID, spki, requestHash, certSerial string) error {
+// the certificate serial and the issued leaf (DER, for idempotent-retry caching).
+// Only the exact bound request (matching idempotency triple) in state ISSUING may
+// complete; otherwise ErrIssuanceConflict. A non-empty certSerial is required —
+// there is no "issued without a serial" state. leafDER may be nil (retries then
+// re-fetch from the backend) but SHOULD be the issued certificate.
+func (db *DB) CompleteIssuance(ctx context.Context, grantID int64, txnID, spki, requestHash, certSerial string, leafDER []byte) error {
 	if grantID <= 0 || txnID == "" || spki == "" || requestHash == "" || certSerial == "" {
 		return errors.New("sqlite: CompleteIssuance requires grantID>0 and non-empty txnID/spki/requestHash/certSerial")
 	}
 	res, err := db.sql.ExecContext(ctx,
 		`UPDATE cert_issuance
-		    SET state='ISSUED', cert_serial=?, updated_at=datetime('now')
+		    SET state='ISSUED', cert_serial=?, leaf_der=?, updated_at=datetime('now')
 		  WHERE grant_id=? AND txn_id=? AND spki_sha256=? AND request_hash=? AND state='ISSUING'`,
-		certSerial, grantID, txnID, spki, requestHash)
+		certSerial, leafDER, grantID, txnID, spki, requestHash)
 	if err != nil {
 		return err
 	}
@@ -127,9 +143,34 @@ func (db *DB) CompleteIssuance(ctx context.Context, grantID int64, txnID, spki, 
 	return nil
 }
 
-// FailIssuance transitions the grant's ISSUING binding to FAILED (recoverable —
-// a later BeginIssuance may rebind the slot). Only the bound request in state
-// ISSUING may fail; otherwise ErrIssuanceConflict.
+// QuarantineIssuance transitions the grant's ISSUING binding to QUARANTINED — a
+// terminal hold for an ambiguous outcome (see IssuanceQuarantined). Only the bound
+// request in state ISSUING may be quarantined; otherwise ErrIssuanceConflict.
+// reason/backend/backendTxn record why and where, for reconciliation.
+func (db *DB) QuarantineIssuance(ctx context.Context, grantID int64, txnID, spki, requestHash, reason, backend, backendTxn string) error {
+	if grantID <= 0 || txnID == "" || spki == "" || requestHash == "" {
+		return errors.New("sqlite: QuarantineIssuance requires grantID>0 and non-empty txnID/spki/requestHash")
+	}
+	res, err := db.sql.ExecContext(ctx,
+		`UPDATE cert_issuance
+		    SET state='QUARANTINED', quarantine_reason=?, quarantined_at=datetime('now'),
+		        backend=?, backend_txn=?, updated_at=datetime('now')
+		  WHERE grant_id=? AND txn_id=? AND spki_sha256=? AND request_hash=? AND state='ISSUING'`,
+		reason, backend, backendTxn, grantID, txnID, spki, requestHash)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrIssuanceConflict
+	}
+	return nil
+}
+
+// FailIssuance transitions the grant's ISSUING binding to FAILED. FAILED is
+// TERMINAL for the grant: BeginIssuance never rebinds it (a FAILED slot can hide an
+// ambiguous CA outcome where a cert was in fact issued, so rebinding would risk
+// double-issuance). Retrying a failed enrollment requires a NEW grant. Only the
+// bound request in state ISSUING may fail; otherwise ErrIssuanceConflict.
 func (db *DB) FailIssuance(ctx context.Context, grantID int64, txnID, spki, requestHash, reason string) error {
 	res, err := db.sql.ExecContext(ctx,
 		`UPDATE cert_issuance
@@ -145,19 +186,55 @@ func (db *DB) FailIssuance(ctx context.Context, grantID int64, txnID, spki, requ
 	return nil
 }
 
+// issuanceCols is the column list scanned by scanIssuance, in order.
+const issuanceCols = `grant_id, txn_id, spki_sha256, request_hash, state, cert_serial,
+	fail_reason, quarantine_reason, COALESCE(quarantined_at,''), backend, backend_txn, leaf_der`
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanIssuance(s rowScanner) (Issuance, error) {
+	var i Issuance
+	err := s.Scan(&i.GrantID, &i.TxnID, &i.SPKISHA256, &i.RequestHash, &i.State,
+		&i.CertSerial, &i.FailReason, &i.QuarantineReason, &i.QuarantinedAt, &i.Backend, &i.BackendTxn, &i.LeafDER)
+	return i, err
+}
+
 // GetIssuance returns the issuance row for a grant, or sql.ErrNoRows if none.
 func (db *DB) GetIssuance(ctx context.Context, grantID int64) (Issuance, error) {
 	return db.getIssuance(ctx, grantID)
 }
 
 func (db *DB) getIssuance(ctx context.Context, grantID int64) (Issuance, error) {
-	var i Issuance
-	err := db.sql.QueryRowContext(ctx,
-		`SELECT grant_id, txn_id, spki_sha256, request_hash, state, cert_serial, fail_reason
-		   FROM cert_issuance WHERE grant_id=?`, grantID).
-		Scan(&i.GrantID, &i.TxnID, &i.SPKISHA256, &i.RequestHash, &i.State, &i.CertSerial, &i.FailReason)
+	return scanIssuance(db.sql.QueryRowContext(ctx,
+		`SELECT `+issuanceCols+` FROM cert_issuance WHERE grant_id=?`, grantID))
+}
+
+// GetIssuanceByTxn returns the issuance row for a SCEP transaction id, or
+// sql.ErrNoRows if none. The SCEP txn id is deterministic from the public key, so it
+// identifies the attempt; the idempotency triple remains the authoritative key, so a
+// caller comparing an attempt should still match the full triple.
+func (db *DB) GetIssuanceByTxn(ctx context.Context, txnID string) (Issuance, error) {
+	return scanIssuance(db.sql.QueryRowContext(ctx,
+		`SELECT `+issuanceCols+` FROM cert_issuance WHERE txn_id=? LIMIT 1`, txnID))
+}
+
+// ListQuarantined returns every issuance row in the QUARANTINED state, most recent
+// first — the work-list for out-of-band (operator / reconciler) resolution.
+func (db *DB) ListQuarantined(ctx context.Context) ([]Issuance, error) {
+	rows, err := db.sql.QueryContext(ctx,
+		`SELECT `+issuanceCols+` FROM cert_issuance WHERE state='QUARANTINED' ORDER BY quarantined_at DESC`)
 	if err != nil {
-		return Issuance{}, err
+		return nil, err
 	}
-	return i, nil
+	defer rows.Close()
+	var out []Issuance
+	for rows.Next() {
+		i, err := scanIssuance(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
 }

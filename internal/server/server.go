@@ -30,6 +30,7 @@ type Deps struct {
 	Enroll      http.Handler // bare enrollment handler (mounted at GET /enroll; default-denied)
 	EnrollGrant http.Handler // grant-based enrollment (mounted at GET /e/{token})
 	CA          http.Handler // CA trust-anchor download (mounted at GET /ca)
+	CRL         http.Handler // certificate revocation list (mounted at GET /crl; public)
 	UI          UIRegistrar  // admin console; registers its own routes
 }
 
@@ -137,6 +138,11 @@ func (s *Server) routes() {
 
 	if s.deps.CA != nil {
 		s.mux.Handle("GET /ca", s.deps.CA)
+	}
+
+	if s.deps.CRL != nil {
+		// CRLs are public (they only reveal revoked serials), so this is unauthenticated.
+		s.mux.Handle("GET /crl", s.deps.CRL)
 	}
 
 	if s.deps.UI != nil {

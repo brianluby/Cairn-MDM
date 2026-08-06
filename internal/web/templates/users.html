@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <h1>Users</h1>
+    <p class="sub">Local console accounts. LDAP/OIDC identities are owned by their
+      directory and appear here only in the activity log — only local accounts are
+      listed and editable.</p>
+
+    {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
+    {{if .Error}}<div class="card callout error">{{.Error}}</div>{{end}}
+
+    {{with .Created}}
+    <div class="card" style="padding:24px">
+      <h2 style="margin-top:0">{{if .Reset}}Password reset{{else}}User created{{end}}</h2>
+      <p class="sub">Shown once — copy it now. The generated password for
+        <span class="mono">{{.Username}}</span> is not stored anywhere else.</p>
+      <p><input type="text" class="mono" style="width:100%" readonly value="{{.Password}}" onclick="this.select()"></p>
+    </div>
+    {{end}}
+
+    <div class="card">
+      {{if .Users}}
+      <table>
+        <thead>
+          <tr><th>Username</th><th>Role</th><th>Display name</th><th>Provider</th><th>Created</th><th></th></tr>
+        </thead>
+        <tbody>
+          {{range .Users}}
+          <tr>
+            <td class="mono">{{.Username}}</td>
+            <td>
+              {{if $.CanSetRole}}
+              <form method="post" action="/admin/users/{{.Username}}/role" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <select name="role">
+                  <option value="admin"{{if eq .Role "admin"}} selected{{end}}>admin</option>
+                  <option value="operator"{{if eq .Role "operator"}} selected{{end}}>operator</option>
+                  <option value="user"{{if eq .Role "user"}} selected{{end}}>user</option>
+                </select>
+                <button class="btn link" type="submit">Change</button>
+              </form>
+              {{else}}
+              {{.Role}}
+              {{end}}
+            </td>
+            <td>{{if .DisplayName}}{{.DisplayName}}{{else}}<span class="sub">—</span>{{end}}</td>
+            <td class="sub">local</td>
+            <td class="sub">{{.CreatedAt}}</td>
+            <td style="text-align:right">
+              <form method="post" action="/admin/users/{{.Username}}/passwd" style="display:inline"
+                    onsubmit="return confirm('Generate a new password for {{.Username}}? The old one stops working immediately.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn link" type="submit">Reset password</button>
+              </form>
+              <form method="post" action="/admin/users/{{.Username}}/delete" style="display:inline"
+                    onsubmit="return confirm('Delete {{.Username}}? Their sessions end immediately.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn link" type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No local accounts. Create one below.</div>
+      {{end}}
+    </div>
+
+    <h2>New user</h2>
+    <div class="card">
+      <form method="post" action="/admin/users">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p>
+          <input type="text" name="username" placeholder="Username" size="20" class="mono" required>
+          <input type="text" name="display_name" placeholder="Display name (optional)" size="26">
+        </p>
+        <p>
+          <label>Role
+            <select name="role">
+              <option value="user" selected>user</option>
+              <option value="operator">operator</option>
+              <option value="admin">admin</option>
+            </select>
+          </label>
+          &nbsp;<label>Password <input type="password" name="password" placeholder="Leave blank to generate" size="26" autocomplete="new-password"></label>
+        </p>
+        <p class="sub">Leave the password blank to generate one — it is shown once, above, after creation.</p>
+        <p><button class="btn" type="submit">Create user</button></p>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

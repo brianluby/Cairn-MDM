@@ -55,6 +55,11 @@ const (
 	// CAExternal points enrollment profiles at a third-party SCEP server (OpenXPKI,
 	// Microsoft NDES) and never issues certificates itself.
 	CAExternal CAMode = "external"
+	// CABroker runs Cairn's own device-facing SCEP endpoint through the enrollment-
+	// authorization Broker, which relays to a backend SCEP CA (OpenXPKI/NDES) over a
+	// restricted path signed by an RA identity. The backend SCEP is never exposed to
+	// devices; Cairn owns authorization and reconstructs the certificate.
+	CABroker CAMode = "broker"
 )
 
 // Embedded reports whether the mode runs Cairn's own SCEP endpoint (generate or
@@ -293,12 +298,17 @@ type CA struct {
 	Mode     CAMode        `toml:"mode"`
 	Import   CAImportCfg   `toml:"import"`
 	External CAExternalCfg `toml:"external"`
+	Broker   CABrokerCfg   `toml:"broker"`
 }
 
-// CAImportCfg supplies an existing CA cert+key for import mode.
+// CAImportCfg supplies an existing CA cert+key for import mode. When RootCertFile is
+// also set, Cairn runs TWO-TIER: cert_file/key_file are the online ISSUING CA and
+// root_cert_file is the OFFLINE ROOT's certificate (public only — its key never
+// touches this host). The issuer must be signed by the root.
 type CAImportCfg struct {
-	CertFile string `toml:"cert_file"`
-	KeyFile  string `toml:"key_file"`
+	CertFile     string `toml:"cert_file"`
+	KeyFile      string `toml:"key_file"`
+	RootCertFile string `toml:"root_cert_file"` // set → two-tier (cert/key = issuer)
 }
 
 // CAExternalCfg describes an external SCEP server (external mode only).
@@ -308,6 +318,24 @@ type CAExternalCfg struct {
 	CRLURL        string `toml:"crl_url"`
 	ChallengeEnv  string `toml:"challenge_env"`
 	ChallengeFile string `toml:"challenge_file"`
+	// resolved:
+	Challenge string `toml:"-"`
+}
+
+// CABrokerCfg describes the backend SCEP CA that Cairn brokers to (broker mode).
+// The device does grant-gated SCEP to Cairn; Cairn relays the device CSR to this
+// backend over a restricted path, signing the SCEP envelope with the RA identity
+// (an authorized signer at the backend). The backend SCEP is never exposed to
+// devices. The optional service challenge is loaded from env/file, never inline.
+type CABrokerCfg struct {
+	SCEPURL       string `toml:"backend_scep_url"`
+	RACertFile    string `toml:"ra_cert_file"`
+	RAKeyFile     string `toml:"ra_key_file"`
+	CAChainFile   string `toml:"backend_ca_chain_file"` // trust anchor for enrollment profiles + reply parsing
+	CRLURL        string `toml:"crl_url"`
+	ChallengeEnv  string `toml:"challenge_env"`
+	ChallengeFile string `toml:"challenge_file"`
+	PollSeconds   int    `toml:"poll_seconds"` // reconciler poll cadence for PENDING/quarantined (default 3600)
 	// resolved:
 	Challenge string `toml:"-"`
 }
@@ -502,8 +530,18 @@ func (c Config) Validate() error {
 		if c.CA.External.CAChainFile == "" {
 			errs = append(errs, errors.New("ca.external.ca_chain_file is required when ca.mode=external (trust anchor for the enrollment profile)"))
 		}
+	case CABroker:
+		if c.CA.Broker.SCEPURL == "" {
+			errs = append(errs, errors.New("ca.broker.backend_scep_url is required when ca.mode=broker"))
+		}
+		if c.CA.Broker.RACertFile == "" || c.CA.Broker.RAKeyFile == "" {
+			errs = append(errs, errors.New("ca.broker.ra_cert_file and ra_key_file are required when ca.mode=broker (the RA identity that signs the backend SCEP envelope)"))
+		}
+		if c.CA.Broker.CAChainFile == "" {
+			errs = append(errs, errors.New("ca.broker.backend_ca_chain_file is required when ca.mode=broker (trust anchor for enrollment profiles + reply parsing)"))
+		}
 	default:
-		errs = append(errs, fmt.Errorf("ca.mode must be generate|import|external, got %q", c.CA.Mode))
+		errs = append(errs, fmt.Errorf("ca.mode must be generate|import|external|broker, got %q", c.CA.Mode))
 	}
 
 	if s := c.Profile.Signing; s.Enabled() {

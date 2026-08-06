@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -80,7 +81,7 @@ func TestIssuanceCompleteThenCachedRetry(t *testing.T) {
 	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xSERIAL"); err != nil {
+	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xSERIAL", nil); err != nil {
 		t.Fatal(err)
 	}
 	iss, idem, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1") // retry after issued
@@ -101,7 +102,7 @@ func TestCompleteWrongKeyRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A different request must not be able to complete someone else's binding.
-	if err := db.CompleteIssuance(ctx, gid, "txnX", "spkiX", "reqX", "0xEVIL"); !errors.Is(err, ErrIssuanceConflict) {
+	if err := db.CompleteIssuance(ctx, gid, "txnX", "spkiX", "reqX", "0xEVIL", nil); !errors.Is(err, ErrIssuanceConflict) {
 		t.Fatalf("err = %v, want ErrIssuanceConflict", err)
 	}
 }
@@ -250,7 +251,7 @@ func TestRevokeVoidsIssuing(t *testing.T) {
 	if err != nil || iss.State != IssuanceFailed {
 		t.Fatalf("after revoke: state=%q err=%v, want FAILED", iss.State, err)
 	}
-	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xSERIAL"); !errors.Is(err, ErrIssuanceConflict) {
+	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xSERIAL", nil); !errors.Is(err, ErrIssuanceConflict) {
 		t.Fatalf("complete after revoke: err=%v, want ErrIssuanceConflict", err)
 	}
 }
@@ -325,7 +326,7 @@ func TestCompleteEmptySerialRejected(t *testing.T) {
 	if _, _, err := db.BeginIssuance(ctx, gid, "txn1", "spki1", "req1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", ""); err == nil {
+	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "", nil); err == nil {
 		t.Fatal("CompleteIssuance with empty serial must be rejected")
 	}
 	// State must remain ISSUING (not a half-completed ISSUED).
@@ -353,7 +354,7 @@ func TestTimeoutAfterSigningThenComplete(t *testing.T) {
 		t.Fatalf("resend before complete: idem=%v state=%q err=%v, want pending idempotent", idem, iss.State, err)
 	}
 	// Reconciler records the serial.
-	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xLATE"); err != nil {
+	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xLATE", nil); err != nil {
 		t.Fatal(err)
 	}
 	// Resend after completion → cached cert.
@@ -390,5 +391,93 @@ func TestIssuanceSchemaConstraints(t *testing.T) {
 		 VALUES (?, 't', 's', 'r', 'ISSUING', '0xSTRAY')`, gid)
 	if err == nil {
 		t.Error("CHECK should reject ISSUING with a serial")
+	}
+}
+
+func TestQuarantineIsTerminal(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+
+	if _, _, err := db.BeginIssuance(ctx, gid, "txnQ", "spkiQ", "reqQ"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QuarantineIssuance(ctx, gid, "txnQ", "spkiQ", "reqQ", "ambiguous-ca-response", "external-scep", "catx"); err != nil {
+		t.Fatalf("QuarantineIssuance: %v", err)
+	}
+	// An identical retry returns the quarantined row idempotently — never a fresh
+	// binding — and it carries the recorded reason/backend.
+	iss, idem, err := db.BeginIssuance(ctx, gid, "txnQ", "spkiQ", "reqQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idem || iss.State != IssuanceQuarantined {
+		t.Fatalf("retry after quarantine: idem=%v state=%q, want idempotent QUARANTINED", idem, iss.State)
+	}
+	if iss.QuarantineReason != "ambiguous-ca-response" || iss.Backend != "external-scep" || iss.BackendTxn != "catx" {
+		t.Fatalf("quarantine metadata not persisted: %+v", iss)
+	}
+	// A quarantined attempt can never be completed (that would resurrect an
+	// ambiguous outcome into a definitive issuance).
+	if err := db.CompleteIssuance(ctx, gid, "txnQ", "spkiQ", "reqQ", "0xLATE", nil); !errors.Is(err, ErrIssuanceConflict) {
+		t.Fatalf("completing a quarantined attempt: err=%v, want ErrIssuanceConflict", err)
+	}
+}
+
+func TestListQuarantinedOnlyQuarantined(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	g1, g2 := mkGrant(t, db), mkGrant(t, db)
+
+	if _, _, err := db.BeginIssuance(ctx, g1, "t1", "s1", "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QuarantineIssuance(ctx, g1, "t1", "s1", "r1", "lost-after-possible-sign", "external-scep", "x1"); err != nil {
+		t.Fatal(err)
+	}
+	// g2 issues cleanly — must not appear in the quarantine work-list.
+	if _, _, err := db.BeginIssuance(ctx, g2, "t2", "s2", "r2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CompleteIssuance(ctx, g2, "t2", "s2", "r2", "0xOK", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := db.ListQuarantined(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].GrantID != g1 {
+		t.Fatalf("ListQuarantined = %+v, want exactly g1", list)
+	}
+}
+
+func TestLeafDERCachedOnComplete(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	gid := mkGrant(t, db)
+	leaf := []byte{0x30, 0x82, 0xDE, 0xAD} // stand-in DER
+
+	if _, _, err := db.BeginIssuance(ctx, gid, "txnL", "spkiL", "reqL"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CompleteIssuance(ctx, gid, "txnL", "spkiL", "reqL", "0xSER", leaf); err != nil {
+		t.Fatal(err)
+	}
+	// An idempotent retry returns the cached leaf without re-hitting a backend.
+	iss, idem, err := db.BeginIssuance(ctx, gid, "txnL", "spkiL", "reqL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idem || iss.State != IssuanceIssued || !bytes.Equal(iss.LeafDER, leaf) {
+		t.Fatalf("cached retry: idem=%v state=%q leaf=%x, want ISSUED with cached leaf %x", idem, iss.State, iss.LeafDER, leaf)
+	}
+	// GetIssuanceByTxn resolves the same row by transaction id.
+	byTxn, err := db.GetIssuanceByTxn(ctx, "txnL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byTxn.GrantID != gid || !bytes.Equal(byTxn.LeafDER, leaf) {
+		t.Fatalf("GetIssuanceByTxn = %+v, want grant %d with cached leaf", byTxn, gid)
 	}
 }

@@ -29,6 +29,17 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) (*auth.Identity, error)
 }
 
+// UserAdmin manages local console accounts. *auth.LocalStore implements it.
+// Directory-backed identities (LDAP/OIDC) are owned by their provider and are
+// deliberately outside this interface.
+type UserAdmin interface {
+	CreateUser(ctx context.Context, username, password string, role auth.Role, displayName string) error
+	SetPassword(ctx context.Context, username, password string) error
+	ListUsers(ctx context.Context) ([]auth.UserSummary, error)
+	DeleteUser(ctx context.Context, username string) error
+	CountUsers(ctx context.Context) (int, error)
+}
+
 // DeviceSource provides the inventory for the console.
 type DeviceSource interface {
 	ListDevices(ctx context.Context) ([]sqlite.Device, error)
@@ -96,6 +107,12 @@ type DeployStore interface {
 	GroupDeployStatus(ctx context.Context, groupID int64) ([]sqlite.GroupProfileStatus, error)
 }
 
+// QuarantineStore reads quarantined certificate issuances — enrollments held after
+// an ambiguous CA outcome, awaiting resolution. *sqlite.DB satisfies it.
+type QuarantineStore interface {
+	ListQuarantined(ctx context.Context) ([]sqlite.Issuance, error)
+}
+
 // Store bundles everything the console reads and writes; *sqlite.DB implements
 // all of it.
 type Store interface {
@@ -107,6 +124,7 @@ type Store interface {
 	GrantStore
 	AuditStore
 	DeployStore
+	QuarantineStore
 }
 
 // Commander runs device actions from the console.
@@ -152,9 +170,11 @@ type App struct {
 	grants     GrantStore
 	audit      AuditStore
 	deploys    DeployStore
+	quarantine QuarantineStore
 	cmd        Commander
 	rec        Reconciler   // may be nil (no auto-push)
 	oidc       OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
+	users      UserAdmin    // may be nil (user management disabled); set via SetUsers
 	cfg        Config
 	trusted    []*net.IPNet // parsed cfg.TrustedProxies; nil = trust no proxy
 	tmpl       *template.Template
@@ -169,7 +189,7 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	}
 	a := &App{
 		sessions: sessions, auth: authn,
-		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store,
+		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store, quarantine: store,
 		cmd: cmd, rec: rec, cfg: cfg, trusted: trusted, log: log,
 	}
 	// oidcEnabled lets the login template render the SSO button only when an
@@ -184,6 +204,10 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	a.tmpl = tmpl
 	return a, nil
 }
+
+// SetUsers installs (or clears, with nil) the local-account admin backend.
+// When nil the user-management pages render an "unavailable" notice.
+func (a *App) SetUsers(u UserAdmin) { a.users = u }
 
 // Register mounts the console routes on mux. Implementing this interface keeps
 // the server package from importing web.
@@ -232,6 +256,20 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("GET /admin/enrollment", a.requireRole(auth.RoleOperator, a.handleEnrollment))
 	mux.Handle("POST /admin/enrollment", a.audited(a.requireRole(auth.RoleOperator, a.handleGrantCreate)))
 	mux.Handle("POST /admin/enrollment/{id}/revoke", a.audited(a.requireRole(auth.RoleOperator, a.handleGrantRevoke)))
+
+	// Quarantined issuances (ambiguous CA outcomes held for resolution). Admin-only,
+	// security-sensitive. Read-only for now; the guided resolution flow lands with
+	// the ResolveQuarantine backend.
+	mux.Handle("GET /admin/quarantine", a.requireRole(auth.RoleAdmin, a.handleQuarantine))
+
+	// Local user management + a read-only settings view. Admin-only, and every
+	// mutation is audited.
+	mux.Handle("GET /admin/users", a.requireRole(auth.RoleAdmin, a.handleUsers))
+	mux.Handle("POST /admin/users", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserCreate)))
+	mux.Handle("POST /admin/users/{username}/passwd", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserPasswd)))
+	mux.Handle("POST /admin/users/{username}/role", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserRole)))
+	mux.Handle("POST /admin/users/{username}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserDelete)))
+	mux.Handle("GET /admin/settings", a.requireRole(auth.RoleAdmin, a.handleSettings))
 
 	mux.Handle("GET /admin/groups", a.requireRole(auth.RoleOperator, a.handleGroups))
 	mux.Handle("POST /admin/groups", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupCreate)))

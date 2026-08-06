@@ -212,3 +212,31 @@ func parseTime(s string) time.Time {
 	}
 	return time.Time{}
 }
+
+// GrantIssuanceInfo holds the authoritative grant facts for an issuance lookup,
+// resolved from a presented challenge WITHOUT consuming the grant. Single-use at
+// issuance is enforced by cert_issuance UNIQUE(grant_id), not here.
+type GrantIssuanceInfo struct {
+	ID       int64
+	Owner    string
+	Platform string
+}
+
+// LookupGrantForIssuance resolves a presented SCEP challenge (the grant's raw token)
+// to the grant's issuance facts if the grant is currently valid (unrevoked and
+// unexpired). It does NOT consume the grant. Returns ErrGrantInvalid if no valid
+// grant matches — deliberately indistinct (no enumeration oracle).
+func (db *DB) LookupGrantForIssuance(ctx context.Context, challenge string) (GrantIssuanceInfo, error) {
+	var g GrantIssuanceInfo
+	err := db.sql.QueryRowContext(ctx,
+		`SELECT id, owner, platform FROM enrollment_grants
+		  WHERE token_hash=? AND `+grantValidPredicate,
+		HashGrantToken(challenge)).Scan(&g.ID, &g.Owner, &g.Platform)
+	if errors.Is(err, sql.ErrNoRows) {
+		return GrantIssuanceInfo{}, ErrGrantInvalid
+	}
+	if err != nil {
+		return GrantIssuanceInfo{}, err
+	}
+	return g, nil
+}

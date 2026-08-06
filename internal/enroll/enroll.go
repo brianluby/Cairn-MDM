@@ -41,6 +41,12 @@ type Config struct {
 	MDMServerURL  string   // e.g. https://mdm.example.com/mdm
 	SubjectPrefix string   // device cert CN suffix, e.g. "devices.example.com"
 
+	// PerGrantChallenge, when true, sets each profile's SCEP challenge to the
+	// enrolling grant's own token instead of the static Challenge. This is the
+	// enrollment-authorization Broker path: the SCEP endpoint resolves that token to
+	// the grant and reconstructs the certificate from server policy.
+	PerGrantChallenge bool
+
 	// AllowOpen serves the bare /enroll route unauthenticated (homelab
 	// opt-in). Default false → bare /enroll is 404; use grant links.
 	AllowOpen bool
@@ -71,7 +77,10 @@ func (h *Handler) ServeOpen(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	h.serveProfile(w, r, Redemption{})
+	// Bare open enroll has no grant, hence no per-grant token; a Broker-backed SCEP
+	// endpoint will reject the resulting empty challenge (fail-closed), which is
+	// correct — open enroll cannot obtain an authority-controlled certificate.
+	h.serveProfile(w, r, Redemption{}, "")
 }
 
 // ServeGrant handles GET /e/{token}: redeem the grant, then serve a profile
@@ -89,11 +98,13 @@ func (h *Handler) ServeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log.Info("enrollment grant redeemed", "owner", red.Owner, "platform", red.Platform, "remote", r.RemoteAddr)
-	h.serveProfile(w, r, red)
+	h.serveProfile(w, r, red, token)
 }
 
-// serveProfile builds, signs, and writes the .mobileconfig for a redemption.
-func (h *Handler) serveProfile(w http.ResponseWriter, r *http.Request, red Redemption) {
+// serveProfile builds, signs, and writes the .mobileconfig for a redemption. token
+// is the grant's raw token, used as the per-enrollment SCEP challenge when
+// PerGrantChallenge is set.
+func (h *Handler) serveProfile(w http.ResponseWriter, r *http.Request, red Redemption, token string) {
 	topic, err := h.topics.GetSetting(r.Context(), h.topicKey)
 	if err != nil || topic == "" {
 		h.log.Warn("enrollment requested but no APNs push certificate is loaded")
@@ -108,13 +119,18 @@ func (h *Handler) serveProfile(w http.ResponseWriter, r *http.Request, red Redem
 		subjectCN += "." + h.cfg.SubjectPrefix
 	}
 
+	challenge := h.cfg.Challenge
+	if h.cfg.PerGrantChallenge {
+		challenge = token // the Broker resolves this token to the grant at SCEP time
+	}
+
 	prof, err := profile.BuildEnrollment(profile.EnrollmentParams{
 		Organization:  h.cfg.Organization,
 		CAAnchorsDER:  h.cfg.CAAnchorsDER,
 		SCEPURL:       h.cfg.SCEPURL,
 		SubjectCN:     subjectCN,
 		OwnerRFC822:   red.Owner,
-		Challenge:     h.cfg.Challenge,
+		Challenge:     challenge,
 		MDMServerURL:  h.cfg.MDMServerURL,
 		MDMCheckInURL: h.cfg.MDMServerURL,
 		Topic:         topic,
