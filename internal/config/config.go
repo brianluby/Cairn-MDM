@@ -336,6 +336,13 @@ type CABrokerCfg struct {
 	ChallengeEnv  string `toml:"challenge_env"`
 	ChallengeFile string `toml:"challenge_file"`
 	PollSeconds   int    `toml:"poll_seconds"` // reconciler poll cadence for PENDING/quarantined (default 3600)
+	// MaxLeafValidityDays is the accepted ceiling (in days) on the validity span of a
+	// certificate the backend CA returns. The backend sets the actual lifetime; a
+	// longer-but-bounded value is a policy choice, not an escalation, so this lets an
+	// operator accept the backend's validity without per-deployment profile tuning.
+	// 0 uses the default (brokerDefaultMaxLeafValidityDays). All other verify checks are
+	// unaffected.
+	MaxLeafValidityDays int `toml:"max_leaf_validity_days"`
 	// resolved:
 	Challenge string `toml:"-"`
 }

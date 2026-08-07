@@ -19,15 +19,29 @@ package broker
 import (
 	"context"
 	"crypto"
+	"crypto/rand"
 	"crypto/x509"
+	"encoding/asn1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
 	kitlog "github.com/go-kit/kit/log"
 	scepclient "github.com/micromdm/scep/v2/client"
+	"github.com/smallstep/pkcs7"
 	scep "github.com/smallstep/scep"
+	"github.com/smallstep/scep/cryptoutil"
 
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
+)
+
+// SCEP signed-attribute OIDs (Verisign SCEP arc). Redeclared here because
+// smallstep/scep keeps them unexported; buildRelayRequest sets them directly so it
+// can override the transaction-ID encoding the library hardcodes.
+var (
+	oidSCEPmessageType   = asn1.ObjectIdentifier{2, 16, 840, 1, 113733, 1, 9, 2}
+	oidSCEPsenderNonce   = asn1.ObjectIdentifier{2, 16, 840, 1, 113733, 1, 9, 5}
+	oidSCEPtransactionID = asn1.ObjectIdentifier{2, 16, 840, 1, 113733, 1, 9, 7}
 )
 
 // Config configures a SCEP-relay backend.
@@ -105,6 +119,91 @@ func (b *scepBackend) recipients(ctx context.Context) ([]*x509.Certificate, erro
 	return certs, nil
 }
 
+// encryptionRecipients selects the SCEP request-encryption target(s) from a
+// GetCACert response. SCEP encrypts the request to the CA/RA certificate that
+// will decrypt it; any chain certs (offline root, intermediates) returned
+// alongside it are trust anchors for verifying the reply, not recipients.
+//
+// pkcs7 enveloping supports only RSA recipients, so non-RSA anchors must be
+// filtered out — OpenXPKI in particular pairs an RSA "Internal RA" (the real
+// recipient) with an EC root, and handing the EC root to the enveloper fails the
+// whole request. Prefer a keyEncipherment cert (the canonical SCEP RA/encryption
+// cert); fall back to any RSA cert (covers direct single-CA backends).
+func encryptionRecipients(certs []*x509.Certificate) ([]*x509.Certificate, error) {
+	var keyEnc, rsaAny []*x509.Certificate
+	for _, c := range certs {
+		if c.PublicKeyAlgorithm != x509.RSA {
+			continue
+		}
+		rsaAny = append(rsaAny, c)
+		if c.KeyUsage&x509.KeyUsageKeyEncipherment != 0 {
+			keyEnc = append(keyEnc, c)
+		}
+	}
+	switch {
+	case len(keyEnc) > 0:
+		return keyEnc, nil
+	case len(rsaAny) > 0:
+		return rsaAny, nil
+	default:
+		return nil, errors.New("broker: backend GetCACert returned no RSA encryption recipient")
+	}
+}
+
+// relayTransactionID derives a deterministic, broadly-interoperable SCEP transaction
+// ID from the device public key: the hex-encoded RFC 5280 key identifier (SHA-1 of
+// the SubjectPublicKey). smallstep/scep's NewCSRRequest base64-encodes this same
+// identifier and pads it with '=', which fails a default OpenXPKI transaction_id
+// validator (\A(\w+:)?[0-9a-zA-Z_-]{16,128}(:\d+)?\z — base64url/hex, no padding).
+// Hex satisfies that validator and stays deterministic, so the backend still dedups
+// idempotent resubmissions of the same enrollment onto one workflow.
+func relayTransactionID(pub crypto.PublicKey) (string, error) {
+	id, err := cryptoutil.GenerateSubjectKeyID(pub)
+	if err != nil {
+		return "", fmt.Errorf("broker: transaction id: %w", err)
+	}
+	return hex.EncodeToString(id), nil
+}
+
+// buildRelayRequest constructs the signed+enveloped SCEP PKCSReq that relays the
+// device CSR to the backend CA. It mirrors smallstep/scep NewCSRRequest — encrypt
+// the device CSR to the recipient, sign the envelope with the RA identity, attach
+// the SCEP signed attributes — but overrides the transaction-ID encoding (hex, see
+// relayTransactionID), which the library computes internally with no override hook.
+// The device's own CSR self-signature is the proof-of-possession the backend
+// re-verifies; the RA signature is the enrollment authorization.
+func buildRelayRequest(csr *x509.CertificateRequest, recipients []*x509.Certificate, raCert *x509.Certificate, raKey crypto.PrivateKey) ([]byte, error) {
+	tid, err := relayTransactionID(csr.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	env, err := pkcs7.Encrypt(csr.Raw, recipients)
+	if err != nil {
+		return nil, fmt.Errorf("broker: encrypt CSR: %w", err)
+	}
+	sd, err := pkcs7.NewSignedData(env)
+	if err != nil {
+		return nil, fmt.Errorf("broker: new signed data: %w", err)
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("broker: sender nonce: %w", err)
+	}
+	cfg := pkcs7.SignerInfoConfig{ExtraSignedAttributes: []pkcs7.Attribute{
+		{Type: oidSCEPtransactionID, Value: tid},
+		{Type: oidSCEPmessageType, Value: scep.PKCSReq},
+		{Type: oidSCEPsenderNonce, Value: nonce},
+	}}
+	if err := sd.AddSigner(raCert, raKey, cfg); err != nil {
+		return nil, fmt.Errorf("broker: add signer: %w", err)
+	}
+	raw, err := sd.Finish()
+	if err != nil {
+		return nil, fmt.Errorf("broker: finish signed data: %w", err)
+	}
+	return raw, nil
+}
+
 // Issue relays the device CSR to the backend CA and maps the SCEP reply to an outcome
 // class. Pre-dispatch failures (unreachable backend, un-buildable request) are clean
 // (nothing was signed); a transport error or unparseable reply AFTER dispatch is
@@ -118,18 +217,22 @@ func (b *scepBackend) Issue(ctx context.Context, req issue.IssueRequest) (issue.
 		// GetCACert happens before any PKCSReq → nothing signed → clean failure.
 		return issue.IssueResult{Status: issue.StatusFailedClean}, err
 	}
-	pkiMsg, err := scep.NewCSRRequest(req.DeviceCSR, &scep.PKIMessage{
-		MessageType: scep.PKCSReq,
-		Recipients:  recips,
-		SignerKey:   b.raKey,
-		SignerCert:  b.raCert,
-	})
+	// SCEP encrypts the request to the CA/RA cert that decrypts it — not to the
+	// whole chain. Trust anchors (offline root/intermediate) are not recipients,
+	// and pkcs7 can only encrypt to RSA keys, so an EC root (OpenXPKI pairs an RSA
+	// RA with an EC root) must be excluded or NewCSRRequest fails. Still nothing
+	// signed at this point → clean failure.
+	encTo, err := encryptionRecipients(recips)
+	if err != nil {
+		return issue.IssueResult{Status: issue.StatusFailedClean}, err
+	}
+	rawReq, err := buildRelayRequest(req.DeviceCSR, encTo, b.raCert, b.raKey)
 	if err != nil {
 		return issue.IssueResult{Status: issue.StatusFailedClean}, fmt.Errorf("broker: build PKCSReq: %w", err)
 	}
 
 	// Dispatch. From here a lost/garbled reply is AMBIGUOUS (the CA may have signed).
-	respBytes, err := b.client.PKIOperation(ctx, pkiMsg.Raw)
+	respBytes, err := b.client.PKIOperation(ctx, rawReq)
 	if err != nil {
 		return issue.IssueResult{Status: issue.StatusAmbiguous}, fmt.Errorf("broker: PKIOperation: %w", err)
 	}

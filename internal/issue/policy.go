@@ -10,6 +10,16 @@ type Policy struct {
 	LeafValidity time.Duration
 	// Backdate shifts NotBefore into the past to tolerate clock skew.
 	Backdate time.Duration
+	// MaxLeafValidity, when > 0, is the ceiling the returned-leaf verifier enforces on
+	// the certificate's validity span. It exists for the broker lane: the backend CA
+	// sets the actual validity, and a longer-than-our-own lifetime is a policy
+	// preference, not a security escalation — so the operator can accept up to this
+	// ceiling without per-deployment backend-profile tuning. When 0 (embedded mode, or
+	// unset) the verifier falls back to LeafValidity+Backdate+1h, since Cairn sets the
+	// validity itself. It never relaxes the anti-escalation checks (public-key binding,
+	// identity, IsCA, exact EKU/KeyUsage, no unexpected critical extensions) or the
+	// expired / not-yet-valid checks.
+	MaxLeafValidity time.Duration
 	// CRLDistributionPoint, when set, is written into each leaf's CRL distribution
 	// points so relying parties (RADIUS) know where to fetch revocation. Empty omits
 	// the extension.

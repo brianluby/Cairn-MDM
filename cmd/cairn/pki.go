@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	kitlog "github.com/go-kit/kit/log"
 	scepserver "github.com/micromdm/scep/v2/server"
@@ -23,6 +24,12 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/server"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 )
+
+// brokerDefaultMaxLeafValidityDays is the default accepted ceiling on the validity
+// span of certificates the backend CA returns in broker mode. It comfortably covers a
+// 1-year backend profile plus margin; operators tighten it via
+// [ca.broker] max_leaf_validity_days. All other verify checks are unaffected.
+const brokerDefaultMaxLeafValidityDays = 400
 
 // grantResolver adapts the sqlite grant lookup to issue.GrantResolver: it maps a
 // presented SCEP challenge (the grant's raw token) to the grant's issuance facts,
@@ -182,7 +189,19 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 		if err != nil {
 			return nil, err
 		}
-		brk := issue.NewBroker(be, store, grantResolver{store}, issue.DefaultPolicy())
+		// Broker-lane policy: the backend CA sets the actual validity, so accept up to a
+		// configurable ceiling (default brokerDefaultMaxLeafValidityDays) instead of our
+		// own embedded LeafValidity. Every other verify check is unchanged.
+		brokerPolicy := issue.DefaultPolicy()
+		days := cfg.CA.Broker.MaxLeafValidityDays
+		if days <= 0 {
+			days = brokerDefaultMaxLeafValidityDays
+		}
+		brokerPolicy.MaxLeafValidity = time.Duration(days) * 24 * time.Hour
+		if cfg.CA.Broker.CRLURL != "" {
+			brokerPolicy.CRLDistributionPoint = cfg.CA.Broker.CRLURL
+		}
+		brk := issue.NewBroker(be, store, grantResolver{store}, brokerPolicy)
 		// Device-facing SCEP endpoint: the RA identity is the SCEP server cert the
 		// device encrypts to; the Broker is the signer. The backend SCEP is never
 		// exposed to devices.

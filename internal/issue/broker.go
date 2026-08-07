@@ -114,7 +114,7 @@ func (b *Broker) SignCSRContext(ctx context.Context, m *scep.CSRReqMessage) (*x5
 		// Post-verify the returned leaf equals the reconstructed intent unless the
 		// backend guarantees it. Mismatch ⇒ quarantine (a backend that honored the CSR).
 		if !b.backend.Capabilities().VerifiesReconstruction {
-			if err := verifyLeafMatchesIntent(res.Leaf, tmpl, spki, b.policy); err != nil {
+			if err := verifyLeafMatchesIntent(res.Leaf, tmpl, spki, b.policy, b.now()); err != nil {
 				_ = b.store.QuarantineIssuance(ctx, g.GrantID, txnID, spki, reqHash, "leaf-mismatch: "+err.Error(), name, txnID)
 				return nil, fmt.Errorf("issue: returned leaf != intent (quarantined): %w", err)
 			}

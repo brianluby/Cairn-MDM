@@ -369,3 +369,95 @@ func TestBrokerQuarantinesUnknownEKU(t *testing.T) {
 		t.Fatalf("state = %q, want QUARANTINED after an unknown-EKU smuggle", iss.State)
 	}
 }
+
+// brokerCeilingPolicy is DefaultPolicy plus a broker-lane validity ceiling.
+func brokerCeilingPolicy(days int) Policy {
+	p := DefaultPolicy()
+	p.MaxLeafValidity = time.Duration(days) * 24 * time.Hour
+	return p
+}
+
+// widenValidity returns a signFrom that stretches the leaf's validity window
+// [now-back, now+fwd] around the current time.
+func widenValidity(back, fwd time.Duration) func(*x509.Certificate) *x509.Certificate {
+	return func(intent *x509.Certificate) *x509.Certificate {
+		out := *intent
+		now := time.Now()
+		out.NotBefore = now.Add(-back)
+		out.NotAfter = now.Add(fwd)
+		return &out
+	}
+}
+
+// A backend cert longer-lived than our own LeafValidity but within the broker ceiling
+// is ACCEPTED — the backend owns validity in broker mode; a bounded longer lifetime is
+// a policy choice, not an escalation.
+func TestBrokerCeilingAcceptsLongerBackendValidity(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+	gid := mkGrant(t, db)
+	k := genKey(t)
+	be := &fakeBackend{cap: embeddedCap(), status: StatusIssued, signFrom: widenValidity(time.Minute, 120*24*time.Hour)}
+	br := NewBroker(be, db, fixedResolver{GrantFacts{GrantID: gid, CommonName: "dev-1", Owner: "u@x"}}, brokerCeilingPolicy(400))
+
+	if _, err := br.SignCSRContext(ctx, newCSR(t, k)); err != nil {
+		t.Fatalf("SignCSRContext: %v (120d cert should be within a 400d ceiling)", err)
+	}
+	if iss, _ := db.GetIssuance(ctx, gid); iss.State != sqlite.IssuanceIssued {
+		t.Fatalf("state = %q, want ISSUED", iss.State)
+	}
+}
+
+// Beyond the ceiling still quarantines — the check stays a hard upper bound.
+func TestBrokerCeilingRejectsBeyondCeiling(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+	gid := mkGrant(t, db)
+	k := genKey(t)
+	be := &fakeBackend{cap: embeddedCap(), status: StatusIssued, signFrom: widenValidity(time.Minute, 500*24*time.Hour)}
+	br := NewBroker(be, db, fixedResolver{GrantFacts{GrantID: gid, CommonName: "dev-1", Owner: "u@x"}}, brokerCeilingPolicy(400))
+
+	if _, err := br.SignCSRContext(ctx, newCSR(t, k)); err == nil {
+		t.Fatal("expected quarantine: 500d cert exceeds the 400d ceiling")
+	}
+	if iss, _ := db.GetIssuance(ctx, gid); iss.State != sqlite.IssuanceQuarantined {
+		t.Fatalf("state = %q, want QUARANTINED", iss.State)
+	}
+}
+
+// Embedded mode (no ceiling set) stays strict: a cert longer than our own LeafValidity
+// is quarantined, because embedded Cairn sets the validity itself.
+func TestEmbeddedStaysStrictWithoutCeiling(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+	gid := mkGrant(t, db)
+	k := genKey(t)
+	be := &fakeBackend{cap: embeddedCap(), status: StatusIssued, signFrom: widenValidity(time.Minute, 120*24*time.Hour)}
+	br := NewBroker(be, db, fixedResolver{GrantFacts{GrantID: gid, CommonName: "dev-1", Owner: "u@x"}}, DefaultPolicy())
+
+	if _, err := br.SignCSRContext(ctx, newCSR(t, k)); err == nil {
+		t.Fatal("expected quarantine: 120d cert exceeds the embedded 60d LeafValidity ceiling")
+	}
+	if iss, _ := db.GetIssuance(ctx, gid); iss.State != sqlite.IssuanceQuarantined {
+		t.Fatalf("state = %q, want QUARANTINED", iss.State)
+	}
+}
+
+// An already-expired backend cert is quarantined even though its span is small and
+// within the ceiling.
+func TestBrokerRejectsExpiredLeaf(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+	gid := mkGrant(t, db)
+	k := genKey(t)
+	// window [now-10d, now-1d]: short span, but already expired.
+	be := &fakeBackend{cap: embeddedCap(), status: StatusIssued, signFrom: widenValidity(10*24*time.Hour, -24*time.Hour)}
+	br := NewBroker(be, db, fixedResolver{GrantFacts{GrantID: gid, CommonName: "dev-1", Owner: "u@x"}}, brokerCeilingPolicy(400))
+
+	if _, err := br.SignCSRContext(ctx, newCSR(t, k)); err == nil {
+		t.Fatal("expected quarantine: leaf is already expired")
+	}
+	if iss, _ := db.GetIssuance(ctx, gid); iss.State != sqlite.IssuanceQuarantined {
+		t.Fatalf("state = %q, want QUARANTINED", iss.State)
+	}
+}

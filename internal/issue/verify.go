@@ -25,7 +25,7 @@ var (
 // OIDs under UnknownExtKeyUsage); it parses the raw SAN extension and checks the
 // full EKU/KeyUsage/validity/public-key/critical-extension surface. A mismatch is a
 // hostile or broken backend and the caller quarantines.
-func verifyLeafMatchesIntent(leaf, tmpl *x509.Certificate, wantSPKISHA256 string, pol Policy) error {
+func verifyLeafMatchesIntent(leaf, tmpl *x509.Certificate, wantSPKISHA256 string, pol Policy, now time.Time) error {
 	if leaf.Subject.CommonName != tmpl.Subject.CommonName {
 		return fmt.Errorf("CN %q != intent %q", leaf.Subject.CommonName, tmpl.Subject.CommonName)
 	}
@@ -63,11 +63,26 @@ func verifyLeafMatchesIntent(leaf, tmpl *x509.Certificate, wantSPKISHA256 string
 	if leaf.KeyUsage != tmpl.KeyUsage {
 		return fmt.Errorf("KeyUsage %d != intent %d", leaf.KeyUsage, tmpl.KeyUsage)
 	}
-	// Validity must not exceed the policy lifetime (a hostile backend must not widen a
-	// short-lived intent into a long-lived credential).
+	// Validity must not exceed the policy lifetime (a hostile or misconfigured backend
+	// must not widen a short-lived intent into a long-lived credential). Embedded mode
+	// sets the validity itself, so the ceiling is our own LeafValidity (+skew/tolerance).
+	// Broker mode lets the backend CA set validity: MaxLeafValidity, when configured, is
+	// the accepted ceiling — a longer-but-bounded backend lifetime is a policy choice,
+	// not an escalation. The check stays a hard upper bound either way.
 	maxSpan := pol.LeafValidity + pol.Backdate + time.Hour // small tolerance
+	if pol.MaxLeafValidity > 0 {
+		maxSpan = pol.MaxLeafValidity
+	}
 	if span := leaf.NotAfter.Sub(leaf.NotBefore); span > maxSpan {
 		return fmt.Errorf("validity span %s exceeds policy max %s", span, maxSpan)
+	}
+	// The leaf must be currently valid: not already expired, and not starting further in
+	// the future than our backdate tolerance (a backend clock far ahead is suspect).
+	if !leaf.NotAfter.After(now) {
+		return fmt.Errorf("leaf already expired (notAfter %s <= now %s)", leaf.NotAfter.UTC(), now.UTC())
+	}
+	if leaf.NotBefore.After(now.Add(pol.Backdate + time.Hour)) {
+		return fmt.Errorf("leaf not yet valid (notBefore %s > now %s + tolerance)", leaf.NotBefore.UTC(), now.UTC())
 	}
 	// Reject unexpected CRITICAL extensions (certificate policies, name constraints,
 	// MS cert templates, …). Only the reconstructed set may be critical.
