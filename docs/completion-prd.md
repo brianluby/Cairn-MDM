@@ -23,6 +23,7 @@ are required outcomes, not optional post-release work.
 | WIFI-2 | Renewal, revocation and offline recovery | Renewed device reconnects; revoked/disabled identity rejected; server-name/trust validation; current-session policy stated | Lifecycle design/review and hardware tests pending |
 | CA-1 | Embedded default and external broker with honest capability limits | Independent authorization/recovery review, restart/rollback and ambiguity tests | Identity/lineage and recovery contract incomplete |
 | UX-1 | Guided setup, enrollment, profiles, groups, recovery and settings | Task-based browser review, keyboard/VoiceOver/zoom/narrow-layout checks | Wizard and several operator flows incomplete |
+| PROFILE-1 | Profile targeting by owner AD group/OU and explicit Cairn device group | Enrollment preview, membership refresh, scope/conflict handling and per-device outcomes | Existing groups are manual device collections; directory-backed targeting is not implemented |
 | OPS-1 | Backup, restore, upgrade, alerts and heartbeat | Isolated restore, protected off-host material, alert delivery, release upgrade/rollback | Full qualification pending |
 | RELEASE-1 | Reproducible supported release | Exact candidate SHA, automated checks, hardware matrix, independent review and recorded soak | No completed release gate |
 
@@ -46,6 +47,10 @@ are required outcomes, not optional post-release work.
   assistance. MFA is checked in Cairn; RADIUS needs no MFA integration.
 - See [enrollment and recovery](enrollment-onboarding.md) for the accepted flows
   and rejection tests. These are requirements, not completed implementation.
+- Profile targeting supports verified owner AD group membership or OU scope,
+  plus explicit Cairn device groups. Preview effective profiles during enrollment;
+  do not change AD membership or certificate ownership through that selection.
+  See [directory profile targeting](directory-profile-targeting.md).
 - No silent profile removal when a library item or assignment is deleted.
 - ABM/ADE, DDM, Platform SSO, app distribution and alternative databases are
   separate future increments.

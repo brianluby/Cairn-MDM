@@ -10,11 +10,14 @@ MFA and the directory-authorized grant flows are not yet implemented.
 2. They choose **Add device for a user**, resolve an AD account and confirm the
    returned name and UPN. Cairn binds the owner to directory namespace and
    objectGUID; a submitted display name or email is not authority.
-3. They enter a device label and platform. Cairn creates an expiring, single-use
+3. Cairn shows matching directory group/OU profile rules and the resulting
+   profiles. The administrator can also select an explicit Cairn device group
+   for a site-specific assignment. Conflicts need resolution before enrollment.
+4. They enter a device label and platform. Cairn creates an expiring, single-use
    enrollment authorization and displays its link and QR code.
-4. On the new device, the administrator opens that link using guest Wi-Fi,
+5. On the new device, the administrator opens that link using guest Wi-Fi,
    cellular or Ethernet and follows the platform's installation instructions.
-5. Cairn rechecks the owner's eligibility before certificate issuance and shows
+6. Cairn rechecks the owner's eligibility before certificate issuance and shows
    enrollment, certificate issuance, profile delivery and network acceptance as
    separate outcomes.
 
@@ -32,6 +35,14 @@ unattended installation.
 The initial permission is admin-only. Ordinary operators do not inherit the
 ability to issue for arbitrary owners from their device-management role. Any
 future delegated enrollment permission must be explicit and separately tested.
+
+## Group and OU profile selection
+
+Directory group/OU rules select profiles for the enrolled devices of matching
+owners. The owner remains an individual verified directory identity. A policy
+selection does not move the user in AD or change their group memberships.
+See [directory profile targeting](directory-profile-targeting.md) for rule,
+preview and membership-change requirements.
 
 ## A user sets up MFA and enrolls devices
 
