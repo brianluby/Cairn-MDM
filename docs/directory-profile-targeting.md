@@ -1,8 +1,9 @@
 # Directory profile targeting
 
 Product requirement added November 2, 2026. Existing Cairn groups are manual
-collections of devices with assigned profiles. Directory-backed targeting is
-not implemented by those tables or by LDAP login role mapping.
+collections of devices with assigned profiles. Directory rules are stored separately from those tables and from LDAP login
+role mapping. An admin-only preview is implemented; automatic application and
+enrollment integration remain pending.
 
 ## Lynchburg example
 
@@ -71,3 +72,38 @@ not itself prove the device has lost network access.
 - Manually assigned Cairn device groups remain distinguishable from directory
   rules and survive refresh unless the administrator changes them.
 - Device acknowledgement and actual Wi-Fi acceptance remain separate evidence.
+
+## Implemented preview
+
+The Groups page links administrators to **Directory profile rules and preview**.
+Select an existing Cairn group (and its assigned profiles), resolve an AD group
+or OU by exact name, and save a rule. Ambiguous names require a full DN. Saved
+rules pin the configured directory namespace and raw objectGUID; later preview
+resolves the current object rather than trusting a saved name or path.
+
+Preview accepts a user account name or UPN, resolves an eligible owner and
+revalidates that owner by GUID. It evaluates the whole rule set on one DC per
+attempt; a failed attempt contributes no partial results to failover. Reads have
+bounded deadlines. This is not an atomic directory snapshot or an issuance
+permission. At most 100 scopes can be evaluated per preview.
+
+Group checks include primary membership reconstructed from objectSid and
+primaryGroupID. Nested checks query the LDAP transitive matching rule for both
+the user and their primary group. OU matching uses parsed DN ancestry; direct
+scope excludes child OUs. See Microsoft's [LDAP matching rules](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/4e638665-f466-4597-93c4-12f2ebfabab5).
+The configured search base must contain the owners, target scopes and primary
+group objects. Real Samba support and service-account read permissions still
+need qualification;
+an ACL-hidden membership is not made trustworthy by a successful empty search.
+
+The console reports each match and its profile sources, deduplicates identical
+profile IDs and detects repeated profile identifiers. It explicitly does not
+validate device-platform compatibility or conflicting settings across different
+identifiers. A failed directory read produces an unavailable preview, never a
+successful empty assignment set.
+
+Rules and audit writes commit together. Saving, deleting and previewing rules
+never changes manual membership, creates enrollment grants or queues device
+commands. Existing manual groups continue to work independently. Profile
+application must wait for verified device ownership and the enrollment/MFA path;
+this preview does not bypass that requirement.

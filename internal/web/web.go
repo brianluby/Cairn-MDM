@@ -161,6 +161,7 @@ type Config struct {
 
 // App is the admin console.
 type App struct {
+	directory        DirectoryResolver
 	apnsRequests     *push.RequestManager
 	apnsCertificates push.CertificateStore
 	sessions         *auth.SessionStore
@@ -215,6 +216,10 @@ func (a *App) SetUsers(u UserAdmin) { a.users = u }
 // Register mounts the console routes on mux. Implementing this interface keeps
 // the server package from importing web.
 func (a *App) Register(mux *http.ServeMux) {
+	mux.Handle("GET /admin/directory", a.requireRole(auth.RoleAdmin, a.handleDirectory))
+	mux.Handle("POST /admin/directory/rules", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectorySave)))
+	mux.Handle("POST /admin/directory/preview", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryPreview)))
+	mux.Handle("POST /admin/directory/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryDelete)))
 	// Static assets.
 	mux.Handle("GET /assets/", http.FileServerFS(files))
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	directoryldap "github.com/nickpdawson/cairn-mdm/internal/auth/ldap"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -120,6 +121,13 @@ func runServe(ctx context.Context, args []string) error {
 		}, log)
 	if err != nil {
 		return err
+	}
+	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
+		directory, err := directoryldap.New(cfg.Auth.LDAP, log)
+		if err != nil {
+			return err
+		}
+		console.SetDirectory(directory)
 	}
 	console.SetLoginThrottle(loginThrottle)
 	// Local-account management in the console (admin-only). Directory-backed

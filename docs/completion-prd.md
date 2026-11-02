@@ -23,7 +23,7 @@ are required outcomes, not optional post-release work.
 | WIFI-2 | Renewal, revocation and offline recovery | Renewed device reconnects; revoked/disabled identity rejected; server-name/trust validation; current-session policy stated | Lifecycle design/review and hardware tests pending |
 | CA-1 | Embedded default and external broker with honest capability limits | Independent authorization/recovery review, restart/rollback and ambiguity tests | Identity/lineage and recovery contract incomplete |
 | UX-1 | Guided setup, enrollment, profiles, groups, recovery and settings | Task-based browser review, keyboard/VoiceOver/zoom/narrow-layout checks | Wizard and several operator flows incomplete |
-| PROFILE-1 | Profile targeting by owner AD group/OU and explicit Cairn device group | Enrollment preview, membership refresh, scope/conflict handling and per-device outcomes | Existing groups are manual device collections; directory-backed targeting is not implemented |
+| PROFILE-1 | Profile targeting by owner AD group/OU and explicit Cairn device group | Enrollment preview, membership refresh, scope/conflict handling and per-device outcomes | Directory object resolution, persistent preview rules and admin preview implemented; automatic assignment, enrollment integration and live Samba qualification pending |
 | OPS-1 | Backup, restore, upgrade, alerts and heartbeat | Isolated restore, protected off-host material, alert delivery, release upgrade/rollback | Full qualification pending |
 | RELEASE-1 | Reproducible supported release | Exact candidate SHA, automated checks, hardware matrix, independent review and recorded soak | No completed release gate |
 
