@@ -162,7 +162,19 @@ existing PKI (nothing on the MDM host) at the cost of a backend-dependent guaran
 that degrades to quarantine. Choose per deployment; the embedded CA remains a
 deliberate, security-load-bearing choice, not a frictionless default.
 
-## Who authorizes the identity — self-service (primary model)
+## November 2 product decision: administrator-assisted enrollment
+
+Administrator-assisted enrollment is now a first-class supported route, alongside
+self-service. An administrator uses their own authentication, fresh MFA and
+permission to assign a device to a verified directory owner. The owner does not
+need to sign in, register MFA or disclose credentials. Actor and owner remain
+separate, and owner eligibility is rechecked at issuance. The historical
+self-service-primary wording below does not make owner sign-in mandatory for
+this route. See [enrollment and recovery](enrollment-onboarding.md).
+
+This decision does not relax the issuance, audit, revocation or lifecycle gates.
+
+## Earlier rationale: self-service and operator assignment
 
 The name on the certificate is decided when the **grant** is created; the device
 can never assert its own. The strongest way to decide "who gets a grant for owner

@@ -37,6 +37,15 @@ are required outcomes, not optional post-release work.
   It does not collect Apple passwords or require access to the operator's email.
 - Direct LDAP/AD must work without requiring OIDC. Optional authentication
   providers do not remove privileged-issuance controls.
+- Administrator-assisted enrollment is first-class: an administrator with fresh
+  MFA selects a verified AD owner and enrolls a device without the owner signing
+  in or providing credentials. Audit actor and owner separately. Self-service
+  remains supported using the owner's established factor.
+- Initial MFA uses authenticator-app codes, verified setup and single-use
+  recovery codes. First setup and lost-factor recovery require administrator
+  assistance. MFA is checked in Cairn; RADIUS needs no MFA integration.
+- See [enrollment and recovery](enrollment-onboarding.md) for the accepted flows
+  and rejection tests. These are requirements, not completed implementation.
 - No silent profile removal when a library item or assignment is deleted.
 - ABM/ADE, DDM, Platform SSO, app distribution and alternative databases are
   separate future increments.
