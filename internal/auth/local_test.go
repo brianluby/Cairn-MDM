@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 )
@@ -137,5 +138,116 @@ func TestListAndDeleteUsers(t *testing.T) {
 	}
 	if err := s.DeleteUser(ctx, "nosuch"); err == nil {
 		t.Error("deleting unknown user should error")
+	}
+}
+
+func TestLocalMutationsRevokeOnlyLocalSessionsAndFenceOldLogin(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	sessions := NewSessionStore(s.db, time.Hour)
+	for _, name := range []string{"admin", "nick"} {
+		if err := s.CreateUser(ctx, name, "original password", RoleAdmin, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity, err := s.Authenticate(ctx, "nick", "original password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := sessions.Create(ctx, *identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := sessions.Create(ctx, Identity{Username: "nick", Provider: "ldap", Role: RoleUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetPassword(ctx, "nick", "replacement password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sessions.Get(ctx, local.Token); !errors.Is(err, ErrNoSession) {
+		t.Fatal("password reset retained local session")
+	}
+	if _, err = sessions.Get(ctx, directory.Token); err != nil {
+		t.Fatal("local change removed directory session", err)
+	}
+	if _, err = sessions.Create(ctx, *identity); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal("in-flight old login survived reset")
+	}
+	identity, err = s.Authenticate(ctx, "nick", "replacement password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err = sessions.Create(ctx, *identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRole(ctx, "nick", RoleUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sessions.Get(ctx, local.Token); !errors.Is(err, ErrNoSession) {
+		t.Fatal("demotion retained elevated session")
+	}
+	if _, err = sessions.Create(ctx, *identity); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal("in-flight elevated login survived demotion")
+	}
+	if err = s.SetRole(ctx, "admin", RoleUser); err == nil {
+		t.Fatal("last admin demoted")
+	}
+	if err = s.DeleteUser(ctx, "nick"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sessions.Get(ctx, directory.Token); err != nil {
+		t.Fatal("local deletion removed directory session", err)
+	}
+}
+
+func TestAccountMutationRollsBackIfRevocationFails(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	if err := s.CreateUser(ctx, "nick", "original password", RoleUser, ""); err != nil {
+		t.Fatal(err)
+	}
+	sessions := NewSessionStore(s.db, time.Hour)
+	if _, err := sessions.Create(ctx, Identity{Username: "nick", Provider: "local", Role: RoleUser}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_session_revoke BEFORE DELETE ON app_sessions BEGIN SELECT RAISE(ABORT,'unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRole(ctx, "nick", RoleAdmin); err == nil {
+		t.Fatal("mutation ignored revocation failure")
+	}
+	if role, err := s.UserRole(ctx, "nick"); err != nil || role != RoleUser {
+		t.Fatalf("partial mutation: %s %v", role, err)
+	}
+	if err := s.SetPassword(ctx, "nick", "replacement password"); err == nil {
+		t.Fatal("reset ignored revocation failure")
+	}
+	if _, err := s.Authenticate(ctx, "nick", "original password"); err != nil {
+		t.Fatal("password changed despite rollback", err)
+	}
+}
+
+func TestConcurrentAdminRemovalKeepsAnAdmin(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	for _, name := range []string{"one", "two"} {
+		if err := s.CreateUser(ctx, name, "original password", RoleAdmin, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := make(chan struct{})
+	done := make(chan error, 2)
+	go func() { <-start; done <- s.SetRole(ctx, "one", RoleUser) }()
+	go func() { <-start; done <- s.DeleteUser(ctx, "two") }()
+	close(start)
+	first, second := <-done, <-done
+	if first == nil && second == nil {
+		t.Fatal("both administrators removed")
+	}
+	var count int
+	if err := s.db.QueryRow(`SELECT count(*) FROM app_users WHERE role='admin'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("admin count %d: %v", count, err)
 	}
 }

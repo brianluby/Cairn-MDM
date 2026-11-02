@@ -397,3 +397,22 @@ mode = "proxy"
 		t.Errorf("default CA mode = %q, want generate", cfg.CA.Mode)
 	}
 }
+
+func TestDirectoryNamespaceValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, ldapConfig(t, `["ldaps://dc1.example.org:636"]`, false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"", "dzsec-ad", "forest.example_1"} {
+		cfg.Auth.LDAP.DirectoryID = value
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("valid namespace %q: %v", value, err)
+		}
+	}
+	for _, value := range []string{"DZSEC", "two forests", "line\nbreak", strings.Repeat("a", 129)} {
+		cfg.Auth.LDAP.DirectoryID = value
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid namespace %q accepted", value)
+		}
+	}
+}

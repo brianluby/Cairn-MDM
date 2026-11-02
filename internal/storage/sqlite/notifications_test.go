@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	npush "github.com/micromdm/nanomdm/push"
+	"github.com/micromdm/nanomdm/push/nanopush"
 	"testing"
 	"time"
 
@@ -33,7 +35,7 @@ func TestNotificationLeaseRetryAndExhaustion(t *testing.T) {
 	if err != nil || b == nil {
 		t.Fatalf("crash recovery: %+v %v", b, err)
 	}
-	if err = s.FinishPush(ctx, *a, "", now); err != nil {
+	if err = s.FinishPush(ctx, *a, mdmcore.PushResult{}, now); err != nil {
 		t.Fatal(err)
 	}
 	var state string
@@ -43,7 +45,7 @@ func TestNotificationLeaseRetryAndExhaustion(t *testing.T) {
 	if state != "pending" {
 		t.Fatal("late worker overwrote replacement lease")
 	}
-	if err = s.FinishPush(ctx, *b, "failed", now); err != nil {
+	if err = s.FinishPush(ctx, *b, mdmcore.PushResult{Failure: "failed"}, now); err != nil {
 		t.Fatal(err)
 	}
 	if other, err := s.ClaimPush(ctx, "", now); err != nil || other != nil {
@@ -55,7 +57,7 @@ func TestNotificationLeaseRetryAndExhaustion(t *testing.T) {
 		if err != nil || a == nil {
 			t.Fatalf("retry %d: %+v %v", i, a, err)
 		}
-		if err = s.FinishPush(ctx, *a, "failed", now); err != nil {
+		if err = s.FinishPush(ctx, *a, mdmcore.PushResult{Failure: "failed"}, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -114,5 +116,73 @@ func TestNotificationIntentFailureRollsBackQueue(t *testing.T) {
 		if count != 0 {
 			t.Fatal("partial queue survived notification failure")
 		}
+	}
+}
+
+func TestManualNotificationRetryIsIdempotentAndDoesNotRequeue(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	s := db.NanoStorage(nil).(*nanoStore)
+	cmd, _ := mdmcore.DeviceInformationCommand()
+	if _, err := s.EnqueueNotifiedCommand(ctx, []string{"device"}, cmd, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RetryNotification(ctx, "device", cmd.CommandUUID, "action", "admin", "local"); err == nil {
+		t.Fatal("non-exhausted retry accepted")
+	}
+	if _, err := db.SQL().Exec(`UPDATE push_outbox SET state='exhausted',attempts=6`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RetryNotification(ctx, "device", cmd.CommandUUID, "action", "admin", "local"); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := s.ClaimPush(ctx, "", time.Now()); err != nil || a == nil {
+		t.Fatalf("retry not claimable: %+v %v", a, err)
+	}
+	if err := db.RetryNotification(ctx, "device", cmd.CommandUUID, "action", "admin", "local"); err != nil {
+		t.Fatal(err)
+	}
+	h, err := db.ListCommands(ctx, "device", 10)
+	if err != nil || len(h) != 1 || h[0].NotificationAttempts != 1 {
+		t.Fatalf("replay reset attempt or duplicated command: %+v %v", h, err)
+	}
+	if err := db.CommandResult(ctx, "device", cmd.CommandUUID, "Acknowledged", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().Exec(`UPDATE push_outbox SET state='exhausted'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RetryNotification(ctx, "device", cmd.CommandUUID, "new-action", "admin", "local"); err == nil {
+		t.Fatal("completed command retried")
+	}
+}
+
+type rejectedPush struct{ calls int }
+
+func (p *rejectedPush) Push(context.Context, []string) (map[string]*npush.Response, error) {
+	p.calls++
+	return map[string]*npush.Response{"device": {Err: &nanopush.JSONPushError{Reason: "BadDeviceToken"}}}, nil
+}
+func TestPermanentAPNsFailureStopsWithoutLosingCommand(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	s := db.NanoStorage(nil).(*nanoStore)
+	cmd, _ := mdmcore.DeviceInformationCommand()
+	p := &rejectedPush{}
+	if err := mdmcore.Enqueue(ctx, s, p, []string{"device"}, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := mdmcore.DispatchNotifications(ctx, s, p, ""); err != nil {
+		t.Fatal(err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("permanent failure pushed %d times", p.calls)
+	}
+	h, err := db.ListCommands(ctx, "device", 5)
+	if err != nil || len(h) != 1 || h[0].Status != "Queued" || h[0].NotificationStatus != "exhausted" || h[0].NotificationAttempts != 1 {
+		t.Fatalf("unexpected history %+v %v", h, err)
+	}
+	if attempt, err := s.ClaimPush(ctx, "", time.Now().Add(time.Hour)); err != nil || attempt != nil {
+		t.Fatalf("permanent failure retried: %+v %v", attempt, err)
 	}
 }

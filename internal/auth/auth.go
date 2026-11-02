@@ -47,8 +47,12 @@ func rank(r Role) int {
 
 // Identity is an authenticated principal.
 type Identity struct {
-	Username    string
-	DisplayName string
-	Role        Role
-	Provider    string // "local", "oidc", "ldap", "kerberos"
+	// localCredentialHash fences a completed password check against account changes
+	// before session creation. It never leaves this package or enters session JSON.
+	localCredentialHash string
+	Directory           *DirectoryIdentity
+	Username            string
+	DisplayName         string
+	Role                Role
+	Provider            string // "local", "oidc", "ldap", "kerberos"
 }

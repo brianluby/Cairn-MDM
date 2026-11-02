@@ -52,7 +52,7 @@ type Provider struct {
 // (TLS, with optional extra CA) and ldap:// (plaintext or StartTLS).
 func New(cfg config.LDAPCfg, log *slog.Logger) (*Provider, error) {
 	if cfg.UserFilter == "" {
-		cfg.UserFilter = "(&(objectClass=user)(sAMAccountName=%s))"
+		cfg.UserFilter = "(&(objectClass=user)(|(sAMAccountName=%s)(userPrincipalName=%s)))"
 	}
 	if cfg.DefaultRole == "" {
 		cfg.DefaultRole = string(auth.RoleUser)
@@ -189,7 +189,7 @@ func (p *Provider) authenticateVia(ctx context.Context, server, username, passwo
 	res, err := conn.Search(goldap.NewSearchRequest(
 		p.cfg.BaseDN, goldap.ScopeWholeSubtree, goldap.NeverDerefAliases,
 		2, 10, false, filter,
-		[]string{"dn", "sAMAccountName", "displayName", "cn", "memberOf"}, nil,
+		identityAttributes, nil,
 	))
 	if err != nil {
 		return nil, fmt.Errorf("user search: %w", err)
@@ -211,6 +211,13 @@ func (p *Provider) authenticateVia(ctx context.Context, server, username, passwo
 		return nil, fmt.Errorf("user bind: %w", err)
 	}
 
+	var directory *auth.DirectoryIdentity
+	if p.cfg.DirectoryID != "" {
+		directory, err = directoryIdentity(entry, p.cfg.DirectoryID, time.Now())
+		if err != nil {
+			return nil, auth.ErrInvalidCredentials
+		}
+	}
 	display := entry.GetAttributeValue("displayName")
 	if display == "" {
 		display = entry.GetAttributeValue("cn")
@@ -221,6 +228,7 @@ func (p *Provider) authenticateVia(ctx context.Context, server, username, passwo
 	}
 	return &auth.Identity{
 		Username:    acct,
+		Directory:   directory,
 		DisplayName: display,
 		Role:        p.mapRole(entry.GetAttributeValues("memberOf")),
 		Provider:    "ldap",

@@ -11,11 +11,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
 )
 
-// roleSetter is the optional role-change capability. *auth.LocalStore does not
-// implement it yet, so handleUserRole type-asserts for it and degrades to an
-// error message when it is unavailable (same idiom as deviceFilterer in
-// handlers.go). When LocalStore grows SetRole, the route starts working with
-// no change here.
+// roleSetter changes roles and revokes sessions in the account store.
 type roleSetter interface {
 	SetRole(ctx context.Context, username string, role auth.Role) error
 }

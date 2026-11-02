@@ -17,13 +17,34 @@ for destructive command types.
 
 Device history shows notification state and attempt count beside the device's
 command status. `accepted` means the APNs request succeeded; it does not mean
-the device connected. `exhausted` means automatic notification attempts ended;
+the device connected. `exhausted` means automatic notification attempts ended (retry limit or a known non-retryable APNs rejection);
 the MDM command remains queued. `resolved` means a device result made further
 pending notifications unnecessary. `-no-push` creates no notification intent.
 
-Limits still requiring work: operator-action idempotency across repeated
-clicks; a notification-only manual retry action after exhaustion; permanent
-versus transient APNs error classification; lifecycle handling for queued work
-when a device checks out; full upgrade/restore/real-device qualification.
-The older KV methods outside queue operations still use upstream best-effort
-transaction semantics. Do not describe all NanoMDM storage as crash-atomic.
+Console actions carry a session-scoped operation key. Replaying the same form
+uses the same command UUID; different content, targets or notification intent
+under that key are rejected. CLI callers can deliberately reuse `-operation-key`
+when retrying an uncertain result. A new page/action key is a new operation.
+The key is not an authorization credential and does not bypass role or CSRF checks.
+
+An operator can retry an exhausted notification from device history. This starts
+another bounded notification cycle for the existing pending command. Replaying
+that form does not reset its attempt counter. Completed or disabled enrollments
+cannot start a new cycle. The operation records its actor in the audit log.
+
+Disabling an enrollment clears its queue, cancels pending history and resolves
+pending/exhausted notifications in one transaction. Device-channel disable also
+covers its user channels. New commands to disabled enrollments are rejected.
+The adapter enumerates user-channel mapping suffixes itself to avoid NanoMDM
+v0.9.0's upstream prefix/suffix bug in its disable helper.
+
+Known APNs token, topic, certificate and payload rejections end the automatic
+cycle immediately. Rate limiting and service failures use bounded backoff;
+unknown transport/provider failures also use that bound. Stored errors use
+allowlisted reasons, not raw provider strings. Correct a permanent failure
+before using the manual retry action. Cairn does not delete an enrollment merely
+because APNs rejects a token. See Apple's [notification response guidance](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns).
+
+Limits still requiring work: full upgrade/restore/real-device qualification. The older KV methods outside
+queue operations still use upstream best-effort transaction semantics. Do not
+describe all NanoMDM storage as crash-atomic.

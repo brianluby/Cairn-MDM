@@ -2,6 +2,9 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -278,6 +281,7 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	a.render(w, r, http.StatusOK, "device.html", map[string]any{
 		"Title":    d.DisplayName(),
+		"Intent":   newCommandIntent(),
 		"Device":   d,
 		"Commands": commands,
 		"Groups":   groups,
@@ -297,6 +301,10 @@ func (a *App) handleDeviceInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
+	ctx, ok := a.deviceCommandIntent(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	back := "/admin/devices/" + id
 	pid, err := strconv.ParseInt(r.PostFormValue("profile_id"), 10, 64)
@@ -309,7 +317,7 @@ func (a *App) handleDeviceInstall(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("No such profile."), http.StatusSeeOther)
 		return
 	}
-	if err := a.cmd.SendInstallProfile(r.Context(), prof.Data, id); err != nil {
+	if err := a.cmd.SendInstallProfile(ctx, prof.Data, id); err != nil {
 		a.log.Error("send install profile", "id", id, "profile", pid, "err", err)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Failed to queue install."), http.StatusSeeOther)
 		return
@@ -327,6 +335,10 @@ func (a *App) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
+	ctx, ok := a.deviceCommandIntent(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	back := "/admin/devices/" + id
 	identifier := strings.TrimSpace(r.PostFormValue("identifier"))
@@ -334,7 +346,7 @@ func (a *App) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("No profile identifier given."), http.StatusSeeOther)
 		return
 	}
-	if err := a.cmd.SendRemoveProfile(r.Context(), identifier, id); err != nil {
+	if err := a.cmd.SendRemoveProfile(ctx, identifier, id); err != nil {
 		a.log.Error("send remove profile", "id", id, "identifier", identifier, "err", err)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Failed to queue removal."), http.StatusSeeOther)
 		return
@@ -348,8 +360,12 @@ func (a *App) handleDeviceRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
+	ctx, ok := a.deviceCommandIntent(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
-	if err := a.cmd.SendDeviceInformation(r.Context(), id); err != nil {
+	if err := a.cmd.SendDeviceInformation(ctx, id); err != nil {
 		a.log.Error("send device information", "id", id, "err", err)
 		http.Redirect(w, r, "/admin/devices/"+id+"?flash=Failed+to+queue+refresh", http.StatusSeeOther)
 		return
@@ -405,4 +421,20 @@ func (a *App) checkCSRF(r *http.Request) bool {
 		got = r.Header.Get("X-CSRF-Token")
 	}
 	return got != "" && got == sess.CSRF
+}
+
+func newCommandIntent() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b[:])
+}
+func (a *App) deviceCommandIntent(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
+	key := r.PostFormValue("intent")
+	if len(key) < 32 || len(key) > 128 || strings.ContainsAny(key, " \r\n\t") {
+		http.Error(w, "Reload the device page before sending this command", 400)
+		return r.Context(), false
+	}
+	return mdmcore.WithCommandIntent(r.Context(), sessionFrom(r).Token+"\x00"+r.URL.Path+"\x00"+key), true
 }

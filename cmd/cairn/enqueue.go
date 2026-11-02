@@ -20,6 +20,7 @@ func runEnqueue(ctx context.Context, args []string) error {
 	id := fs.String("id", "", "target enrollment ID / device UDID")
 	reqType := fs.String("type", "DeviceInformation", "command: DeviceInformation | InstallProfile")
 	profilePath := fs.String("profile", "", "profile file (required for InstallProfile)")
+	operationKey := fs.String("operation-key", "", "retry key; reuse only for the identical command and targets")
 	noPush := fs.Bool("no-push", false, "enqueue without sending an APNs push")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -55,6 +56,9 @@ func runEnqueue(ctx context.Context, args []string) error {
 		return err
 	}
 
+	if *operationKey != "" {
+		ctx = mdmcore.WithCommandIntent(ctx, "cli\x00"+*operationKey)
+	}
 	log := version.NewLogger(cfg.Log.Format, cfg.Log.Level)
 	db, err := sqlite.OpenExisting(ctx, cfg.Storage.Path)
 	if err != nil {

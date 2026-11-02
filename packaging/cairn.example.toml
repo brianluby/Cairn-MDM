@@ -54,6 +54,9 @@ allow_open = false
 [auth]
 # Local accounts are always on (break-glass). LDAP/AD is optional.
 # [auth.ldap]
+# Stable namespace for this directory. Preserve it across DC changes and restores.
+# Required for owner lookup; an empty value keeps legacy console-only login.
+# directory_id = "example-ad"
 # enabled = true
 # servers = ["ldaps://dc1.example.org:636", "ldaps://dc2.example.org:636"]
 # base_dn = "DC=example,DC=org"

@@ -2,21 +2,45 @@ package mdmcore
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/micromdm/nanomdm/mdm"
 	"github.com/micromdm/nanomdm/push"
+	"github.com/micromdm/nanomdm/push/nanopush"
 )
 
 type PushAttempt struct{ CommandUUID, DeviceID, LeaseToken string }
+
+// PushResult stores a sanitized outcome, never raw provider text or tokens.
+type PushResult struct {
+	Failure   string
+	StopRetry bool
+}
+
+func classifyPushError(err error) PushResult {
+	result := PushResult{Failure: "APNs rejected the notification"}
+	var response *nanopush.JSONPushError
+	if !errors.As(err, &response) || response == nil {
+		return result
+	}
+	switch response.Reason {
+	case "BadDeviceToken", "DeviceTokenNotForTopic", "Forbidden", "ExpiredToken", "Unregistered", "PayloadTooLarge", "BadCertificate", "BadCertificateEnvironment", "TopicDisallowed", "MissingTopic", "BadTopic", "BadPayload", "PayloadEmpty":
+		result.Failure = "APNs: " + response.Reason + "; correct the cause before retrying"
+		result.StopRetry = true
+	case "TooManyRequests", "InternalServerError", "ServiceUnavailable", "Shutdown":
+		result.Failure = "APNs: " + response.Reason
+	}
+	return result
+}
 
 // NotificationStore durably couples queue acceptance to a notification intent.
 // Retries send APNs wakeups only; they never enqueue another MDM command.
 type NotificationStore interface {
 	EnqueueNotifiedCommand(context.Context, []string, *mdm.Command, bool) (map[string]error, error)
 	ClaimPush(context.Context, string, time.Time) (*PushAttempt, error)
-	FinishPush(context.Context, PushAttempt, string, time.Time) error
+	FinishPush(context.Context, PushAttempt, PushResult, time.Time) error
 }
 
 // DispatchNotifications performs bounded work. An empty UUID selects any due
@@ -36,16 +60,16 @@ func DispatchNotifications(ctx context.Context, store NotificationStore, pusher 
 		pushCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		responses, pushErr := pusher.Push(pushCtx, []string{attempt.DeviceID})
 		cancel()
-		failure := ""
+		result := PushResult{}
 		response := responses[attempt.DeviceID]
 		if pushErr != nil {
-			failure = "APNs request failed"
+			result.Failure = "APNs request failed"
 		} else if response == nil {
-			failure = "APNs returned no result"
+			result.Failure = "APNs returned no result"
 		} else if response.Err != nil {
-			failure = "APNs rejected the notification"
+			result = classifyPushError(response.Err)
 		}
-		if err = store.FinishPush(ctx, *attempt, failure, time.Now()); err != nil {
+		if err = store.FinishPush(ctx, *attempt, result, time.Now()); err != nil {
 			return err
 		}
 	}

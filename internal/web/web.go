@@ -265,6 +265,7 @@ func (a *App) Register(mux *http.ServeMux) {
 	// the ResolveQuarantine backend.
 	mux.Handle("GET /admin/quarantine", a.requireRole(auth.RoleAdmin, a.handleQuarantine))
 
+	mux.Handle("POST /admin/devices/{id}/commands/{uuid}/retry-push", a.audited(a.requireRole(auth.RoleOperator, a.handleNotificationRetry)))
 	mux.Handle("GET /admin/apns", a.requireRole(auth.RoleAdmin, a.handleAPNS))
 	mux.Handle("POST /admin/apns/requests", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSCreate)))
 	mux.Handle("GET /admin/apns/requests/{id}", a.requireRole(auth.RoleAdmin, a.handleAPNSRequest))

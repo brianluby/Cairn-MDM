@@ -87,6 +87,9 @@ func command(inner map[string]any) (*mdm.Command, error) {
 // devices wake and check in. This is the in-process path the admin console and
 // CLI use — no HTTP round-trip, no API key.
 func Enqueue(ctx context.Context, store storage.CommandEnqueuer, pusher push.Pusher, ids []string, cmd *mdm.Command) error {
+	if err := applyCommandIntent(ctx, cmd); err != nil {
+		return err
+	}
 	if durable, ok := store.(NotificationStore); ok {
 		if _, err := durable.EnqueueNotifiedCommand(ctx, ids, cmd, pusher != nil); err != nil {
 			return fmt.Errorf("mdmcore: enqueue: %w", err)

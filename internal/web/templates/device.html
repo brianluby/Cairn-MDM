@@ -36,6 +36,7 @@
     <h2>Actions</h2>
     <form method="post" action="/admin/devices/{{.Device.ID}}/refresh">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="intent" value="{{.Intent}}">
       <button class="btn" type="submit">Refresh device info</button>
     </form>
 
@@ -62,6 +63,7 @@
               <form method="post" action="/admin/devices/{{$.Device.ID}}/remove"
                     onsubmit="return confirm('Send a RemoveProfile command for this profile?')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="intent" value="{{$.Intent}}-{{.ProfileID}}">
                 <input type="hidden" name="identifier" value="{{.ProfileIdentifier}}">
                 <button class="btn link" type="submit">Remove</button>
               </form>
@@ -77,6 +79,7 @@
     {{if .Library}}
     <form method="post" action="/admin/devices/{{.Device.ID}}/install" style="margin-top:12px">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="intent" value="{{.Intent}}">
       <select name="profile_id" required>
         <option value="" disabled selected>Install a profile…</option>
         {{range .Library}}<option value="{{.ID}}">{{.Name}} ({{.Identifier}})</option>{{end}}
@@ -104,7 +107,9 @@
               {{.Status}}
               {{if .Error}}<div class="sub">{{.Error}}</div>{{end}}
             </td>
-            <td class="sub">{{if .NotificationStatus}}{{.NotificationStatus}} ({{.NotificationAttempts}} attempts){{with .NotificationError}}<br>{{.}}{{end}}{{else}}Not scheduled{{end}}</td>
+            <td class="sub">{{if .NotificationStatus}}{{.NotificationStatus}} ({{.NotificationAttempts}} attempts){{with .NotificationError}}<br>{{.}}{{end}}{{else}}Not scheduled{{end}}
+            {{if and .Pending (eq .NotificationStatus "exhausted")}}<form method="post" action="/admin/devices/{{$.Device.ID}}/commands/{{.CommandUUID}}/retry-push">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="intent" value="{{$.Intent}}"><button class="btn" type="submit">Retry notification</button></form>{{end}}</td>
             <td class="sub">{{.SentAt}}</td>
             <td class="sub">{{nullStr .ResultAt}}</td>
           </tr>

@@ -168,7 +168,10 @@ func (p LoginPolicy) WithDefaults() LoginPolicy {
 // an authenticated user matching no mapped group gets default_role. There is
 // deliberately no code path where "authenticated" implies "admin".
 type LDAPCfg struct {
-	Enabled bool `toml:"enabled"`
+	// DirectoryID is a stable operator-assigned namespace for AD objectGUIDs.
+	// Leave empty for legacy console-only LDAP; owner resolution then fails closed.
+	DirectoryID string `toml:"directory_id"`
+	Enabled     bool   `toml:"enabled"`
 	// Servers are tried in order (failover), e.g. "ldaps://dc1.example.org:636".
 	// Schemes: ldaps:// (TLS) or ldap:// (plaintext; combine with start_tls).
 	Servers  []string `toml:"servers"`
@@ -182,7 +185,7 @@ type LDAPCfg struct {
 	BindPasswordFile string `toml:"bind_password_file"`
 	BindPasswordEnv  string `toml:"bind_password_env"`
 	// UserFilter locates the login account; %s is the escaped username.
-	// Default matches Active Directory sAMAccountName.
+	// Default matches Active Directory sAMAccountName or userPrincipalName.
 	UserFilter string `toml:"user_filter"`
 	// GroupRoles maps group DNs (case-insensitive) to "admin", "operator", or
 	// "user". Membership is matched against the user's memberOf values.
@@ -558,6 +561,11 @@ func (c Config) Validate() error {
 	}
 
 	if l := c.Auth.LDAP; l.Enabled {
+		if l.DirectoryID != "" && (len(l.DirectoryID) > 128 || strings.ContainsFunc(l.DirectoryID, func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.' || r == '_')
+		})) {
+			errs = append(errs, errors.New("auth.ldap.directory_id must be at most 128 lowercase letters, digits, dots, underscores or hyphens"))
+		}
 		if len(l.Servers) == 0 {
 			errs = append(errs, errors.New("auth.ldap.servers is required when ldap is enabled"))
 		}

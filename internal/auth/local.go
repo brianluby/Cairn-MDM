@@ -62,22 +62,17 @@ func (s *LocalStore) CreateUser(ctx context.Context, username, password string, 
 
 // SetPassword resets an existing user's password.
 func (s *LocalStore) SetPassword(ctx context.Context, username, password string) error {
-	if len(password) < s.minPasswordLen {
-		return fmt.Errorf("auth: password must be at least %d characters", s.minPasswordLen)
+	if password == "" || len(password) < s.minPasswordLen {
+		return fmt.Errorf("auth: password must be nonempty and at least %d characters", s.minPasswordLen)
 	}
 	hash, err := argon2id.CreateHash(password, argon2id.DefaultParams)
 	if err != nil {
 		return fmt.Errorf("auth: hash password: %w", err)
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE app_users SET password_hash = ? WHERE username = ?`, hash, username)
-	if err != nil {
-		return fmt.Errorf("auth: set password: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("auth: no such user %q", username)
-	}
-	return nil
+	return s.mutateUser(ctx, username, false, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE app_users SET password_hash=? WHERE username=?`, hash, username)
+		return err
+	})
 }
 
 // Authenticate verifies a username/password and returns the identity.
@@ -102,7 +97,7 @@ func (s *LocalStore) Authenticate(ctx context.Context, username, password string
 	if !match {
 		return nil, ErrInvalidCredentials
 	}
-	return &Identity{Username: username, DisplayName: display, Role: Role(role), Provider: "local"}, nil
+	return &Identity{Username: username, DisplayName: display, Role: Role(role), Provider: "local", localCredentialHash: hash}, nil
 }
 
 // UserRole returns the stored role for a username (used by tests/admin tooling).
@@ -151,26 +146,53 @@ func (s *LocalStore) ListUsers(ctx context.Context) ([]UserSummary, error) {
 // DeleteUser removes a local account and its sessions. It refuses to remove
 // the last admin — that would lock the console permanently.
 func (s *LocalStore) DeleteUser(ctx context.Context, username string) error {
-	role, err := s.UserRole(ctx, username)
+	return s.mutateUser(ctx, username, true, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM app_users WHERE username=?`, username)
+		return err
+	})
+}
+
+// SetRole changes a local role and invalidates its existing sessions atomically.
+func (s *LocalStore) SetRole(ctx context.Context, username string, role Role) error {
+	if !role.Valid() {
+		return fmt.Errorf("auth: invalid role %q", role)
+	}
+	return s.mutateUser(ctx, username, role != RoleAdmin, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE app_users SET role=? WHERE username=?`, string(role), username)
+		return err
+	})
+}
+
+// mutateUser couples local changes to session invalidation. The last-admin
+// check belongs inside this transaction, including for CLI callers.
+func (s *LocalStore) mutateUser(ctx context.Context, username string, removesAdmin bool, change func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var role string
+	err = tx.QueryRowContext(ctx, `SELECT role FROM app_users WHERE username=?`, username).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("auth: no such user %q", username)
 	}
 	if err != nil {
 		return err
 	}
-	if role == RoleAdmin {
-		var admins int
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT count(*) FROM app_users WHERE role = ?`, string(RoleAdmin)).Scan(&admins); err != nil {
+	if removesAdmin && role == string(RoleAdmin) {
+		var count int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM app_users WHERE role='admin'`).Scan(&count); err != nil {
 			return err
 		}
-		if admins <= 1 {
-			return errors.New("auth: refusing to delete the last admin account")
+		if count <= 1 {
+			return errors.New("auth: refusing to remove the last admin account")
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM app_users WHERE username = ?`, username); err != nil {
-		return fmt.Errorf("auth: delete user: %w", err)
+	if err = change(tx); err != nil {
+		return err
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM app_sessions WHERE username = ?`, username)
-	return err
+	if _, err = tx.ExecContext(ctx, `DELETE FROM app_sessions WHERE username=? AND provider='local'`, username); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

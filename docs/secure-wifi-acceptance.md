@@ -10,10 +10,13 @@ device OS versions and server configuration for every result.
 - Direct LDAP login exists. Connections now have per-DC and total login
   deadlines, cancellation, verified LDAPS/StartTLS and parsed group-DN matching.
   An invalid-credentials response does not trigger another DC attempt.
-- Directory authentication currently returns sAMAccountName and role, not a
-  canonical immutable directory identity and verified UPN. Enrollment owner
-  validation, owner-disable rechecks and privileged-issuance MFA still need
-  implementation and review. An editable owner field is not directory proof.
+- With `auth.ldap.directory_id` configured, directory login records a namespace,
+  AD objectGUID, current UPN and account name. The resolver rejects disabled,
+  expired, ambiguous or incomplete users and revalidates by objectGUID. These
+  methods are preparatory: enrollment grants do not yet call them, and login
+  facts become stale. Grant-time owner checks and privileged-issuance MFA still
+  need implementation and review. An editable owner field is not directory proof.
+  Legacy sessions and LDAP without a namespace carry no verified owner identity.
 - The Wi-Fi builder currently creates a shared profile with a SCEP request.
   That is not the finished per-device, owner-authorized network identity flow.
   Do not deploy a shared enrollment challenge as the network authorization model.
@@ -47,3 +50,23 @@ Keep certificate serials, sanitized RADIUS decisions, device acknowledgements
 and timestamps in the private canonical development log or referenced private
 artifacts. Never commit private keys, bind passwords, challenges or raw device
 responses. Headless issuance and unit tests do not close these acceptance rows.
+
+## Directory identity configuration
+
+Set a stable, unique `auth.ldap.directory_id` for the directory, such as
+`dzsec-ad`. Use lowercase letters, digits, dots, underscores or hyphens (128
+characters maximum). Keep it unchanged when changing domain controllers or
+restoring Cairn. Never reuse it for a different forest. This is an operator
+assertion of the directory boundary, not automatic forest verification.
+
+`objectGUID` is stored as the hexadecimal encoding of the 16 raw LDAP bytes,
+not the endian-adjusted Windows GUID display string. Names and UPN can change;
+owner revalidation searches by those original bytes. Session persistence does
+not replace a fresh directory lookup before an authorization-bearing action.
+The default login filter accepts either account name or UPN; an explicit custom
+filter retains its configured behavior.
+
+Microsoft documents [AD naming properties](https://github.com/MicrosoftDocs/win32/blob/docs/desktop-src/AD/naming-properties.md)
+and [account-control flags](https://learn.microsoft.com/en-US/troubleshoot/windows-server/identity/useraccountcontrol-manipulate-account-properties).
+The resolver requires a normal enabled user and an unexpired account; directory
+facts alone do not prove MFA, device possession or permission to issue.

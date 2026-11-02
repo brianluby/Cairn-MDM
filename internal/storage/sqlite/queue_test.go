@@ -147,3 +147,115 @@ func TestDeployRecordedAfterAcknowledgementUsesResult(t *testing.T) {
 		t.Fatalf("early acknowledgement lost: %s", state)
 	}
 }
+
+func TestOperatorIntentReplayAfterRestartAndConflict(t *testing.T) {
+	ctx := mdmcore.WithCommandIntent(context.Background(), "session/action/retry-key")
+	path := t.TempDir() + "/intent.db"
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := mdmcore.InstallProfileCommand([]byte("profile-v1"))
+	if err = mdmcore.Enqueue(ctx, db.NanoStorage(nil), nil, []string{"device"}, cmd); err != nil {
+		t.Fatal(err)
+	}
+	uuid := cmd.CommandUUID
+	db.Close()
+	db, err = OpenExisting(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repeated, _ := mdmcore.InstallProfileCommand([]byte("profile-v1"))
+	if err = mdmcore.Enqueue(ctx, db.NanoStorage(nil), nil, []string{"device"}, repeated); err != nil {
+		t.Fatal(err)
+	}
+	if repeated.CommandUUID != uuid {
+		t.Fatal("retry generated different command UUID")
+	}
+	rows, err := db.ListCommands(ctx, "device", 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("retry history: %+v %v", rows, err)
+	}
+	changed, _ := mdmcore.InstallProfileCommand([]byte("profile-v2"))
+	if err = mdmcore.Enqueue(ctx, db.NanoStorage(nil), nil, []string{"device"}, changed); err == nil {
+		t.Fatal("changed content accepted under same key")
+	}
+	if err = mdmcore.Enqueue(ctx, db.NanoStorage(nil), nil, []string{"other-device"}, repeated); err == nil {
+		t.Fatal("changed targets accepted under same key")
+	}
+	if err = db.CommandResult(ctx, "device", uuid, "Acknowledged", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = mdmcore.Enqueue(ctx, db.NanoStorage(nil), nil, []string{"device"}, repeated); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = db.ListCommands(ctx, "device", 10)
+	if len(rows) != 1 || rows[0].Status != "Acknowledged" {
+		t.Fatal("replay reset acknowledged command")
+	}
+}
+
+func TestDisableCancelsParentAndUserChannelCommands(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	store := db.NanoStorage(nil).(*nanoStore)
+	if _, err := db.SQL().Exec(`INSERT INTO nano_kv(bucket,k,v) VALUES('enrollments','parent.user_ch.child',X'31')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"parent", "child", "other"} {
+		cmd, _ := mdmcore.DeviceInformationCommand()
+		if _, err := store.EnqueueNotifiedCommand(ctx, []string{id}, cmd, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := mdm.NewRequestWithContext(ctx, nil)
+	req.EnrollID = &mdm.EnrollID{ID: "parent"}
+	if err := store.Disable(req); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"parent", "child"} {
+		req.EnrollID = &mdm.EnrollID{ID: id}
+		if cmd, err := store.RetrieveNextCommand(req, false); err != nil || cmd != nil {
+			t.Fatalf("disabled queue %s: %+v %v", id, cmd, err)
+		}
+		history, err := db.ListCommands(ctx, id, 10)
+		if err != nil || len(history) != 1 || history[0].Status != "Cancelled" || history[0].NotificationStatus != "resolved" {
+			t.Fatalf("disabled history: %+v %v", history, err)
+		}
+		cmd, _ := mdmcore.DeviceInformationCommand()
+		if _, err := store.EnqueueNotifiedCommand(ctx, []string{id}, cmd, true); err == nil {
+			t.Fatal("disabled enrollment accepted new work")
+		}
+	}
+	history, _ := db.ListCommands(ctx, "other", 10)
+	if history[0].Status != "Queued" {
+		t.Fatal("unrelated device was cancelled")
+	}
+}
+
+func TestDisableRollbackPreservesPendingWork(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	store := db.NanoStorage(nil)
+	cmd, _ := mdmcore.DeviceInformationCommand()
+	if _, err := store.EnqueueCommand(ctx, []string{"device"}, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().Exec(`CREATE TRIGGER reject_cancel BEFORE UPDATE ON command_history BEGIN SELECT RAISE(ABORT,'history unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	r := mdm.NewRequestWithContext(ctx, nil)
+	r.EnrollID = &mdm.EnrollID{ID: "device"}
+	if err := store.Disable(r); err == nil {
+		t.Fatal("disable succeeded despite failed cancellation")
+	}
+	var disabled int
+	if err := db.SQL().QueryRow(`SELECT count(*) FROM nano_kv WHERE bucket='enrollments' AND k='device.disabled'`).Scan(&disabled); err != nil || disabled != 0 {
+		t.Fatalf("partial disable: %d %v", disabled, err)
+	}
+	next, err := store.RetrieveNextCommand(r, false)
+	if err != nil || next == nil || next.CommandUUID != cmd.CommandUUID {
+		t.Fatalf("queue lost on rollback: %v %v", next, err)
+	}
+}

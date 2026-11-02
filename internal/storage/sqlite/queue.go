@@ -1,9 +1,12 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 
 	"github.com/micromdm/nanomdm/mdm"
 )
@@ -33,6 +36,60 @@ func (s *nanoStore) EnqueueNotifiedCommand(ctx context.Context, ids []string, cm
 		return nil, err
 	}
 	defer tx.Rollback()
+	if mdmcore.CommandIntent(ctx) != "" {
+		var previous []byte
+		err := tx.QueryRowContext(ctx, `SELECT v FROM nano_kv WHERE bucket='queue' AND k=?`, cmd.CommandUUID+".raw").Scan(&previous)
+		if err == nil {
+			if !bytes.Equal(previous, cmd.Raw) {
+				return nil, errors.New("operation key already used for different command content")
+			}
+			rows, err := tx.QueryContext(ctx, `SELECT device_id FROM command_history WHERE command_uuid=?`, cmd.CommandUUID)
+			if err != nil {
+				return nil, err
+			}
+			count := 0
+			matches := true
+			for rows.Next() {
+				var id string
+				if err = rows.Scan(&id); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				count++
+				if !seen[id] {
+					matches = false
+				}
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return nil, err
+			}
+			if !matches || count != len(unique) {
+				return nil, errors.New("operation key already used for different targets")
+			}
+			var notifications int
+			if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM push_outbox WHERE command_uuid=?`, cmd.CommandUUID).Scan(&notifications); err != nil {
+				return nil, err
+			}
+			if (notify && notifications != count) || (!notify && notifications != 0) {
+				return nil, errors.New("operation key already used with different notification intent")
+			}
+			return nil, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	for _, id := range unique {
+		var disabled int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM nano_kv WHERE bucket='enrollments' AND k=?`, id+".disabled").Scan(&disabled); err != nil {
+			return nil, err
+		}
+		if disabled != 0 {
+			return nil, fmt.Errorf("enrollment %s is disabled", id)
+		}
+	}
 	perTarget, err := newNanoKV(tx, s.log).EnqueueCommand(ctx, unique, cmd)
 	if err != nil {
 		return perTarget, err
@@ -107,6 +164,60 @@ func (s *nanoStore) ClearQueue(r *mdm.Request) error {
 	defer tx.Rollback()
 	if err = newNanoKV(tx, s.log).ClearQueue(r); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// Disable cancels pending work for this enrollment and its user channels in
+// the same transaction as NanoMDM's disable flag. Re-enrollment cannot inherit it.
+func (s *nanoStore) Disable(r *mdm.Request) error {
+	tx, err := s.db.sql.BeginTx(r.Context(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ids := []string{r.ID}
+	if r.ParentID == "" {
+		prefix := r.ID + ".user_ch."
+		rows, err := tx.QueryContext(r.Context(), `SELECT substr(k,length(?)+1) FROM nano_kv WHERE bucket='enrollments' AND substr(k,1,length(?))=?`, prefix, prefix, prefix)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+	store := newNanoKV(tx, s.log)
+	for _, id := range ids {
+		request := mdm.NewRequestWithContext(r.Context(), r.Certificate)
+		// Enumerate children ourselves: NanoMDM v0.9.0 returns the mapping
+		// prefix instead of its child ID. Nonempty ParentID disables its traversal.
+		request.EnrollID = &mdm.EnrollID{ID: id, ParentID: r.ID}
+		if err = store.Disable(request); err != nil {
+			return err
+		}
+		if err = store.ClearQueue(request); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(r.Context(), `UPDATE command_history SET status='Cancelled',error='Enrollment disabled',result_at=datetime('now') WHERE device_id=? AND status IN ('Queued','Sent','NotNow')`, id); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(r.Context(), `UPDATE push_outbox SET state='resolved',lease_until=0,last_error='Enrollment disabled' WHERE device_id=? AND state IN ('pending','exhausted')`, id); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(r.Context(), `UPDATE profile_deploys SET status='failed',updated_at=datetime('now') WHERE device_id=? AND status='sent'`, id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
