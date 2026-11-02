@@ -101,3 +101,7 @@ upstream attributions.
 
 [nanomdm]: https://github.com/micromdm/nanomdm
 [nanohub]: https://github.com/micromdm/nanohub
+
+Current completion work and remaining acceptance gates are tracked in
+[completion requirements](docs/completion-prd.md). For the new admin workflow
+and explicit same-topic CLI renewal, see [APNs lifecycle](docs/apns-lifecycle.md).

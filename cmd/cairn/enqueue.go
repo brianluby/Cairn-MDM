@@ -56,7 +56,7 @@ func runEnqueue(ctx context.Context, args []string) error {
 	}
 
 	log := version.NewLogger(cfg.Log.Format, cfg.Log.Level)
-	db, err := sqlite.Open(ctx, cfg.Storage.Path)
+	db, err := sqlite.OpenExisting(ctx, cfg.Storage.Path)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func runEnqueue(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("enqueued %s (%s) for %s\n", cmd.Command.RequestType, cmd.CommandUUID, *id)
 	if !*noPush {
-		fmt.Printf("APNs push sent.\n")
+		fmt.Printf("APNs notification scheduled; check device history for delivery and acknowledgement.\n")
 	}
 	return nil
 }

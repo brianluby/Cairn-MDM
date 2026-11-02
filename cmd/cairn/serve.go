@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/assign"
@@ -64,6 +65,13 @@ func runServe(ctx context.Context, args []string) error {
 
 	// Admin console.
 	pusher := push.NewPusher(nanoStore, mdmcore.NewLogAdapter(log))
+	notificationCtx, stopNotifications := context.WithCancel(ctx)
+	notificationDone := make(chan struct{})
+	go func() {
+		defer close(notificationDone)
+		mdmcore.RunNotifications(notificationCtx, nanoStore.(mdmcore.NotificationStore), pusher, log)
+	}()
+	defer func() { stopNotifications(); <-notificationDone }()
 	commander := mdmcore.NewCommander(nanoStore, pusher).WithRecorder(db, log)
 
 	// Login abuse controls (MDM-AUTH-001): session idle timeout + absolute cap
@@ -117,6 +125,7 @@ func runServe(ctx context.Context, args []string) error {
 	// Local-account management in the console (admin-only). Directory-backed
 	// (LDAP/OIDC) identities are owned by their provider and stay outside this.
 	console.SetUsers(auth.NewLocalStore(db.SQL()))
+	console.SetAPNS(push.RequestManager{Root: filepath.Join(pushcertDir(cfg), "requests")}, db)
 
 	// OIDC single sign-on (redirect flow) is wired separately from the
 	// username/password authenticator chain.

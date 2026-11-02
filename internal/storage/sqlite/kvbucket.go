@@ -17,8 +17,14 @@ import (
 // It deliberately implements only the plain (non-transactional) operations —
 // kvtxn layers best-effort transaction semantics on top, exactly as NanoMDM's
 // inmem and diskv backends do.
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 type kvBucket struct {
-	db   *sql.DB
+	db   sqlExecutor
 	name string
 	log  *slog.Logger
 }

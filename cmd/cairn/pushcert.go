@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/micromdm/nanomdm/cryptoutil"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
@@ -15,7 +14,7 @@ import (
 
 func runPushcert(ctx context.Context, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: cairn pushcert <request|decrypt|import|check> [flags]")
+		return fmt.Errorf("usage: cairn pushcert <request|decrypt|import|renew|check> [flags]")
 	}
 	switch args[0] {
 	case "request":
@@ -24,21 +23,39 @@ func runPushcert(ctx context.Context, args []string) error {
 		return runPushcertDecrypt(ctx, args[1:])
 	case "import":
 		return runPushcertImport(ctx, args[1:])
+	case "renew":
+		return runPushcertWrite(ctx, args[1:], true)
 	case "check":
 		return runPushcertCheck(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown pushcert subcommand %q (want: request, decrypt, import, check)", args[0])
+		return fmt.Errorf("unknown pushcert subcommand %q (want: request, decrypt, import, renew, check)", args[0])
 	}
 }
 
 func runPushcertImport(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("pushcert import", flag.ExitOnError)
+	return runPushcertWrite(ctx, args, false)
+}
+
+func runPushcertWrite(ctx context.Context, args []string, renewal bool) error {
+	name := "pushcert import"
+	if renewal {
+		name = "pushcert renew"
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	configPath := fs.String("config", defaultConfigPath, "path to cairn.toml")
 	certFile := fs.String("cert", "", "APNs push certificate (PEM)")
 	keyFile := fs.String("key", "", "APNs push private key (PEM)")
-	loadedBy := fs.String("by", "", "operator recorded as having imported the cert")
+	loadedBy := fs.String("by", "cli", "operator recorded as having imported the cert")
+	topicFlag := fs.String("topic", "", "existing topic to renew (required for renew)")
+	makeDefault := fs.Bool("make-default", false, "select an initially imported topic for new enrollments")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if renewal && (*topicFlag == "" || *makeDefault) {
+		return fmt.Errorf("renew requires -topic and cannot use -make-default")
+	}
+	if !renewal && *topicFlag != "" {
+		return fmt.Errorf("use pushcert renew with -topic")
 	}
 	if *certFile == "" || *keyFile == "" {
 		return fmt.Errorf("-cert and -key are required")
@@ -61,30 +78,25 @@ func runPushcertImport(ctx context.Context, args []string) error {
 		return fmt.Errorf("read key: %w", err)
 	}
 
-	db, err := sqlite.Open(ctx, cfg.Storage.Path)
+	db, err := sqlite.OpenExisting(ctx, cfg.Storage.Path)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	store := db.NanoStorage(nil)
-	topic, notAfter, err := push.LoadCert(ctx, store, db, pemCert, pemKey)
+	info, err := push.InstallCertificate(ctx, db, pemCert, pemKey, push.CertificateWriteOptions{
+		RenewTopic: *topicFlag, MakeDefault: *makeDefault, Actor: *loadedBy, Provider: "cli",
+	})
 	if err != nil {
 		return err
 	}
+	topic, notAfter := info.Topic, info.NotAfter
 
-	// Record per-topic metadata so the console can track every fleet's expiry
-	// independently (MDM-APNS-001). LoadCert already validated and stored the
-	// certificate, so this only fails on a database error.
-	subject := ""
-	if cert, cerr := cryptoutil.DecodePEMCertificate(pemCert); cerr == nil {
-		subject = cert.Subject.String()
+	if renewal {
+		fmt.Printf("APNs push certificate renewed; enrollment default preserved.\n")
+	} else {
+		fmt.Printf("APNs push certificate imported.\n")
 	}
-	if err := db.UpsertAPNSTopic(ctx, topic, notAfter.UTC().Format(time.RFC3339), subject, *loadedBy); err != nil {
-		return fmt.Errorf("record topic metadata: %w", err)
-	}
-
-	fmt.Printf("APNs push certificate imported.\n")
 	fmt.Printf("  topic:     %s\n", topic)
 	if !notAfter.IsZero() {
 		fmt.Printf("  expires:   %s\n", notAfter.Format("2006-01-02"))
@@ -114,7 +126,7 @@ func runPushcertCheck(ctx context.Context, args []string) error {
 		return fmt.Errorf("storage driver %q not yet implemented (Phase 4)", cfg.Storage.Driver)
 	}
 
-	db, err := sqlite.Open(ctx, cfg.Storage.Path)
+	db, err := sqlite.OpenExisting(ctx, cfg.Storage.Path)
 	if err != nil {
 		return err
 	}

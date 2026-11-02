@@ -33,9 +33,9 @@
         </div>
 
         <div id="sec-eap" style="display:none">
-          <p class="sub">The profile bundles everything EAP-TLS needs — the RADIUS trust
-          anchor(s), a SCEP identity request, and the network payload referencing both —
-          so the device can join with no manual trust steps.</p>
+          <p class="sub">This profile contains RADIUS trust anchors, a SCEP identity request and
+          Wi-Fi settings. Certificate authorization and a real device connection must
+          be verified before deployment. A generated profile does not prove secure Wi-Fi works.</p>
           <p><label>SCEP URL<br><input type="text" name="scep_url" value="{{.SCEPURL}}" size="60"></label></p>
           <p><label>SCEP challenge (if required)<br><input type="password" name="scep_challenge" size="40"></label></p>
           <p><label>Certificate subject CN<br><input type="text" name="subject_cn" placeholder="%SerialNumber%.wifi.example.org" size="60"></label>
@@ -43,10 +43,10 @@
           <p><label>Key size<br>
             <select name="key_size"><option value="2048" selected>2048</option><option value="4096">4096</option></select>
           </label></p>
-          <p><label>RADIUS server names (comma-separated, optional)<br>
+          <p><label>RADIUS server certificate names (required, comma-separated)<br>
             <input type="text" name="trusted_server_names" placeholder="radius1.example.org, radius2.example.org" size="60"></label></p>
           {{if .HasAnchors}}
-          <p><label><input type="checkbox" name="use_cairn_anchors" checked> Trust Cairn's CA anchors for the RADIUS server</label></p>
+          <p><label><input type="checkbox" name="use_cairn_anchors" checked> Use Cairn's CA anchors only if they issued the RADIUS server certificates</label></p>
           {{end}}
           <p><label>Additional RADIUS CA chain (PEM, optional)<br>
             <textarea name="anchors_pem" rows="5" cols="70" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label></p>

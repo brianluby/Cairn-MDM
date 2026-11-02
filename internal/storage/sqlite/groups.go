@@ -218,13 +218,13 @@ func (db *DB) ProfilesToDeploy(ctx context.Context, deviceID string) ([]Profile,
 func (db *DB) MarkDeploySent(ctx context.Context, deviceID string, profileID int64, commandUUID, profileUpdatedAt string) error {
 	_, err := db.sql.ExecContext(ctx,
 		`INSERT INTO profile_deploys (device_id, profile_id, command_uuid, profile_updated_at, status, updated_at)
-		 VALUES (?, ?, ?, ?, 'sent', datetime('now'))
+		 VALUES (?, ?, ?, ?, COALESCE((SELECT CASE status WHEN 'Acknowledged' THEN 'installed' WHEN 'Error' THEN 'failed' WHEN 'CommandFormatError' THEN 'failed' ELSE 'sent' END FROM command_history WHERE command_uuid=? AND device_id=?),'sent'), datetime('now'))
 		 ON CONFLICT (device_id, profile_id) DO UPDATE SET
 		   command_uuid = excluded.command_uuid,
 		   profile_updated_at = excluded.profile_updated_at,
-		   status = 'sent',
+		   status = excluded.status,
 		   updated_at = datetime('now')`,
-		deviceID, profileID, commandUUID, profileUpdatedAt)
+		deviceID, profileID, commandUUID, profileUpdatedAt, commandUUID, deviceID)
 	return err
 }
 

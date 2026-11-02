@@ -90,7 +90,7 @@
       {{if .Commands}}
       <table>
         <thead>
-          <tr><th>Command</th><th>Status</th><th>Sent</th><th>Result</th></tr>
+          <tr><th>Command</th><th>Status</th><th>APNs notification</th><th>Queued</th><th>Result</th></tr>
         </thead>
         <tbody>
           {{range .Commands}}
@@ -104,6 +104,7 @@
               {{.Status}}
               {{if .Error}}<div class="sub">{{.Error}}</div>{{end}}
             </td>
+            <td class="sub">{{if .NotificationStatus}}{{.NotificationStatus}} ({{.NotificationAttempts}} attempts){{with .NotificationError}}<br>{{.}}{{end}}{{else}}Not scheduled{{end}}</td>
             <td class="sub">{{.SentAt}}</td>
             <td class="sub">{{nullStr .ResultAt}}</td>
           </tr>
@@ -111,7 +112,7 @@
         </tbody>
       </table>
       {{else}}
-      <div class="empty">No commands sent to this device yet.</div>
+      <div class="empty">No commands queued for this device yet.</div>
       {{end}}
     </div>
   </main>

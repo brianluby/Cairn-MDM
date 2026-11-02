@@ -156,3 +156,13 @@ func joinTypes(ts []string) string {
 	}
 	return out
 }
+
+func TestWiFiRequiresExactRadiusNames(t *testing.T) {
+	p := WiFiParams{Organization: "example.org", SSID: "test", Enterprise: true, SCEPURL: "https://mdm.example.org/scep", SubjectCN: "device", CAAnchorsDER: [][]byte{{1}}}
+	for _, names := range [][]string{nil, {""}, {"*.example.org"}, {"https://radius.example.org"}, {"radius.example.org ", "radius2.example.org"}} {
+		p.TrustedServerNames = names
+		if _, err := BuildWiFi(p); err == nil {
+			t.Fatalf("accepted unsafe RADIUS names: %#v", names)
+		}
+	}
+}

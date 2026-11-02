@@ -66,7 +66,7 @@ func testProvider(t *testing.T, conn Conn, dialErrs map[string]error) *Provider 
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.dial = func(server string) (Conn, error) {
+	p.dial = func(_ context.Context, server string) (Conn, error) {
 		if err, ok := dialErrs[server]; ok {
 			return nil, err
 		}
@@ -162,5 +162,38 @@ func TestFailoverToSecondServer(t *testing.T) {
 	})
 	if _, err := p.Authenticate(context.Background(), "nick", "hunter2"); errors.Is(err, auth.ErrInvalidCredentials) || err == nil {
 		t.Errorf("all-down err = %v, want operational error", err)
+	}
+}
+
+func TestInvalidCredentialsDoNotFailOver(t *testing.T) {
+	conn := baseConn(nickEntry())
+	p := testProvider(t, conn, nil)
+	calls := 0
+	p.dial = func(context.Context, string) (Conn, error) { calls++; return conn, nil }
+	if _, err := p.Authenticate(context.Background(), "nick", "wrong"); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("invalid credentials attempted %d DCs", calls)
+	}
+}
+
+func TestCancelledLoginDoesNotContactDirectory(t *testing.T) {
+	p := testProvider(t, baseConn(nickEntry()), nil)
+	p.dial = func(context.Context, string) (Conn, error) { t.Fatal("dial after cancellation"); return nil, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Authenticate(ctx, "nick", "hunter2"); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func TestGroupDNUsesParsedEquality(t *testing.T) {
+	mapping := map[string]string{`CN=Support\, Ops,CN=Users,DC=example,DC=org`: "operator"}
+	if role, ok := lookupDN(mapping, `cn=Support\2c Ops,cn=Users,dc=example,dc=org`); !ok || role != "operator" {
+		t.Fatalf("escaped group DN mismatch: %s %v", role, ok)
+	}
+	if _, ok := lookupDN(mapping, "invalid DN"); ok {
+		t.Fatal("malformed DN matched")
 	}
 }

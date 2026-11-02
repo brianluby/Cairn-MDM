@@ -1,5 +1,9 @@
 # Cairn — build status
 
+Current completion work: [requirements and acceptance matrix](completion-prd.md)
+and [APNs lifecycle guide](apns-lifecycle.md). The dated phase records below are
+historical evidence, not a current beta-release verdict.
+
 ## Phase 0 — skeleton ✅
 Single Go binary scaffold: `serve`/`migrate`/`version` CLI, TOML config with
 env overrides and file/env-only secrets, pure-Go SQLite storage with an embedded

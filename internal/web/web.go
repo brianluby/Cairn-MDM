@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
+	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 )
 
@@ -160,25 +161,27 @@ type Config struct {
 
 // App is the admin console.
 type App struct {
-	sessions   *auth.SessionStore
-	auth       Authenticator
-	devices    DeviceSource
-	settings   SettingsSource
-	apnsTopics APNSTopicSource
-	profiles   ProfileStore
-	groups     GroupStore
-	grants     GrantStore
-	audit      AuditStore
-	deploys    DeployStore
-	quarantine QuarantineStore
-	cmd        Commander
-	rec        Reconciler   // may be nil (no auto-push)
-	oidc       OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
-	users      UserAdmin    // may be nil (user management disabled); set via SetUsers
-	cfg        Config
-	trusted    []*net.IPNet // parsed cfg.TrustedProxies; nil = trust no proxy
-	tmpl       *template.Template
-	log        *slog.Logger
+	apnsRequests     *push.RequestManager
+	apnsCertificates push.CertificateStore
+	sessions         *auth.SessionStore
+	auth             Authenticator
+	devices          DeviceSource
+	settings         SettingsSource
+	apnsTopics       APNSTopicSource
+	profiles         ProfileStore
+	groups           GroupStore
+	grants           GrantStore
+	audit            AuditStore
+	deploys          DeployStore
+	quarantine       QuarantineStore
+	cmd              Commander
+	rec              Reconciler   // may be nil (no auto-push)
+	oidc             OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
+	users            UserAdmin    // may be nil (user management disabled); set via SetUsers
+	cfg              Config
+	trusted          []*net.IPNet // parsed cfg.TrustedProxies; nil = trust no proxy
+	tmpl             *template.Template
+	log              *slog.Logger
 }
 
 // New builds the console. rec may be nil to disable assignment auto-push.
@@ -261,6 +264,15 @@ func (a *App) Register(mux *http.ServeMux) {
 	// security-sensitive. Read-only for now; the guided resolution flow lands with
 	// the ResolveQuarantine backend.
 	mux.Handle("GET /admin/quarantine", a.requireRole(auth.RoleAdmin, a.handleQuarantine))
+
+	mux.Handle("GET /admin/apns", a.requireRole(auth.RoleAdmin, a.handleAPNS))
+	mux.Handle("POST /admin/apns/requests", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSCreate)))
+	mux.Handle("GET /admin/apns/requests/{id}", a.requireRole(auth.RoleAdmin, a.handleAPNSRequest))
+	mux.Handle("POST /admin/apns/requests/{id}/submit", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSSubmit)))
+	mux.Handle("POST /admin/apns/requests/{id}/attachment", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSAttachment)))
+	mux.Handle("GET /admin/apns/requests/{id}/download", a.requireRole(auth.RoleAdmin, a.handleAPNSDownload))
+	mux.Handle("POST /admin/apns/requests/{id}/certificate", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSCertificate)))
+	mux.Handle("POST /admin/apns/requests/{id}/install", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSInstall)))
 
 	// Local user management + a read-only settings view. Admin-only, and every
 	// mutation is audited.

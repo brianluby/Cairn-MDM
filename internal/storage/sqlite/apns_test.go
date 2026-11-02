@@ -49,6 +49,8 @@ func genPushCert(t *testing.T, topic string, notBefore, notAfter time.Time) (cer
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtraExtensions:       []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 6, 3, 2}, Value: []byte{5, 0}}},
 		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
@@ -132,12 +134,11 @@ func TestUpsertAndListAPNSTopics(t *testing.T) {
 func TestLoadCertRejectsExpired(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	store := db.NanoStorage(nil)
 
 	certPEM, keyPEM, _ := genPushCert(t, "com.apple.mgmt.External.test",
 		time.Now().AddDate(-1, 0, 0), time.Now().AddDate(0, 0, -1))
 
-	_, _, err := push.LoadCert(ctx, store, db, certPEM, keyPEM)
+	_, err := db.SaveAPNSCertificate(ctx, certPEM, keyPEM, APNSWriteOptions{Actor: "test"})
 	if err == nil {
 		t.Fatal("expected LoadCert to reject an expired certificate")
 	}
@@ -153,12 +154,11 @@ func TestLoadCertRejectsExpired(t *testing.T) {
 func TestLoadCertRejectsMismatchedKey(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	store := db.NanoStorage(nil)
 
 	certPEM, _, otherKeyPEM := genPushCert(t, "com.apple.mgmt.External.test",
 		time.Now().AddDate(0, 0, -1), time.Now().AddDate(1, 0, 0))
 
-	_, _, err := push.LoadCert(ctx, store, db, certPEM, otherKeyPEM)
+	_, err := db.SaveAPNSCertificate(ctx, certPEM, otherKeyPEM, APNSWriteOptions{Actor: "test"})
 	if err == nil {
 		t.Fatal("expected LoadCert to reject a key that does not match the certificate")
 	}
@@ -170,13 +170,13 @@ func TestLoadCertRejectsMismatchedKey(t *testing.T) {
 func TestLoadCertAcceptsValid(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	store := db.NanoStorage(nil)
 
 	want := time.Now().AddDate(1, 0, 0)
 	certPEM, keyPEM, _ := genPushCert(t, "com.apple.mgmt.External.test",
 		time.Now().AddDate(0, 0, -1), want)
 
-	topic, notAfter, err := push.LoadCert(ctx, store, db, certPEM, keyPEM)
+	info, err := db.SaveAPNSCertificate(ctx, certPEM, keyPEM, APNSWriteOptions{Actor: "test"})
+	topic, notAfter := info.Topic, info.NotAfter
 	if err != nil {
 		t.Fatalf("LoadCert rejected a valid cert: %v", err)
 	}
