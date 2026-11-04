@@ -56,7 +56,7 @@ func TestMFABrowserRegistrationAndAuthorization(t *testing.T) {
 		t.Fatal("unverified admin accessed directory")
 	}
 	rr := post("begin", url.Values{"csrf": {session.CSRF}, "invitation": {invite}})
-	if rr.Code != 200 || rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("Referrer-Policy") != "no-referrer" {
+	if rr.Code != 200 || rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("Referrer-Policy") != "strict-origin" {
 		t.Fatalf("setup headers: %d %v", rr.Code, rr.Header())
 	}
 	match := regexp.MustCompile(`Setup key: <code>([A-Z2-7]+)</code>`).FindStringSubmatch(rr.Body.String())
@@ -109,5 +109,20 @@ func TestMFABrowserRegistrationAndAuthorization(t *testing.T) {
 	routes.ServeHTTP(rr, req)
 	if strings.Contains(rr.Body.String(), match[1]) {
 		t.Fatal("setup secret resurfaced")
+	}
+}
+
+func TestOriginCheckRejectsCrossOriginAndNull(t *testing.T) {
+	for _, origin := range []string{"null", "https://attacker.example", "https://localhost:9999", "http://localhost:8447"} {
+		r := httptest.NewRequest("POST", "https://localhost:8447/account/mfa/verify", nil)
+		r.Header.Set("Origin", origin)
+		if sameOrigin(r, "https://localhost:8447") {
+			t.Fatalf("accepted origin %q", origin)
+		}
+	}
+	r := httptest.NewRequest("POST", "https://localhost:8447/account/mfa/verify", nil)
+	r.Header.Set("Origin", "https://localhost:8447")
+	if !sameOrigin(r, "https://localhost:8447") {
+		t.Fatal("same-origin form rejected")
 	}
 }

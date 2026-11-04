@@ -73,7 +73,7 @@ func sameOrigin(r *http.Request, publicURL string) bool {
 	if err != nil || got.Host == "" {
 		return false
 	}
-	return strings.EqualFold(got.Host, want.Host)
+	return strings.EqualFold(got.Scheme, want.Scheme) && strings.EqualFold(got.Host, want.Host)
 }
 
 // render executes a template as a full page. On error it logs and writes a 500.

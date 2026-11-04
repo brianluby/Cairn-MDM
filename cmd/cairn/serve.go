@@ -59,7 +59,7 @@ func runServe(ctx context.Context, args []string) error {
 	deps := server.Deps{MDM: core.Handler()}
 
 	// Configure SCEP + enrollment per ca.mode (generate | import | external).
-	pki, err := wirePKI(ctx, cfg, db, db, grantRedeemer{db}, log, &deps)
+	pki, err := wirePKI(ctx, cfg, db, db, grantRedeemer{db: db}, log, &deps)
 	if err != nil {
 		return err
 	}
@@ -112,12 +112,13 @@ func runServe(ctx context.Context, args []string) error {
 
 	console, err := web.New(sessions, authn, db, commander, reconciler,
 		web.Config{
-			PublicURL:      cfg.Server.PublicURL,
-			Organization:   pki.Org,
-			SCEPURL:        pki.SCEPURL,
-			SCEPChallenge:  pki.Challenge,
-			CAAnchorsDER:   pki.Anchors,
-			TrustedProxies: cfg.Server.TLS.TrustedProxies,
+			PublicURL:       cfg.Server.PublicURL,
+			OwnerEnrollment: cfg.CA.Mode.Embedded() || cfg.CA.Mode == config.CABroker,
+			Organization:    pki.Org,
+			SCEPURL:         pki.SCEPURL,
+			SCEPChallenge:   pki.Challenge,
+			CAAnchorsDER:    pki.Anchors,
+			TrustedProxies:  cfg.Server.TLS.TrustedProxies,
 		}, log)
 	if err != nil {
 		return err
@@ -199,9 +200,15 @@ func runServe(ctx context.Context, args []string) error {
 
 // grantRedeemer adapts *sqlite.DB to enroll.Redeemer (translating the storage
 // Redemption type to the enroll one).
-type grantRedeemer struct{ db *sqlite.DB }
+type grantRedeemer struct {
+	db       *sqlite.DB
+	resolver grantResolver
+}
 
 func (g grantRedeemer) RedeemGrant(ctx context.Context, rawToken string) (enroll.Redemption, error) {
+	if _, err := g.resolver.validate(ctx, rawToken); err != nil {
+		return enroll.Redemption{}, err
+	}
 	r, err := g.db.RedeemGrant(ctx, rawToken)
 	if err != nil {
 		return enroll.Redemption{}, err
@@ -217,4 +224,19 @@ func publicHost(publicURL string) string {
 		return u.Hostname()
 	}
 	return publicURL
+}
+
+func (g grantRedeemer) InspectGrant(ctx context.Context, rawToken string) error {
+	info, err := g.resolver.validate(ctx, rawToken)
+	if err != nil {
+		return err
+	}
+	grant, err := g.db.GetGrant(ctx, info.ID)
+	if err != nil {
+		return err
+	}
+	if grant.Status() != "active" {
+		return sqlite.ErrGrantInvalid
+	}
+	return nil
 }

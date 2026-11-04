@@ -14,9 +14,11 @@ import (
 	kitlog "github.com/go-kit/kit/log"
 	scepserver "github.com/micromdm/scep/v2/server"
 
+	directoryldap "github.com/nickpdawson/cairn-mdm/internal/auth/ldap"
 	"github.com/nickpdawson/cairn-mdm/internal/broker"
 	"github.com/nickpdawson/cairn-mdm/internal/ca"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
+	"github.com/nickpdawson/cairn-mdm/internal/directory"
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
 	"github.com/nickpdawson/cairn-mdm/internal/profile"
@@ -34,10 +36,31 @@ const brokerDefaultMaxLeafValidityDays = 400
 // grantResolver adapts the sqlite grant lookup to issue.GrantResolver: it maps a
 // presented SCEP challenge (the grant's raw token) to the grant's issuance facts,
 // without consuming the grant.
-type grantResolver struct{ db *sqlite.DB }
+type ownerValidator interface {
+	RevalidateOwner(context.Context, directory.DirectoryIdentity) (*directory.DirectoryIdentity, error)
+}
+type grantResolver struct {
+	db        *sqlite.DB
+	directory ownerValidator
+}
+
+func (r grantResolver) validate(ctx context.Context, challenge string) (sqlite.GrantIssuanceInfo, error) {
+	info, err := r.db.LookupGrantForIssuance(ctx, challenge)
+	if err != nil {
+		return info, err
+	}
+	if r.directory == nil || info.OwnerIdentity == nil || info.ActorSubject == "" {
+		return info, sqlite.ErrGrantInvalid
+	}
+	fresh, err := r.directory.RevalidateOwner(ctx, *info.OwnerIdentity)
+	if err != nil || fresh == nil || fresh.DirectoryID != info.OwnerIdentity.DirectoryID || fresh.ObjectID != info.OwnerIdentity.ObjectID || fresh.UPN != info.Owner {
+		return info, sqlite.ErrGrantInvalid
+	}
+	return info, nil
+}
 
 func (r grantResolver) LookupForIssuance(ctx context.Context, challenge string) (issue.GrantFacts, error) {
-	info, err := r.db.LookupGrantForIssuance(ctx, challenge)
+	info, err := r.validate(ctx, challenge)
 	if err != nil {
 		return issue.GrantFacts{}, err
 	}
@@ -68,6 +91,17 @@ type pkiResult struct {
 }
 
 func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics enroll.TopicProvider, redeemer enroll.Redeemer, log *slog.Logger, deps *server.Deps) (*pkiResult, error) {
+	resolver := grantResolver{db: store}
+	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
+		provider, err := directoryldap.New(cfg.Auth.LDAP, log)
+		if err != nil {
+			return nil, err
+		}
+		resolver.directory = provider
+	}
+	// Redeem and issue use the same verified owner boundary. Legacy grants do not
+	// inherit authorization merely because their free-text owner happens to match.
+	redeemer = grantRedeemer{db: store, resolver: resolver}
 	host := publicHost(cfg.Server.PublicURL)
 	org := "cairn." + host
 
@@ -137,7 +171,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 		// is the grant's token, which the Broker resolves via grantResolver.
 		policy := issue.DefaultPolicy()
 		policy.CRLDistributionPoint = cfg.Server.PublicURL + "/crl" // embedded CA serves its own CRL
-		brk := issue.NewBroker(authority.EmbeddedBackend(), store, grantResolver{store}, policy)
+		brk := issue.NewBroker(authority.EmbeddedBackend(), store, resolver, policy)
 		scepHandler, err := authority.SCEPHandlerWith(brk)
 		if err != nil {
 			return nil, err
@@ -201,7 +235,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 		if cfg.CA.Broker.CRLURL != "" {
 			brokerPolicy.CRLDistributionPoint = cfg.CA.Broker.CRLURL
 		}
-		brk := issue.NewBroker(be, store, grantResolver{store}, brokerPolicy)
+		brk := issue.NewBroker(be, store, resolver, brokerPolicy)
 		// Device-facing SCEP endpoint: the RA identity is the SCEP server cert the
 		// device encrypts to; the Broker is the signer. The backend SCEP is never
 		// exposed to devices.

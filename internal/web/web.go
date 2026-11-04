@@ -143,7 +143,8 @@ type Reconciler interface {
 
 // Config holds display settings and the defaults the profile builders prefill.
 type Config struct {
-	PublicURL string // for showing the enrollment URL
+	PublicURL       string // for showing the enrollment URL
+	OwnerEnrollment bool   // only CA modes with the authoritative Cairn issuance boundary
 
 	// Builder defaults, from the wired PKI:
 	Organization  string   // reverse-DNS identifier root for built profiles
@@ -265,7 +266,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	// reconciler, which pushes profiles — admin-only, like the library.
 	// Enrollment grants — operators create/revoke single-use enroll links.
 	mux.Handle("GET /admin/enrollment", a.requireRole(auth.RoleOperator, a.handleEnrollment))
-	mux.Handle("POST /admin/enrollment", a.audited(a.requireRole(auth.RoleOperator, a.handleGrantCreate)))
+	mux.Handle("POST /admin/enrollment", a.audited(a.requireRole(auth.RoleAdmin, a.handleGrantCreate)))
+	mux.Handle("POST /admin/enrollment/preview", a.audited(a.requireRole(auth.RoleAdmin, a.handleEnrollmentPreview)))
 	mux.Handle("POST /admin/enrollment/{id}/revoke", a.audited(a.requireRole(auth.RoleOperator, a.handleGrantRevoke)))
 
 	// Quarantined issuances (ambiguous CA outcomes held for resolution). Admin-only,

@@ -145,7 +145,8 @@ func (db *DB) CompleteIssuance(ctx context.Context, grantID int64, txnID, spki, 
 
 // QuarantineIssuance transitions the grant's ISSUING binding to QUARANTINED — a
 // terminal hold for an ambiguous outcome (see IssuanceQuarantined). Only the bound
-// request in state ISSUING may be quarantined; otherwise ErrIssuanceConflict.
+// request may be quarantined; an existing quarantine can gain backend evidence
+// after a concurrent revocation. Other states return ErrIssuanceConflict.
 // reason/backend/backendTxn record why and where, for reconciliation.
 func (db *DB) QuarantineIssuance(ctx context.Context, grantID int64, txnID, spki, requestHash, reason, backend, backendTxn string) error {
 	if grantID <= 0 || txnID == "" || spki == "" || requestHash == "" {
@@ -155,7 +156,7 @@ func (db *DB) QuarantineIssuance(ctx context.Context, grantID int64, txnID, spki
 		`UPDATE cert_issuance
 		    SET state='QUARANTINED', quarantine_reason=?, quarantined_at=datetime('now'),
 		        backend=?, backend_txn=?, updated_at=datetime('now')
-		  WHERE grant_id=? AND txn_id=? AND spki_sha256=? AND request_hash=? AND state='ISSUING'`,
+		  WHERE grant_id=? AND txn_id=? AND spki_sha256=? AND request_hash=? AND state IN ('ISSUING','QUARANTINED')`,
 		reason, backend, backendTxn, grantID, txnID, spki, requestHash)
 	if err != nil {
 		return err

@@ -11,7 +11,7 @@ func (a *App) SetMFA(m *auth.MFAStore)                          { a.mfa = m }
 func (a *App) handleMFA(w http.ResponseWriter, r *http.Request) { a.renderMFA(w, r, map[string]any{}) }
 func (a *App) renderMFA(w http.ResponseWriter, r *http.Request, data map[string]any) {
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Referrer-Policy", "strict-origin")
 	data["Title"] = "Account security"
 	data["Available"] = a.mfa != nil
 	status := http.StatusOK

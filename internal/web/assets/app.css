@@ -167,3 +167,16 @@ pre { max-width: 100%; overflow: auto; }
   main { padding: 24px 16px 48px; }
   th, td { padding: 12px; }
 }
+
+/* Account setup keeps forms readable in both themes and on small screens. */
+input:not([type="checkbox"]):not([type="hidden"]), select, textarea {
+  font: inherit; color: var(--text); background: var(--card);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+}
+.account-security .card { padding: 20px; margin: 16px 0; }
+.account-security h2 { margin-top: 0; }
+.account-security form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0; }
+.account-security label { display: grid; gap: 6px; max-width: 100%; }
+.account-security textarea { width: 100%; }
+.account-security code { overflow-wrap: anywhere; }
+.account-security img { max-width: 100%; height: auto; }

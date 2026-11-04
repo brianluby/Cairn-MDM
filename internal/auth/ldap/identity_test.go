@@ -101,3 +101,26 @@ func TestConfiguredDirectoryLoginCarriesVerifiedIdentity(t *testing.T) {
 		t.Fatal("disabled directory account accepted")
 	}
 }
+
+func TestCurrentAdministratorRevalidation(t *testing.T) {
+	conn := &ownerConn{fakeConn: baseConn(ownerEntry(map[string][]string{"memberOf": {"CN=Admins,DC=example,DC=org"}}))}
+	p := testProvider(t, conn, nil)
+	p.cfg.DirectoryID = "test-directory"
+	p.cfg.GroupRoles = map[string]string{"CN=Admins,DC=example,DC=org": "admin"}
+	p.cfg.DefaultRole = "user"
+	owner, e := p.ResolveOwner(context.Background(), "nick")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = p.RevalidateAdministrator(context.Background(), *owner); e != nil {
+		t.Fatal(e)
+	}
+	conn.entry = ownerEntry(nil)
+	if e = p.RevalidateAdministrator(context.Background(), *owner); e == nil {
+		t.Fatal("removed administrator membership accepted")
+	}
+	conn.entry = ownerEntry(map[string][]string{"memberOf": {"CN=Admins,DC=example,DC=org"}, "userAccountControl": {"514"}})
+	if e = p.RevalidateAdministrator(context.Background(), *owner); e == nil {
+		t.Fatal("disabled administrator accepted")
+	}
+}

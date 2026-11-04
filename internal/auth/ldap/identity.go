@@ -144,8 +144,66 @@ func (p *Provider) resolveVia(ctx context.Context, server, filter string) (*auth
 	if err != nil {
 		return nil, err
 	}
-	if len(result.Entries) != 1 {
+	if len(result.Entries) != 1 || len(result.Referrals) > 0 {
 		return nil, ErrOwnerIneligible
 	}
 	return directoryIdentity(result.Entries[0], p.cfg.DirectoryID, time.Now())
+}
+
+// RevalidateAdministrator checks current eligibility and configured role mapping
+// by GUID. A session's old group snapshot cannot authorize new enrollment grants.
+func (p *Provider) RevalidateAdministrator(ctx context.Context, owner auth.DirectoryIdentity) error {
+	if owner.DirectoryID == "" || owner.DirectoryID != p.cfg.DirectoryID {
+		return ErrOwnerIneligible
+	}
+	raw, err := hex.DecodeString(owner.ObjectID)
+	if err != nil || len(raw) != 16 {
+		return ErrOwnerIneligible
+	}
+	var escaped strings.Builder
+	for _, b := range raw {
+		fmt.Fprintf(&escaped, "\\%02x", b)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var last error
+	for _, server := range p.cfg.Servers {
+		attempt, stop := context.WithTimeout(ctx, 10*time.Second)
+		err = func() error {
+			conn, e := p.dial(attempt, server)
+			if e != nil {
+				return e
+			}
+			defer conn.Close()
+			done := context.AfterFunc(attempt, func() { conn.Close() })
+			defer done()
+			if e = conn.Bind(p.cfg.BindDN, p.cfg.BindPassword); e != nil {
+				return e
+			}
+			result, e := conn.Search(goldap.NewSearchRequest(p.cfg.BaseDN, goldap.ScopeWholeSubtree, goldap.NeverDerefAliases, 2, 10, false, "(&(objectClass=user)(objectGUID="+escaped.String()+"))", identityAttributes, nil))
+			if e != nil {
+				return e
+			}
+			if len(result.Entries) != 1 || len(result.Referrals) > 0 {
+				return ErrOwnerIneligible
+			}
+			id, e := directoryIdentity(result.Entries[0], p.cfg.DirectoryID, time.Now())
+			if e != nil || id.ObjectID != strings.ToLower(owner.ObjectID) {
+				return ErrOwnerIneligible
+			}
+			if p.mapRole(result.Entries[0].GetAttributeValues("memberOf")) != auth.RoleAdmin {
+				return ErrOwnerIneligible
+			}
+			return nil
+		}()
+		stop()
+		if err == nil || errors.Is(err, ErrOwnerIneligible) {
+			return err
+		}
+		last = err
+	}
+	if last == nil {
+		last = ErrOwnerIneligible
+	}
+	return last
 }

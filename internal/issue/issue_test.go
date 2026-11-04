@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"fmt"
 	"math/big"
 	"path/filepath"
 	"testing"
@@ -459,5 +460,67 @@ func TestBrokerRejectsExpiredLeaf(t *testing.T) {
 	}
 	if iss, _ := db.GetIssuance(ctx, gid); iss.State != sqlite.IssuanceQuarantined {
 		t.Fatalf("state = %q, want QUARANTINED", iss.State)
+	}
+}
+
+type changingResolver struct {
+	g             GrantFacts
+	calls, failAt int
+}
+
+func (r *changingResolver) LookupForIssuance(context.Context, string) (GrantFacts, error) {
+	r.calls++
+	if r.calls >= r.failAt {
+		return GrantFacts{}, errors.New("owner disabled")
+	}
+	return r.g, nil
+}
+func TestOwnerAuthorizationChangesAroundSigning(t *testing.T) {
+	for _, when := range []int{2, 3} {
+		t.Run(fmt.Sprintf("lookup-%d", when), func(t *testing.T) {
+			ctx := context.Background()
+			db := newDB(t)
+			gid := mkGrant(t, db)
+			signed := false
+			be := &fakeBackend{cap: embeddedCap(), status: StatusIssued, signFrom: func(c *x509.Certificate) *x509.Certificate { signed = true; return c }}
+			resolver := &changingResolver{g: GrantFacts{GrantID: gid, Owner: "person@example.org", CommonName: "person"}, failAt: when}
+			br := NewBroker(be, db, resolver, DefaultPolicy())
+			leaf, err := br.SignCSRContext(ctx, newCSR(t, genKey(t)))
+			if err == nil || leaf != nil {
+				t.Fatal("lost authorization returned certificate")
+			}
+			iss, e := db.GetIssuance(ctx, gid)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if when == 2 && (signed || iss.State != sqlite.IssuanceFailed) {
+				t.Fatal("pre-sign failure signed or not failed", iss.State)
+			}
+			if when == 3 && (!signed || iss.State != sqlite.IssuanceQuarantined) {
+				t.Fatal("post-sign ambiguity not quarantined", iss.State)
+			}
+		})
+	}
+}
+
+func TestRevocationWhileBackendSignsRemainsQuarantined(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+	gid := mkGrant(t, db)
+	be := &fakeBackend{cap: embeddedCap(), status: StatusIssued, signFrom: func(c *x509.Certificate) *x509.Certificate {
+		if e := db.RevokeGrant(ctx, gid); e != nil {
+			t.Fatal(e)
+		}
+		return c
+	}}
+	resolver := &changingResolver{g: GrantFacts{GrantID: gid, Owner: "person@example.org", CommonName: "person"}, failAt: 3}
+	br := NewBroker(be, db, resolver, DefaultPolicy())
+	leaf, e := br.SignCSRContext(ctx, newCSR(t, genKey(t)))
+	if e == nil || leaf != nil {
+		t.Fatal("revoked in-flight request returned leaf")
+	}
+	iss, e := db.GetIssuance(ctx, gid)
+	if e != nil || iss.State != sqlite.IssuanceQuarantined || iss.Backend == "" || iss.BackendTxn == "" {
+		t.Fatalf("lost post-sign evidence: %+v %v", iss, e)
 	}
 }

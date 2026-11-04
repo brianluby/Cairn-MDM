@@ -29,7 +29,7 @@ func TestSecureHeadersPresent(t *testing.T) {
 	}
 	want := map[string]string{
 		"X-Content-Type-Options":  "nosniff",
-		"Referrer-Policy":         "no-referrer",
+		"Referrer-Policy":         "strict-origin",
 		"Permissions-Policy":      "geolocation=(), microphone=(), camera=()",
 		"Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
 	}

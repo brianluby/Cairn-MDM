@@ -1,7 +1,7 @@
 # Enrollment and recovery
 
 Accepted product behavior, November 2, 2026. This document records requirements;
-MFA registration/recovery is implemented in the completion candidate; directory-authorized grants and issuance integration remain pending. See [MFA operation](mfa.md).
+MFA registration/recovery is implemented in the completion candidate; verified-owner previews, MFA-bound grants and owner revalidation at issuance are implemented. Automatic profile targeting and hardware acceptance remain pending. See [MFA operation](mfa.md).
 
 ## An administrator adds a device for someone
 
@@ -127,3 +127,32 @@ web bootstrap or make a directory password sufficient to replace an admin factor
 The unreviewed renewal/lineage contract remains a separate gate. Approval of
 these user flows does not establish certificate lifecycle safety or real-device
 Wi-Fi acceptance.
+
+## Current candidate limits
+
+Initial owner-bound grants require a configured LDAP directory ID and embedded
+or broker CA mode. Direct external SCEP cannot enforce Cairn's issuance checks:
+owner previews work there, but new grant creation is disabled. Old free-text-owner
+grants do not acquire verified authorization through migration. Existing device
+check-ins and installed profiles are unchanged. This is an intentional boundary,
+not proof that external broker deployment has been qualified.
+
+Owner confirmation is session-bound and expires in five minutes. Grant creation
+rechecks current MFA within the grant/audit transaction. LDAP administrators are
+rechecked by GUID and current role mapping. Issuance and profile delivery recheck
+the owner by directory namespace/GUID; an owner UPN change requires a fresh grant.
+AD reads and CA/database transactions are not atomic with one another. Loss of
+authorization after signing quarantines the outcome. Revocation during signing
+also remains quarantined; it cannot be called a proven clean failure.
+
+Opening an invitation shows instructions and does not consume it. Explicit POST
+starts the download. A missing APNs topic does not spend the link. Reopening an
+already-downloaded profile supports installation recovery; a lost download needs
+administrator replacement. Automatic profile assignment, self-service issuance,
+renewal and cross-site hardware qualification remain open.
+
+Installation instructions follow Apple's [iPhone/iPad profile installation](https://support.apple.com/en-ie/102400)
+and [Mac Device Management](https://support.apple.com/en-gb/guide/mac-help/mh35474/26/mac/26)
+guidance. Browser form requests retain only an origin referrer, never a bearer
+path; this avoids the [null-Origin behavior of no-referrer](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Referrer-Policy)
+without accepting null or cross-origin CSRF requests.

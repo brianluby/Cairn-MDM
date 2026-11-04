@@ -2,8 +2,9 @@
 
 Completion candidate, November 4, 2026. This implements account factor setup,
 verification and recovery for local accounts and namespaced LDAP identities.
-It does not yet enforce MFA on the existing enrollment grant or certificate
-issuance routes. It is not an enrollment authorization or Wi-Fi release gate.
+New owner-bound grants now require fresh administrator MFA and current directory
+authorization. Owner eligibility is rechecked at profile delivery and before/after
+certificate signing. This is not a Wi-Fi release gate; lifecycle review remains open.
 OIDC still works for login; OIDC MFA registration is refused until the verified
 issuer and subject are retained as a stable principal. Email/name matching is
 not a substitute.
@@ -86,7 +87,7 @@ protect access to local account password-reset tooling.
   values; each recovery code has 128 bits of randomness. Only hashes are stored.
 - Confirmation, verification, reset and recovery update their authorization state
   and audit record in one transaction. Missing audit storage rolls back success.
-  Secret pages use no-store/no-referrer headers. Codes are POST body fields, not
+  Secret pages use no-store and strict-origin headers (no referrer path or query). Codes are POST body fields, not
   URL components. Setup secrets and recovery codes are shown once.
 
 ## Remaining acceptance
@@ -98,8 +99,8 @@ browser use with an authenticator, actual Samba login and host recovery remain
 unqualified. LDAP session facts do not prove current actor eligibility: live
 privileged authorization must be checked when integrating grant issuance.
 
-Next integrate fresh actor MFA and current directory owner checks into the grant
-and issuance transactions, preserving separate actor/owner identities. Profile
+The candidate now integrates fresh actor MFA and current directory owner checks
+at grant and issuance boundaries, preserving separate actor/owner identities. Profile
 selection and remote manual installation still need that complete flow. This
 change neither modifies RADIUS nor validates the unreviewed certificate renewal
 and replacement contract.

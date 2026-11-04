@@ -78,7 +78,9 @@ func (s *Server) secureHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
+		// Send only the origin, never bearer-token paths. no-referrer makes
+		// ordinary browser form POSTs send Origin:null and breaks CSRF checks.
+		h.Set("Referrer-Policy", "strict-origin")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		h.Set("Content-Security-Policy", csp)
 		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
@@ -97,7 +99,7 @@ func sensitivePath(p string) bool {
 	switch {
 	case p == "/admin" || strings.HasPrefix(p, "/admin/"):
 		return true
-	case p == "/login" || p == "/logout":
+	case p == "/login" || p == "/logout" || strings.HasPrefix(p, "/account/"):
 		return true
 	case p == "/enroll" || strings.HasPrefix(p, "/enroll/"):
 		return true
@@ -134,6 +136,7 @@ func (s *Server) routes() {
 
 	if s.deps.EnrollGrant != nil {
 		s.mux.Handle("GET /e/{token}", s.deps.EnrollGrant)
+		s.mux.Handle("POST /e/{token}", s.deps.EnrollGrant)
 	}
 
 	if s.deps.CA != nil {

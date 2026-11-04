@@ -92,6 +92,15 @@ func (b *Broker) SignCSRContext(ctx context.Context, m *scep.CSRReqMessage) (*x5
 		}
 	}
 
+	// Recheck immediately before delegating signing. A directory failure or owner
+	// change before signing is a clean rejection; no backend has run yet.
+	fresh, err := b.grants.LookupForIssuance(ctx, m.ChallengePassword)
+	if err != nil || fresh != g {
+		if e := b.store.FailIssuance(ctx, g.GrantID, txnID, spki, reqHash, "authorization changed before signing"); e != nil {
+			return nil, e
+		}
+		return nil, errors.New("issue: current owner authorization unavailable")
+	}
 	// 4. Fresh ISSUING binding → delegate the sign to the backend.
 	name := b.backend.Capabilities().Name
 	res, err := b.backend.Issue(ctx, IssueRequest{
@@ -118,6 +127,13 @@ func (b *Broker) SignCSRContext(ctx context.Context, m *scep.CSRReqMessage) (*x5
 				_ = b.store.QuarantineIssuance(ctx, g.GrantID, txnID, spki, reqHash, "leaf-mismatch: "+err.Error(), name, txnID)
 				return nil, fmt.Errorf("issue: returned leaf != intent (quarantined): %w", err)
 			}
+		}
+		// A completed sign followed by lost eligibility is ambiguous authority:
+		// retain the issued outcome under quarantine, never release it as success.
+		fresh, authErr := b.grants.LookupForIssuance(ctx, m.ChallengePassword)
+		if authErr != nil || fresh != g {
+			_ = b.store.QuarantineIssuance(ctx, g.GrantID, txnID, spki, reqHash, "authorization changed after signing", name, res.Serial)
+			return nil, errors.New("issue: authorization changed after signing (quarantined)")
 		}
 		if err := b.store.CompleteIssuance(ctx, g.GrantID, txnID, spki, reqHash, res.Serial, res.Leaf.Raw); err != nil {
 			return nil, err

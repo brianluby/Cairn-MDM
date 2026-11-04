@@ -57,26 +57,26 @@
       {{end}}
     </div>
 
-    <h2>New enrollment link</h2>
+    <h2>Add a device for a user</h2>
+ <p>Verify your MFA in <a href="/account/mfa">Account security</a>, then choose an AD owner. They do not need to sign in. Profile assignment remains a separate step after enrollment.</p>
     <div class="card">
-      <form method="post" action="/admin/enrollment">
+      <form method="post" action="/admin/enrollment/preview">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <p>
           <input type="text" name="label" placeholder="Label (e.g. Nick's MacBook)" size="30">
-          <input type="text" name="owner" placeholder="Owner email (optional, for Wi-Fi binding)" size="34">
+          <input type="text" name="owner" required placeholder="AD account name or UPN" size="34">
         </p>
         <p>
           <label>Platform
             <select name="platform">
-              <option value="any" selected>Any</option>
+
               <option value="macos">macOS</option>
               <option value="ios">iOS/iPadOS</option>
             </select>
           </label>
-          &nbsp;<label>Expires in (hours) <input type="number" name="expires_hours" value="24" min="1" max="8760" style="width:6em"></label>
+          &nbsp;<label>Expires in (hours) <input type="number" name="expires_hours" value="24" min="1" max="24" style="width:6em"></label>
         </p>
-        <p><input type="text" name="expected_serial" placeholder="Bind to serial (optional)" size="24" class="mono"></p>
-        <p><button class="btn" type="submit">Create link</button></p>
+        <p><button class="btn" type="submit">Preview owner</button></p>
       </form>
     </div>
   </main>

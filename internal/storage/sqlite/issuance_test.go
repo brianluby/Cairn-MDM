@@ -248,8 +248,8 @@ func TestRevokeVoidsIssuing(t *testing.T) {
 		t.Fatal(err)
 	}
 	iss, err := db.GetIssuance(ctx, gid)
-	if err != nil || iss.State != IssuanceFailed {
-		t.Fatalf("after revoke: state=%q err=%v, want FAILED", iss.State, err)
+	if err != nil || iss.State != IssuanceQuarantined {
+		t.Fatalf("after revoke: state=%q err=%v, want QUARANTINED", iss.State, err)
 	}
 	if err := db.CompleteIssuance(ctx, gid, "txn1", "spki1", "req1", "0xSERIAL", nil); !errors.Is(err, ErrIssuanceConflict) {
 		t.Fatalf("complete after revoke: err=%v, want ErrIssuanceConflict", err)

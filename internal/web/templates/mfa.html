@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>{{template "head" .}}</head>
-<body>{{template "topbar" .}}<main>
+<body>{{template "topbar" .}}<main class="account-security">
 <h1>Account security</h1>
 <p>Cairn uses codes from your authenticator app. This does not change RADIUS or Wi-Fi sign-in.</p>
 {{if .Error}}<p role="alert" class="card callout error">{{.Error}}</p>{{end}}

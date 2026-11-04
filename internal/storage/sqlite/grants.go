@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"github.com/nickpdawson/cairn-mdm/internal/directory"
 	"time"
 )
 
@@ -151,7 +153,7 @@ func (db *DB) GetGrant(ctx context.Context, id int64) (Grant, error) {
 }
 
 // RevokeGrant marks a grant revoked (idempotent for an already-revoked grant) and
-// atomically voids any in-flight issuance binding (ISSUING → FAILED), so revoking
+// atomically quarantines any in-flight issuance binding, so revoking
 // a grant while a certificate request is in flight cannot later complete.
 func (db *DB) RevokeGrant(ctx context.Context, id int64) error {
 	tx, err := db.sql.BeginTx(ctx, nil)
@@ -178,7 +180,7 @@ func (db *DB) RevokeGrant(ctx context.Context, id int64) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE cert_issuance SET state='FAILED', fail_reason='grant revoked', updated_at=datetime('now')
+		`UPDATE cert_issuance SET state='QUARANTINED', quarantine_reason='grant revoked during issuance', quarantined_at=datetime('now'), updated_at=datetime('now')
 		 WHERE grant_id = ? AND state='ISSUING'`, id); err != nil {
 		return err
 	}
@@ -217,9 +219,11 @@ func parseTime(s string) time.Time {
 // resolved from a presented challenge WITHOUT consuming the grant. Single-use at
 // issuance is enforced by cert_issuance UNIQUE(grant_id), not here.
 type GrantIssuanceInfo struct {
-	ID       int64
-	Owner    string
-	Platform string
+	ID            int64
+	Owner         string
+	Platform      string
+	OwnerIdentity *directory.DirectoryIdentity
+	ActorSubject  string
 }
 
 // LookupGrantForIssuance resolves a presented SCEP challenge (the grant's raw token)
@@ -228,15 +232,21 @@ type GrantIssuanceInfo struct {
 // grant matches — deliberately indistinct (no enumeration oracle).
 func (db *DB) LookupGrantForIssuance(ctx context.Context, challenge string) (GrantIssuanceInfo, error) {
 	var g GrantIssuanceInfo
+	var ownerJSON string
 	err := db.sql.QueryRowContext(ctx,
-		`SELECT id, owner, platform FROM enrollment_grants
+		`SELECT id, owner, platform, owner_identity, actor_subject FROM enrollment_grants
 		  WHERE token_hash=? AND `+grantValidPredicate,
-		HashGrantToken(challenge)).Scan(&g.ID, &g.Owner, &g.Platform)
+		HashGrantToken(challenge)).Scan(&g.ID, &g.Owner, &g.Platform, &ownerJSON, &g.ActorSubject)
 	if errors.Is(err, sql.ErrNoRows) {
 		return GrantIssuanceInfo{}, ErrGrantInvalid
 	}
 	if err != nil {
 		return GrantIssuanceInfo{}, err
+	}
+	if ownerJSON != "" {
+		if err = json.Unmarshal([]byte(ownerJSON), &g.OwnerIdentity); err != nil {
+			return GrantIssuanceInfo{}, ErrGrantInvalid
+		}
 	}
 	return g, nil
 }

@@ -8,8 +8,10 @@ package enroll
 
 import (
 	"context"
+	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/nickpdawson/cairn-mdm/internal/profile"
@@ -83,14 +85,47 @@ func (h *Handler) ServeOpen(w http.ResponseWriter, r *http.Request) {
 	h.serveProfile(w, r, Redemption{}, "")
 }
 
-// ServeGrant handles GET /e/{token}: redeem the grant, then serve a profile
+// ServeGrant shows instructions on GET; POST redeems the grant and serves a profile
 // bound to its owner. Invalid/expired/revoked/exhausted → 410 Gone.
 func (h *Handler) ServeGrant(w http.ResponseWriter, r *http.Request) {
 	if h.redeemer == nil {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "strict-origin")
 	token := normalizeToken(r.PathValue("token"))
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		if inspector, ok := h.redeemer.(interface {
+			InspectGrant(context.Context, string) error
+		}); ok {
+			if err := inspector.InspectGrant(r.Context(), token); err != nil {
+				http.Error(w, "This link is expired, unavailable or already used. Ask your administrator for a new link.", http.StatusGone)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = invitationPage.Execute(w, nil)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, HEAD, POST")
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, e := url.Parse(origin)
+		if e != nil || u.Host != r.Host || u.Scheme != "https" {
+			http.Error(w, "Open the invitation on this server before downloading.", 403)
+			return
+		}
+	}
+	// A missing push topic must not spend a valid invitation.
+	if topic, err := h.topics.GetSetting(r.Context(), h.topicKey); err != nil || topic == "" {
+		http.Error(w, "Enrollment is not ready. Contact your administrator; this link has not been used.", 503)
+		return
+	}
+
 	red, err := h.redeemer.RedeemGrant(r.Context(), token)
 	if err != nil {
 		h.log.Info("enrollment grant rejected", "remote", r.RemoteAddr, "err", err)
@@ -170,3 +205,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.ServeOpe
 
 // normalizeToken trims incidental whitespace from a path token.
 func normalizeToken(s string) string { return strings.TrimSpace(s) }
+
+var invitationPage = template.Must(template.New("invitation").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/app.css"><title>Enroll this device · Cairn</title></head>
+<body><main><h1>Enroll this device</h1><div class="card" style="padding:24px">
+<p>Your administrator has authorized a device for you. Open this link in Safari on the Mac, iPhone or iPad you intend to enroll. You do not need to sign in to Cairn.</p>
+<p>Use an existing internet connection, such as guest Wi-Fi, cellular or Ethernet. Read the management details before approving installation.</p>
+<form method="post"><button class="btn" type="submit">Download enrollment profile</button></form>
+<h2>iPhone or iPad</h2><p>Allow the download, open Settings, then Profile Downloaded (or Enroll in Your Organization). Review the profile and tap Install. Your device may ask for its passcode.</p>
+<h2>Mac</h2><p>Open the downloaded profile. In System Settings, open General → Device Management, select the downloaded profile and review the installation request. Older macOS versions may place Profiles under Privacy &amp; Security.</p>
+<h2>If installation was interrupted</h2><p>If you still have the downloaded profile, continue installing it. If the download was lost, the profile expired, or this link was already used, ask your administrator to revoke it and create a replacement. Do not remove existing management without their instructions.</p>
+<p>Downloading does not mean enrollment or secure Wi-Fi succeeded. Your administrator can check the device's enrollment and profile acknowledgements.</p>
+</div></main></body></html>`))
