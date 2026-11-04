@@ -30,15 +30,16 @@
 
     {{with .APNs}}
     {{if .Loaded}}
-    <h2>APNs certificates</h2>
-    <div class="card">
-      <table>
+    <h2 id="apns-heading">APNs certificates</h2>
+    <div class="card table-scroll" role="region" aria-labelledby="apns-heading" tabindex="0">
+      <table class="apns-table">
+        <colgroup><col><col class="expiry-column"><col class="days-column"><col class="status-column"></colgroup>
         <thead><tr><th>Topic</th><th>Expires</th><th>Days left</th><th>Status</th></tr></thead>
         <tbody>
           {{range .Topics}}
           <tr class="apns-{{.Severity}}">
-            <td class="mono">{{.Topic}}{{with .Subject}}<div class="sub mono">{{.}}</div>{{end}}</td>
-            <td>{{.Expires}}</td>
+            <td><div class="mono">{{.Topic}}</div>{{with .Subject}}<details class="certificate-details"><summary>Certificate details</summary><div class="sub mono">{{.}}</div></details>{{end}}</td>
+            <td class="date">{{.Expires}}</td>
             <td>{{.Days}}</td>
             <td>
               <span class="badge sev-{{.Severity}}">{{if .Warn}}⚠️ {{end}}{{.Label}}</span>
