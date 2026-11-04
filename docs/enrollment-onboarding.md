@@ -15,8 +15,9 @@ MFA and the directory-authorized grant flows are not yet implemented.
    for a site-specific assignment. Conflicts need resolution before enrollment.
 4. They enter a device label and platform. Cairn creates an expiring, single-use
    enrollment authorization and displays its link and QR code.
-5. On the new device, the administrator opens that link using guest Wi-Fi,
-   cellular or Ethernet and follows the platform's installation instructions.
+5. The administrator provides the link to the person holding the device. That
+   person opens it using guest Wi-Fi, cellular or Ethernet and approves the
+   platform's installation steps. The administrator need not access the device.
 6. Cairn rechecks the owner's eligibility before certificate issuance and shows
    enrollment, certificate issuance, profile delivery and network acceptance as
    separate outcomes.
@@ -35,6 +36,26 @@ unattended installation.
 The initial permission is admin-only. Ordinary operators do not inherit the
 ability to issue for arbitrary owners from their device-management role. Any
 future delegated enrollment permission must be explicit and separately tested.
+
+## Remote users and devices
+
+Required scenario: the administrator is in Bozeman and the owner/device is in
+Lynchburg. The administrator selects the owner and profile assignments, verifies
+their own MFA and creates the enrollment invitation from Cairn. The remote user
+only needs to open the invitation on the device and approve manual enrollment;
+they do not sign into Cairn or supply AD credentials or their own MFA.
+
+Provide a copyable HTTPS link as well as QR, with Mac and iPhone/iPad instructions.
+The enrollment endpoint must be reachable with a trusted certificate from the
+remote site's initial network. Show resumable progress and clear expired-link
+recovery. Creating a link does not send it automatically or prove delivery.
+
+After enrollment, the administrator can assign and push profiles from Bozeman.
+Offline devices remain pending until they return; APNs success is a notification
+result, not installation. Show each device's acknowledgement or failure. Neither
+physical access, remote shell nor screen sharing is a prerequisite. Initial
+manual installation still requires action by the person holding the device;
+fully unattended ADE enrollment remains outside the current release scope.
 
 ## Group and OU profile selection
 
@@ -78,6 +99,13 @@ procedure still needs an implementation and review; do not expose an anonymous
 web bootstrap or make a directory password sufficient to replace an admin factor.
 
 ## Required acceptance
+
+- Complete enrollment with the administrator in Bozeman and a user/device in
+  Lynchburg, without administrator device access, owner login or owner MFA.
+  Then assign another profile remotely and observe its device acknowledgement.
+- Exercise same-device links, expired links, interrupted installation and an
+  offline device returning. Pending and failed states must remain distinguishable
+  from installed; remote access must not be needed to discover normal next steps.
 
 - An administrator enrolls for an enabled AD user who has never signed into
   Cairn and has no MFA registration. The owner supplies no credentials.
