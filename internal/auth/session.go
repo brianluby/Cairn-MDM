@@ -68,12 +68,12 @@ func (s *SessionStore) Create(ctx context.Context, id Identity) (*Session, error
 	// Only the hash of the token is persisted; the raw token lives solely in the
 	// caller's cookie (MDM-AUTH-001). A stolen database therefore yields no
 	// usable session tokens.
-	query := `INSERT INTO app_sessions (token, username, role, display_name, provider, csrf_token, expires_at, directory_identity)
- SELECT ?, ?, ?, ?, ?, ?, ?, ?`
-	args := []any{hashToken(token), id.Username, string(id.Role), id.DisplayName, providerOr(id.Provider), csrf, expires.Format(time.RFC3339), directory}
+	query := `INSERT INTO app_sessions (token, username, role, display_name, provider, csrf_token, expires_at, directory_identity, auth_subject)
+ SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?`
+	args := []any{hashToken(token), id.Username, string(id.Role), id.DisplayName, providerOr(id.Provider), csrf, expires.Format(time.RFC3339), directory, mfaPrincipal(id)}
 	if id.localCredentialHash != "" {
-		query += ` WHERE EXISTS(SELECT 1 FROM app_users WHERE username=? AND password_hash=? AND role=?)`
-		args = append(args, id.Username, id.localCredentialHash, string(id.Role))
+		query += ` WHERE EXISTS(SELECT 1 FROM app_users WHERE username=? AND password_hash=? AND role=? AND subject_id=?)`
+		args = append(args, id.Username, id.localCredentialHash, string(id.Role), id.SubjectID)
 	}
 	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -94,12 +94,12 @@ func (s *SessionStore) Get(ctx context.Context, token string) (*Session, error) 
 		return nil, ErrNoSession
 	}
 	var (
-		username, role, display, provider, csrf, expires, created, directory string
+		username, role, display, provider, csrf, expires, created, directory, principal string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT username, role, display_name, provider, csrf_token, expires_at, created_at, directory_identity
+		`SELECT username, role, display_name, provider, csrf_token, expires_at, created_at, directory_identity, auth_subject
 		 FROM app_sessions WHERE token = ?`, hashToken(token)).
-		Scan(&username, &role, &display, &provider, &csrf, &expires, &created, &directory)
+		Scan(&username, &role, &display, &provider, &csrf, &expires, &created, &directory, &principal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoSession
 	}
@@ -149,7 +149,7 @@ func (s *SessionStore) Get(ctx context.Context, token string) (*Session, error) 
 
 	return &Session{
 		Token:     token,
-		Identity:  Identity{Username: username, DisplayName: display, Role: Role(role), Provider: provider, Directory: directoryIdentity},
+		Identity:  Identity{Username: username, DisplayName: display, Role: Role(role), Provider: provider, Directory: directoryIdentity, SubjectID: localSubject(principal)},
 		CSRF:      csrf,
 		ExpiresAt: exp,
 	}, nil

@@ -133,6 +133,15 @@ func runServe(ctx context.Context, args []string) error {
 	// Local-account management in the console (admin-only). Directory-backed
 	// (LDAP/OIDC) identities are owned by their provider and stay outside this.
 	console.SetUsers(auth.NewLocalStore(db.SQL()))
+	mfaKey, err := auth.OpenMFAKey(ctx, db.SQL(), cfg.Storage.Path)
+	if err != nil {
+		return err
+	}
+	mfa, err := auth.NewMFAStore(db.SQL(), sessions, mfaKey)
+	if err != nil {
+		return err
+	}
+	console.SetMFA(mfa)
 	console.SetAPNS(push.RequestManager{Root: filepath.Join(pushcertDir(cfg), "requests")}, db)
 
 	// OIDC single sign-on (redirect flow) is wired separately from the

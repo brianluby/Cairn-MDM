@@ -1,7 +1,7 @@
 # Backing up and restoring Cairn
 
 Cairn's entire state is small and file-based. A correct backup is: the SQLite
-database (captured consistently), the config, and the two on-disk certs. Losing
+database (captured consistently), the config, certificates, and the MFA encryption key. Losing
 the database loses enrollments — treat it like the crown jewel it is.
 
 ## What to back up
@@ -9,6 +9,7 @@ the database loses enrollments — treat it like the crown jewel it is.
 | Item | Path (DZsec CT 226) | Why |
 |---|---|---|
 | Database | `/var/lib/cairn/cairn.db` (+ `-wal`, `-shm`) | Devices, enrollments, cert-auth associations, **APNs push cert/key**, embedded CA (generate/import mode), sessions, profiles, grants, audit |
+| MFA key (candidate schema 027 onward) | `<storage.path>.mfa/key`, normally `/var/lib/cairn/cairn.db.mfa/key` | Decrypts confirmed and pending authenticator secrets; restore the matching key with the DB; directory 0700 and file 0600 |
 | Config | `/etc/cairn/cairn.toml` | Wiring; references the cert/challenge files |
 | Signing cert | `/etc/cairn/sign.crt` / `sign.key` | Profile-signing identity (re-issuable from LE, but back it up) |
 | External SCEP chain / challenge | `/etc/cairn/dzsec-ca-chain.pem`, `/etc/cairn/scep-challenge` | External-mode enrollment trust + challenge |
@@ -86,3 +87,21 @@ newer DB, but back up first regardless.
 Nightly `VACUUM INTO` + config tar to `/var/backups`, synced off-host (the
 existing backup path / PBS). Keep ≥14 daily + ≥8 weekly. **Test a real restore
 into a scratch instance quarterly** — an untested backup is a hope, not a backup.
+
+## MFA key and recovery state
+
+The completion candidate creates `<storage.path>.mfa/key` at server startup, or
+when host bootstrap first runs. Back up that directory with the confidential
+configuration bundle once this candidate is installed. `cairn backup` copies
+only SQLite and prints a reminder; it does not copy this key. The key is not
+rotated during routine operation. A database backup alone cannot recover MFA.
+Restore the matching directory/key before starting the restored service, owned
+by the service user, directory mode 0700 and key mode 0600. Startup refuses to
+create a replacement key when encrypted MFA state exists.
+
+Restoring an old database also restores old MFA counters, sessions, approval
+codes and recovery-code hashes. Before exposing a restored instance, invalidate
+sessions and outstanding registrations and reset affected factors through a
+reviewed recovery procedure. Do not assume a database restore preserves
+single-use history from after the backup. End-to-end restore qualification is
+still a release gate; never test a restored copy against production devices.

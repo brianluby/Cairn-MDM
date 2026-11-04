@@ -1,7 +1,7 @@
 # Enrollment and recovery
 
 Accepted product behavior, November 2, 2026. This document records requirements;
-MFA and the directory-authorized grant flows are not yet implemented.
+MFA registration/recovery is implemented in the completion candidate; directory-authorized grants and issuance integration remain pending. See [MFA operation](mfa.md).
 
 ## An administrator adds a device for someone
 
@@ -94,8 +94,8 @@ eligibility. Recovery cannot silently bypass the certificate replacement and
 retirement policy.
 
 First-administrator MFA bootstrap must use a protected local installation or
-recovery procedure, since no previously enrolled administrator exists. That
-procedure still needs an implementation and review; do not expose an anonymous
+recovery procedure, since no previously enrolled administrator exists. The candidate implements a host-only local administrator approval/reset command;
+its operational review remains pending; do not expose an anonymous
 web bootstrap or make a directory password sufficient to replace an admin factor.
 
 ## Required acceptance

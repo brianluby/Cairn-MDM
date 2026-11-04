@@ -23,6 +23,7 @@
   </nav>
   <span class="spacer"></span>
   <span class="user">
+ <a href="/account/mfa">Account security</a>
     {{with .User}}{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}} · {{.Role}}{{end}}
     <form method="post" action="/logout" style="display:inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">

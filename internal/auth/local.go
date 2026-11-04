@@ -52,8 +52,8 @@ func (s *LocalStore) CreateUser(ctx context.Context, username, password string, 
 		return fmt.Errorf("auth: hash password: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO app_users (username, password_hash, role, display_name) VALUES (?, ?, ?, ?)`,
-		username, hash, string(role), displayName)
+		`INSERT INTO app_users (username, password_hash, role, display_name, subject_id) VALUES (?, ?, ?, ?, ?)`,
+		username, hash, string(role), displayName, randomToken())
 	if err != nil {
 		return fmt.Errorf("auth: create user: %w", err)
 	}
@@ -77,10 +77,10 @@ func (s *LocalStore) SetPassword(ctx context.Context, username, password string)
 
 // Authenticate verifies a username/password and returns the identity.
 func (s *LocalStore) Authenticate(ctx context.Context, username, password string) (*Identity, error) {
-	var hash, role, display string
+	var hash, role, display, subject string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT password_hash, role, display_name FROM app_users WHERE username = ?`, username).
-		Scan(&hash, &role, &display)
+		`SELECT password_hash, role, display_name, subject_id FROM app_users WHERE username = ?`, username).
+		Scan(&hash, &role, &display, &subject)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Burn comparable work so a missing username is not distinguishable by
 		// timing from a wrong password.
@@ -97,7 +97,7 @@ func (s *LocalStore) Authenticate(ctx context.Context, username, password string
 	if !match {
 		return nil, ErrInvalidCredentials
 	}
-	return &Identity{Username: username, DisplayName: display, Role: Role(role), Provider: "local", localCredentialHash: hash}, nil
+	return &Identity{Username: username, DisplayName: display, Role: Role(role), Provider: "local", localCredentialHash: hash, SubjectID: subject}, nil
 }
 
 // UserRole returns the stored role for a username (used by tests/admin tooling).

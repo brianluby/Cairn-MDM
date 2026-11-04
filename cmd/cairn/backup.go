@@ -88,6 +88,7 @@ func runBackup(ctx context.Context, args []string) error {
 		fmt.Println("integrity check: ok")
 	}
 
+	fmt.Printf("MFA encryption key must be backed up separately: %s.mfa/key (keep private; restore with this database)\n", cfg.Storage.Path)
 	fmt.Println("\nAlso back up config + certs (see docs/backup-restore.md):")
 	fmt.Printf("  %s + /etc/cairn/sign.{crt,key} + external CA chain/challenge\n", *configPath)
 	return nil
