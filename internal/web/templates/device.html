@@ -95,6 +95,7 @@
             <td>
               {{.ProfileName}}
               <div class="sub mono">{{.ProfileIdentifier}}</div>
+              {{with index $.Affects .ProfileIdentifier}}<div class="sub">Provides: {{.}}</div>{{end}}
             </td>
             <td>
               <span class="dot {{if eq .Status "installed"}}on{{else if eq .Status "failed"}}off{{else}}wait{{end}}"></span>
@@ -103,7 +104,7 @@
             <td class="sub">{{.UpdatedAt}}</td>
             <td style="text-align:right">
               <form method="post" action="/admin/devices/{{$.Device.ID}}/remove"
-                    onsubmit="return confirm('Send a RemoveProfile command for this profile?')">
+                    onsubmit="return confirm('Remove {{.ProfileName}} from {{$.Device.DisplayName}}?{{with index $.Affects .ProfileIdentifier}} This takes away: {{.}}. The device may not be able to reach Cairn afterwards.{{end}}')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
                 <input type="hidden" name="intent" value="{{$.Intent}}-{{.ProfileID}}">
                 <input type="hidden" name="identifier" value="{{.ProfileIdentifier}}">

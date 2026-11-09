@@ -29,6 +29,7 @@
             <td>{{range .Types}}<span class="tag">{{.}}</span> {{end}}</td>
             <td class="sub">
               {{with index $.DeployStatus .ID}}{{.Installed}} installed · {{.Pending}} pending · {{.Failed}} failed{{else}}—{{end}}
+              {{with index $.Outcomes .ID}}<details><summary>Per-device outcomes</summary><table><tbody>{{range .}}<tr><td><a href="/admin/devices/{{.DeviceID}}">{{.DeviceName}}</a> <span class="sub">({{.Source}})</span></td><td><span class="dot {{if eq .Status "installed"}}on{{else if eq .Status "failed"}}off{{else}}wait{{end}}"></span> {{.Status}}</td><td class="sub">{{.UpdatedAt}}</td></tr>{{end}}</tbody></table></details>{{end}}
             </td>
             {{if $admin}}
             <td style="text-align:right">
@@ -36,7 +37,7 @@
                 <input type="hidden" name="csrf" value="{{$csrf}}">
                 <input type="hidden" name="action" value="unassign">
                 <input type="hidden" name="profile_id" value="{{.ID}}">
-                <button class="btn link" type="submit">Unassign</button>
+                <button class="btn link" type="submit" onclick="return confirm('Unassign {{.Name}} from this group? Devices keep their installed copy; new members will not receive it.{{if .Affects}} It provides: {{range $i, $a := .Affects}}{{if $i}}; {{end}}{{$a}}{{end}}.{{end}}')">Unassign</button>
               </form>
             </td>
             {{end}}

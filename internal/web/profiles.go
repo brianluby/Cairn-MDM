@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"io"
@@ -86,14 +87,35 @@ func (a *App) handleProfileDetail(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("profile deploys", "id", p.ID, "err", err)
 	}
+	var groups []sqlite.Group
+	if ps, ok := a.profiles.(profileAssignmentSource); ok {
+		if groups, err = ps.ProfileGroups(r.Context(), p.ID); err != nil {
+			a.log.Error("profile groups", "id", p.ID, "err", err)
+		}
+	}
+	installed := 0
+	for _, d := range deploys {
+		if d.Status == "installed" {
+			installed++
+		}
+	}
 	a.render(w, r, http.StatusOK, "profile.html", map[string]any{
-		"Title":   p.Name,
-		"Profile": p,
-		"Size":    len(p.Data),
-		"Deploys": deploys,
-		"Flash":   r.URL.Query().Get("flash"),
-		"Error":   r.URL.Query().Get("error"),
+		"Title":     p.Name,
+		"Profile":   p,
+		"Size":      len(p.Data),
+		"Deploys":   deploys,
+		"Groups":    groups,
+		"Installed": installed,
+		"Affects":   p.Affects(),
+		"Flash":     r.URL.Query().Get("flash"),
+		"Error":     r.URL.Query().Get("error"),
 	})
+}
+
+// profileAssignmentSource is the optional capability behind the profile page's
+// group list and the delete gate.
+type profileAssignmentSource interface {
+	ProfileGroups(ctx context.Context, profileID int64) ([]sqlite.Group, error)
 }
 
 func (a *App) handleProfileDownload(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +135,25 @@ func (a *App) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	p, ok := a.profileFromPath(w, r)
 	if !ok {
+		return
+	}
+	back := "/admin/profiles/" + strconv.FormatInt(p.ID, 10)
+	// A profile still assigned to a group would be re-pushed to new members; the
+	// library deletion must not quietly remove that intent. Unassign first.
+	if ps, ok := a.profiles.(profileAssignmentSource); ok {
+		if groups, err := ps.ProfileGroups(r.Context(), p.ID); err == nil && len(groups) > 0 {
+			names := make([]string, 0, len(groups))
+			for _, g := range groups {
+				names = append(names, g.Name)
+			}
+			http.Redirect(w, r, back+"?error="+url.QueryEscape("Still assigned to: "+strings.Join(names, ", ")+". Unassign it from those groups first, then delete."), http.StatusSeeOther)
+			return
+		}
+	}
+	// Deleting while devices report it installed drops Cairn's record of those
+	// installations (the devices keep the profile). Require an explicit acknowledgement.
+	if deploys, err := a.deploys.ProfileDeploys(r.Context(), p.ID); err == nil && len(deploys) > 0 && r.PostFormValue("acknowledge") != "yes" {
+		http.Redirect(w, r, back+"?error="+url.QueryEscape("This profile is recorded on "+strconv.Itoa(len(deploys))+" device(s). Tick the acknowledgement to delete the library entry; installed copies stay on devices until removed from each device page."), http.StatusSeeOther)
 		return
 	}
 	if err := a.profiles.DeleteProfile(r.Context(), p.ID); err != nil {

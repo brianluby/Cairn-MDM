@@ -304,7 +304,15 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("list profiles", "err", err)
 	}
+	// What each deployed profile takes away if removed, by identifier.
+	affects := map[string]string{}
+	for _, p := range library {
+		if list := p.Affects(); len(list) > 0 {
+			affects[p.Identifier] = strings.Join(list, "; ")
+		}
+	}
 	data := map[string]any{
+		"Affects":          affects,
 		"Title":            d.DisplayName(),
 		"Intent":           newCommandIntent(),
 		"Device":           d,
@@ -505,13 +513,32 @@ func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("list devices", "err", err)
 	}
+	var counts map[string]sqlite.DeployCounts
+	var owners map[string]string
+	if ls, ok := a.devices.(deviceListSource); ok {
+		if counts, err = ls.DeviceDeployCounts(r.Context()); err != nil {
+			a.log.Error("device deploy counts", "err", err)
+		}
+		if owners, err = ls.DeviceOwnerUPNs(r.Context()); err != nil {
+			a.log.Error("device owners", "err", err)
+		}
+	}
 	a.render(w, r, http.StatusOK, "devices.html", map[string]any{
 		"Title":    "Devices",
 		"Devices":  devices,
 		"Q":        q,
 		"Enrolled": enrolled,
 		"Count":    len(devices),
+		"Counts":   counts,
+		"Owners":   owners,
 	})
+}
+
+// deviceListSource is the optional capability behind the device list's owner
+// and profile-outcome columns.
+type deviceListSource interface {
+	DeviceDeployCounts(ctx context.Context) (map[string]sqlite.DeployCounts, error)
+	DeviceOwnerUPNs(ctx context.Context) (map[string]string, error)
 }
 
 // checkCSRF verifies the submitted token matches the session's for mutating

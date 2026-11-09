@@ -25,6 +25,14 @@
       </table>
     </div>
 
+    {{if .Affects}}<div class="card callout" style="margin-top:16px">Removing this profile from a device takes away: {{range $i, $a := .Affects}}{{if $i}}; {{end}}{{$a}}{{end}}. Plan another way for the device to reach Cairn before removing it.</div>{{end}}
+
+    <h2>Assigned to groups</h2>
+    <div class="card">
+      {{if .Groups}}<table><tbody>{{range .Groups}}<tr><td><a href="/admin/groups/{{.ID}}">{{.Name}}</a></td><td class="sub">{{.DeviceCount}} manual device(s)</td></tr>{{end}}</tbody></table>
+      {{else}}<div class="empty">Not assigned to any group. Devices only receive it through a group assignment or a one-off install.</div>{{end}}
+    </div>
+
     <h2>Deployed to</h2>
     <div class="card">
       {{if .Deploys}}
@@ -55,11 +63,18 @@
       <a class="btn" href="/admin/profiles/{{.Profile.ID}}/download">Download</a>
     </p>
     {{if .User.Role.AtLeast "admin"}}
-    <form method="post" action="/admin/profiles/{{.Profile.ID}}/delete"
-          onsubmit="return confirm('Remove this profile from the library? Devices that have it installed keep it.')">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <button class="btn danger" type="submit">Delete from library</button>
-    </form>
+    <h2>Delete from library</h2>
+    <div class="card" style="padding:16px 24px">
+      {{if .Groups}}<p>Unassign this profile from {{len .Groups}} group(s) above before deleting it; a library deletion never removes a group's intent silently.</p>
+      {{else}}
+      <form method="post" action="/admin/profiles/{{.Profile.ID}}/delete"
+            onsubmit="return confirm('Delete {{.Profile.Name}} from the library? {{if .Deploys}}{{len .Deploys}} device(s) keep their installed copy; Cairn drops its record of them.{{else}}No device has it.{{end}}')">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        {{if .Deploys}}<p><label><input type="checkbox" name="acknowledge" value="yes"> I understand {{.Installed}} device(s) report this profile installed and will keep it until it is removed from each device page; Cairn's deployment records for it will be dropped.</label></p>{{end}}
+        <button class="btn danger" type="submit">Delete from library</button>
+      </form>
+      {{end}}
+    </div>
     {{end}}
   </main>
 </body>
