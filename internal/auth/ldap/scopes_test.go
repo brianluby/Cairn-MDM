@@ -115,15 +115,23 @@ func TestScopePreviewRejectsUnknownRatherThanPartialResult(t *testing.T) {
 		func(*goldap.SearchRequest) (*goldap.SearchResult, error) {
 			return &goldap.SearchResult{Entries: []*goldap.Entry{target, target}}, nil
 		},
-		func(*goldap.SearchRequest) (*goldap.SearchResult, error) {
-			return &goldap.SearchResult{Entries: []*goldap.Entry{target}, Referrals: []string{"ldap://other"}}, nil
-		},
 	} {
 		c := &scopeConn{steps: []func(*goldap.SearchRequest) (*goldap.SearchResult, error){entryStep(owner), entryStep(target), failure}}
 		result, err := scopeProvider(t, c).EvaluateScopes(context.Background(), ownerRef(), []auth.DirectoryScope{ruleRef("ou", "direct"), ruleRef("ou", "direct")})
 		if err == nil || result != nil {
 			t.Fatalf("partial result escaped: %+v %v", result, err)
 		}
+	}
+	// Samba AD attaches subordinate referrals to every subtree search of the
+	// domain root; one entry plus referrals is a complete answer, not a partial one.
+	withRef := func(e *goldap.Entry) func(*goldap.SearchRequest) (*goldap.SearchResult, error) {
+		return func(*goldap.SearchRequest) (*goldap.SearchResult, error) {
+			return &goldap.SearchResult{Entries: []*goldap.Entry{e}, Referrals: []string{"ldaps://dzsec.net/CN=Configuration,DC=example,DC=org", "ldaps://dzsec.net/DC=DomainDnsZones,DC=example,DC=org"}}, nil
+		}
+	}
+	ref := &scopeConn{steps: []func(*goldap.SearchRequest) (*goldap.SearchResult, error){withRef(owner), withRef(target)}}
+	if result, err := scopeProvider(t, ref).EvaluateScopes(context.Background(), ownerRef(), []auth.DirectoryScope{ruleRef("ou", "direct")}); err != nil || result == nil || len(result.Matches) != 1 {
+		t.Fatalf("referrals treated as partial: %+v %v", result, err)
 	}
 	disabled := ownerEntry(map[string][]string{"userAccountControl": {"514"}})
 	c := &scopeConn{steps: []func(*goldap.SearchRequest) (*goldap.SearchResult, error){entryStep(disabled)}}

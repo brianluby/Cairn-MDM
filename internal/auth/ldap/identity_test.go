@@ -100,6 +100,47 @@ func TestConfiguredDirectoryLoginCarriesVerifiedIdentity(t *testing.T) {
 	if _, err = p.Authenticate(context.Background(), "nick", "hunter2"); !errors.Is(err, auth.ErrInvalidCredentials) {
 		t.Fatal("disabled directory account accepted")
 	}
+	p = testProvider(t, baseConn(ownerEntry(map[string][]string{"accountExpires": {"1"}})), nil)
+	p.cfg.DirectoryID = "test-directory"
+	if _, err = p.Authenticate(context.Background(), "nick", "hunter2"); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatal("expired directory account accepted")
+	}
+	// A built-in account whose UPN is not user@domain (Samba's Administrator is
+	// "administrator") still signs in to the console, but without a verified
+	// identity it cannot authorize enrollments or register directory MFA.
+	p = testProvider(t, baseConn(ownerEntry(map[string][]string{"userPrincipalName": {"administrator"}, "memberOf": {"CN=cert-admins,CN=Users,DC=example,DC=org"}})), nil)
+	p.cfg.DirectoryID = "test-directory"
+	id, err = p.Authenticate(context.Background(), "nick", "hunter2")
+	if err != nil || id.Directory != nil || id.Role != auth.RoleAdmin {
+		t.Fatalf("non-routable UPN login: %+v %v", id, err)
+	}
+	if _, err := directoryIdentity(ownerEntry(map[string][]string{"userPrincipalName": {"administrator"}}), "test-directory", time.Now()); !errors.Is(err, ErrNoRoutableUPN) || !errors.Is(err, ErrOwnerIneligible) {
+		t.Fatalf("non-routable UPN classification: %v", err)
+	}
+}
+
+// referralConn answers every search with the one entry plus the subordinate
+// referrals Samba AD attaches to subtree searches of the domain root.
+type referralConn struct{ *fakeConn }
+
+func (c *referralConn) Search(*goldap.SearchRequest) (*goldap.SearchResult, error) {
+	return &goldap.SearchResult{Entries: []*goldap.Entry{c.entry}, Referrals: []string{"ldaps://example.org/CN=Configuration,DC=example,DC=org"}}, nil
+}
+
+func TestOwnerLookupsIgnoreSubordinateReferrals(t *testing.T) {
+	p := testProvider(t, &referralConn{fakeConn: baseConn(ownerEntry(map[string][]string{"memberOf": {"CN=cert-admins,CN=Users,DC=example,DC=org"}}))}, nil)
+	p.cfg.DirectoryID = "test-directory"
+	p.cfg.DefaultRole = "user"
+	owner, err := p.ResolveOwner(context.Background(), "nick")
+	if err != nil || owner.UPN != "nick@example.org" {
+		t.Fatalf("resolve with referrals: %+v %v", owner, err)
+	}
+	if _, err = p.RevalidateOwner(context.Background(), *owner); err != nil {
+		t.Fatalf("revalidate with referrals: %v", err)
+	}
+	if err = p.RevalidateAdministrator(context.Background(), *owner); err != nil {
+		t.Fatalf("administrator revalidation with referrals: %v", err)
+	}
 }
 
 func TestCurrentAdministratorRevalidation(t *testing.T) {

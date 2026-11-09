@@ -15,6 +15,15 @@ import (
 )
 
 var ErrOwnerIneligible = errors.New("directory owner is missing, ambiguous, disabled, expired or incomplete")
+
+// ErrAccountDisabled and ErrAccountExpired are the eligibility failures that must
+// also refuse console login; other derivation failures (no routable UPN) only
+// withhold the verified owner identity.
+var (
+	ErrAccountDisabled = fmt.Errorf("%w: account disabled or not a normal account", ErrOwnerIneligible)
+	ErrAccountExpired  = fmt.Errorf("%w: account expired", ErrOwnerIneligible)
+	ErrNoRoutableUPN   = fmt.Errorf("%w: userPrincipalName is missing or not user@domain", ErrOwnerIneligible)
+)
 var identityAttributes = []string{"dn", "objectGUID", "userPrincipalName", "sAMAccountName", "userAccountControl", "accountExpires", "displayName", "cn", "memberOf"}
 
 func directoryIdentity(entry *goldap.Entry, directory string, now time.Time) (*auth.DirectoryIdentity, error) {
@@ -32,25 +41,15 @@ func directoryIdentity(entry *goldap.Entry, directory string, now time.Time) (*a
 	if len(guid) != 1 || len(guid[0]) != 16 {
 		return nil, ErrOwnerIneligible
 	}
-	upn, ok := one("userPrincipalName")
-	if !ok {
-		return nil, ErrOwnerIneligible
-	}
-	addr, err := mail.ParseAddress(upn)
-	if err != nil || addr.Address != upn || strings.ContainsAny(upn, "\r\n\x00") {
-		return nil, ErrOwnerIneligible
-	}
-	account, ok := one("sAMAccountName")
-	if !ok {
-		return nil, ErrOwnerIneligible
-	}
+	// Eligibility (enabled, normal, unexpired) is checked before identity shape so
+	// a login path can tell "must refuse" from "cannot be a verified owner".
 	uac, ok := one("userAccountControl")
 	if !ok {
 		return nil, ErrOwnerIneligible
 	}
 	flags, err := strconv.ParseUint(uac, 10, 32)
 	if err != nil || flags&2 != 0 || flags&512 == 0 {
-		return nil, ErrOwnerIneligible
+		return nil, ErrAccountDisabled
 	}
 	expiry, ok := one("accountExpires")
 	if !ok {
@@ -64,8 +63,20 @@ func directoryIdentity(entry *goldap.Entry, directory string, now time.Time) (*a
 	if ticks != 0 && ticks != 9223372036854775807 {
 		nowTicks := uint64(now.Unix()+11644473600)*10000000 + uint64(now.Nanosecond()/100)
 		if ticks <= nowTicks {
-			return nil, ErrOwnerIneligible
+			return nil, ErrAccountExpired
 		}
+	}
+	upn, ok := one("userPrincipalName")
+	if !ok {
+		return nil, ErrNoRoutableUPN
+	}
+	addr, err := mail.ParseAddress(upn)
+	if err != nil || addr.Address != upn || strings.ContainsAny(upn, "\r\n\x00") {
+		return nil, ErrNoRoutableUPN
+	}
+	account, ok := one("sAMAccountName")
+	if !ok {
+		return nil, ErrOwnerIneligible
 	}
 	return &auth.DirectoryIdentity{DirectoryID: directory, ObjectID: hex.EncodeToString(guid[0]), UPN: upn, AccountName: account}, nil
 }
@@ -144,7 +155,10 @@ func (p *Provider) resolveVia(ctx context.Context, server, filter string) (*auth
 	if err != nil {
 		return nil, err
 	}
-	if len(result.Entries) != 1 || len(result.Referrals) > 0 {
+	// Samba AD answers a subtree search of the domain root with subordinate
+	// referrals (Configuration, DomainDnsZones, ...). They point outside the
+	// search base and carry no user data, so only the entry count matters.
+	if len(result.Entries) != 1 {
 		return nil, ErrOwnerIneligible
 	}
 	return directoryIdentity(result.Entries[0], p.cfg.DirectoryID, time.Now())
@@ -184,7 +198,7 @@ func (p *Provider) RevalidateAdministrator(ctx context.Context, owner auth.Direc
 			if e != nil {
 				return e
 			}
-			if len(result.Entries) != 1 || len(result.Referrals) > 0 {
+			if len(result.Entries) != 1 {
 				return ErrOwnerIneligible
 			}
 			id, e := directoryIdentity(result.Entries[0], p.cfg.DirectoryID, time.Now())

@@ -92,7 +92,9 @@ func (p *Provider) searchScope(conn Conn, filter string, attrs []string) (*golda
 	if err != nil {
 		return nil, err
 	}
-	if result == nil || len(result.Entries) != 1 || len(result.Referrals) != 0 {
+	// Subordinate referrals accompany every subtree search of the domain root on
+	// Samba AD; they are not missing data. Only the entry count decides.
+	if result == nil || len(result.Entries) != 1 {
 		return nil, ErrScopeUnavailable
 	}
 	entry := result.Entries[0]
@@ -234,7 +236,7 @@ func (p *Provider) EvaluateScopes(ctx context.Context, owner auth.DirectoryIdent
 					if e != nil {
 						return e
 					}
-					if found == nil || len(found.Entries) > 1 || len(found.Referrals) != 0 {
+					if found == nil || len(found.Entries) > 1 {
 						return ErrScopeUnavailable
 					}
 					if len(found.Entries) == 1 {

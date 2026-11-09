@@ -211,11 +211,20 @@ func (p *Provider) authenticateVia(ctx context.Context, server, username, passwo
 		return nil, fmt.Errorf("user bind: %w", err)
 	}
 
+	// With a directory ID the login also derives the verified owner identity. A
+	// disabled or expired account is refused outright. An account that merely
+	// lacks a routable UPN (user@domain) may still use the console, but carries
+	// no verified identity: it cannot register MFA against the directory or
+	// authorize enrollments until the UPN is fixed in AD.
 	var directory *auth.DirectoryIdentity
 	if p.cfg.DirectoryID != "" {
 		directory, err = directoryIdentity(entry, p.cfg.DirectoryID, time.Now())
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrAccountDisabled), errors.Is(err, ErrAccountExpired):
 			return nil, auth.ErrInvalidCredentials
+		case err != nil:
+			p.log.Warn("ldap login without verified directory identity", "user", username, "reason", err.Error())
+			directory = nil
 		}
 	}
 	display := entry.GetAttributeValue("displayName")
