@@ -73,6 +73,13 @@ type Store interface {
 	SetAlertState(ctx context.Context, key string, active bool, message string, notified bool) error
 }
 
+// lifecycleSource is the optional store capability behind renewal and device
+// certificate expiry conditions. *sqlite.DB satisfies it.
+type lifecycleSource interface {
+	ListRenewalAttempts(ctx context.Context, since time.Time, limit int) ([]sqlite.RenewalAttempt, error)
+	DeviceCertificates(ctx context.Context) ([]sqlite.DeviceCertificate, error)
+}
+
 // Condition is one active alert.
 type Condition struct {
 	Key      string
@@ -132,6 +139,52 @@ func (c *Checker) Evaluate(ctx context.Context) ([]Condition, error) {
 	}
 	if len(held) > 0 {
 		out = append(out, Condition{Key: "issuance.quarantined", Title: "Cairn: certificate issuances quarantined", Message: fmt.Sprintf("%d certificate issuance(s) are held after an ambiguous CA outcome. Review the Quarantine page.", len(held)), Priority: "high"})
+	}
+	if lc, ok := c.store.(lifecycleSource); ok {
+		attempts, err := lc.ListRenewalAttempts(ctx, now.Add(-7*24*time.Hour), 50)
+		if err != nil {
+			return nil, err
+		}
+		if len(attempts) > 0 {
+			names := map[string]bool{}
+			var list []string
+			for _, a := range attempts {
+				n := a.DeviceName
+				if n == "" {
+					n = "unknown device (signer " + a.SignerSerial + ")"
+				}
+				if !names[n] {
+					names[n] = true
+					list = append(list, n)
+				}
+			}
+			sort.Strings(list)
+			out = append(out, Condition{Key: "renewal.refused", Title: "Cairn: device tried to renew its certificate", Message: fmt.Sprintf("%d renewal attempt(s) in the last 7 days were refused; renewal is not available in this release. Issue a new enrollment link for: %s.", len(attempts), strings.Join(list, ", ")), Priority: "high"})
+		}
+		certs, err := lc.DeviceCertificates(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var expiring, expired []string
+		for _, dc := range certs {
+			if dc.Revoked {
+				continue
+			}
+			switch {
+			case !dc.NotAfter.After(now):
+				expired = append(expired, dc.DeviceName)
+			case dc.NotAfter.Sub(now) < 14*24*time.Hour:
+				expiring = append(expiring, fmt.Sprintf("%s (%s)", dc.DeviceName, dc.NotAfter.Format("2006-01-02")))
+			}
+		}
+		if len(expired) > 0 {
+			sort.Strings(expired)
+			out = append(out, Condition{Key: "device-cert.expired", Title: "Cairn: device certificate EXPIRED", Message: "Expired device identity certificate(s) still associated with: " + strings.Join(expired, ", ") + ". Re-enroll these devices; network access with the old certificate will fail.", Priority: "urgent"})
+		}
+		if len(expiring) > 0 {
+			sort.Strings(expiring)
+			out = append(out, Condition{Key: "device-cert.expiring", Title: "Cairn: device certificates expire within 14 days", Message: "Re-enroll before expiry (no renewal path in this release): " + strings.Join(expiring, ", ") + ".", Priority: "high"})
+		}
 	}
 	if c.cfg.BackupDir != "" {
 		newest, berr := newestBackup(c.cfg.BackupDir)

@@ -55,6 +55,33 @@
     </form>
     {{end}}
 
+    <h2>Identity certificate</h2>
+    <div class="card">
+      {{if .Certificates}}
+      <table>
+        <thead><tr><th>Serial</th><th>Expires</th><th>Status</th></tr></thead>
+        <tbody>
+          {{range .Certificates}}
+          <tr>
+            <td class="mono">{{.Serial}}</td>
+            <td class="date">{{.NotAfter.Format "2006-01-02"}}</td>
+            <td>{{if .Revoked}}<span class="dot off"></span> revoked{{else}}<span class="dot on"></span> in use{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">Renewal is not available in this release. Before expiry, create a new enrollment link for the owner and re-enroll the device; the old certificate is then retired through revocation.</p>
+      {{else}}
+      <div class="empty">No embedded-CA identity certificate is associated with this device (external CA, imported, or not yet enrolled through an owner-authorized link).</div>
+      {{end}}
+      {{if .RenewalAttempts}}
+      <div class="callout error" role="alert" style="margin:0 16px 16px">
+        <p>This device tried to renew its certificate {{len .RenewalAttempts}} time(s) recently and was refused. Issue a new enrollment link.</p>
+        <ul>{{range .RenewalAttempts}}<li class="sub">{{.ObservedAt}} · signer {{.SignerSerial}} expiring {{.SignerExpires}}</li>{{end}}</ul>
+      </div>
+      {{end}}
+    </div>
+
     <h2>Profiles</h2>
     <div class="card">
       {{if .Deploys}}

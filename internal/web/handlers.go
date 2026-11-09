@@ -315,6 +315,24 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 		"Flash":            r.URL.Query().Get("flash"),
 		"DirectoryRefresh": a.targeting != nil,
 	}
+	if lc, ok := a.devices.(lifecycleSource); ok {
+		attempts, err := lc.DeviceRenewalAttempts(r.Context(), d.ID, 10)
+		if err != nil {
+			a.log.Error("device renewal attempts", "id", d.ID, "err", err)
+		}
+		data["RenewalAttempts"] = attempts
+		certs, err := lc.DeviceCertificates(r.Context())
+		if err != nil {
+			a.log.Error("device certificates", "id", d.ID, "err", err)
+		}
+		var mine []sqlite.DeviceCertificate
+		for _, c := range certs {
+			if c.DeviceID == d.ID {
+				mine = append(mine, c)
+			}
+		}
+		data["Certificates"] = mine
+	}
 	if a.ownership != nil {
 		if owner, err := a.ownership.GetDeviceOwner(r.Context(), d.ID); err == nil {
 			data["Owner"] = owner
@@ -333,6 +351,13 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.render(w, r, http.StatusOK, "device.html", data)
+}
+
+// lifecycleSource is the optional store capability behind the device page's
+// certificate and renewal sections.
+type lifecycleSource interface {
+	DeviceRenewalAttempts(ctx context.Context, deviceID string, limit int) ([]sqlite.RenewalAttempt, error)
+	DeviceCertificates(ctx context.Context) ([]sqlite.DeviceCertificate, error)
 }
 
 // handleDeviceDirectoryRefresh re-binds the device's owner, re-evaluates the

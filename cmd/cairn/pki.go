@@ -163,13 +163,18 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 		// machine, and fails closed to quarantine. The per-enrollment SCEP challenge
 		// is the grant's token, which the Broker resolves via grantResolver.
 		policy := issue.DefaultPolicy()
+		policy.LeafValidity = time.Duration(cfg.Issuance.WithDefaults().LeafValidityDays) * 24 * time.Hour
 		policy.CRLDistributionPoint = cfg.Server.PublicURL + "/crl" // embedded CA serves its own CRL
-		brk := issue.NewBroker(authority.EmbeddedBackend(), store, resolver, policy)
+		brk := issue.NewBroker(authority.EmbeddedBackend(), store, resolver, policy).
+			WithIssuer(authority.Certificate()).WithRenewalObserver(renewalRecorder{db: store})
 		scepHandler, err := authority.SCEPHandlerWith(brk)
 		if err != nil {
 			return nil, err
 		}
-		deps.SCEP = scepHandler
+		// The envelope signer lets the Broker refuse renewal-style requests
+		// explicitly and record them, instead of failing on a spent grant.
+		deps.SCEP = issue.SignerExtractMiddleware(scepHandler)
+		log.Info("device certificate policy", "leaf_validity_days", cfg.Issuance.WithDefaults().LeafValidityDays, "renewal", "not implemented; re-enroll before expiry")
 		profileCerts := authority.ProfileCertsDER() // [cert] single-tier, [root, issuer] two-tier
 		mountEnroll(enroll.Config{
 			Organization:      org,
@@ -351,4 +356,15 @@ func brokerSCEPHandler(cert *x509.Certificate, key *rsa.PrivateKey, signer sceps
 	}
 	e := scepserver.MakeServerEndpoints(svc)
 	return scepserver.MakeHTTPHandler(e, svc, kitlog.NewNopLogger()), nil
+}
+
+// renewalRecorder adapts the storage layer to issue.RenewalObserver without the
+// storage package importing issue.
+type renewalRecorder struct{ db *sqlite.DB }
+
+func (r renewalRecorder) RecordRenewalAttempt(ctx context.Context, a issue.RenewalAttempt) error {
+	return r.db.RecordRenewalAttempt(ctx, sqlite.RenewalAttempt{
+		SPKISHA256: a.SPKISHA256, SignerSerial: a.SignerSerial, SignerSHA256: a.SignerSHA256,
+		SignerSubject: a.SignerSubject, SignerExpires: a.SignerExpires, Reason: a.Reason,
+	})
 }

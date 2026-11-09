@@ -2,7 +2,9 @@ package issue
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -34,11 +36,13 @@ type GrantResolver interface {
 // delegates signing — failing closed (quarantine) on any ambiguity. It implements
 // scepserver.CSRSignerContext.
 type Broker struct {
-	backend CABackend
-	store   IssuanceStore
-	grants  GrantResolver
-	policy  Policy
-	now     func() time.Time
+	backend  CABackend
+	store    IssuanceStore
+	grants   GrantResolver
+	policy   Policy
+	now      func() time.Time
+	issuer   *x509.Certificate // CA that signs our identities; nil disables renewal detection
+	renewals RenewalObserver   // may be nil
 }
 
 // NewBroker constructs a Broker.
@@ -55,6 +59,21 @@ var ErrIssuancePending = errors.New("issue: issuance pending or unresolved")
 func (b *Broker) SignCSRContext(ctx context.Context, m *scep.CSRReqMessage) (*x509.Certificate, error) {
 	if m == nil || m.CSR == nil || m.CSR.PublicKey == nil {
 		return nil, errors.New("issue: nil CSR/public key")
+	}
+	// 0. A request signed with an identity this CA issued is a renewal attempt.
+	//    Renewal is a reviewed lifecycle this release does not implement; refuse
+	//    before any grant is consulted and record the attempt for the operator.
+	if signer := SignerFromContext(ctx); signer != nil && b.issuer != nil && signer.CheckSignatureFrom(b.issuer) == nil {
+		if b.renewals != nil {
+			_, spki, _ := Identity(m.CSR.PublicKey)
+			sum := sha256.Sum256(signer.Raw)
+			_ = b.renewals.RecordRenewalAttempt(ctx, RenewalAttempt{
+				SPKISHA256: spki, SignerSerial: signer.SerialNumber.Text(16), SignerSHA256: hex.EncodeToString(sum[:]),
+				SignerSubject: signer.Subject.String(), SignerExpires: signer.NotAfter.UTC().Format(time.RFC3339),
+				Reason: "renewal not implemented",
+			})
+		}
+		return nil, ErrRenewalUnsupported
 	}
 	// 1. Resolve the grant from the challenge (LOOKUP, not consume). The only trusted
 	//    device input is the public key + proof-of-possession (the SCEP envelope).

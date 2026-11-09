@@ -84,6 +84,12 @@ allow_open = false
 # backup_dir = "/var/backups/cairn"               # watched for bundle freshness
 # backup_max_age_hours = 36
 
+# Device certificate lifetime for the embedded CA. There is no renewal path in
+# this release: re-enroll a device before its certificate expires. The console
+# and alerts warn 14 days ahead.
+# [issuance]
+# leaf_validity_days = 365
+
 # RADIUS acceptance points that rely on Cairn-issued certificates. Releasing a
 # quarantined issuance requires each listed server to report an observed
 # Access-Reject for every enumerated serial through POST /api/v1/radius/rejections

@@ -77,7 +77,24 @@ type Config struct {
 	Profile    Profile    `toml:"profile"`
 	Alerts     Alerts     `toml:"alerts"`
 	RADIUS     RADIUS     `toml:"radius"`
+	Issuance   Issuance   `toml:"issuance"`
 	Log        Log        `toml:"log"`
+}
+
+// Issuance tunes certificates the embedded CA signs for devices.
+type Issuance struct {
+	// LeafValidityDays is the device certificate lifetime. Default 365: this
+	// release has no renewal path, so a device must be re-enrolled before its
+	// certificate expires, and a shorter life only brings that forward.
+	LeafValidityDays int `toml:"leaf_validity_days"`
+}
+
+// WithDefaults fills zero fields.
+func (i Issuance) WithDefaults() Issuance {
+	if i.LeafValidityDays <= 0 {
+		i.LeafValidityDays = 365
+	}
+	return i
 }
 
 // RADIUS names the network-access acceptance points that rely on Cairn-issued
@@ -551,6 +568,9 @@ func readSecret(name, inline, file, env string) (string, error) {
 func (c Config) Validate() error {
 	var errs []error
 
+	if c.Issuance.LeafValidityDays < 0 || c.Issuance.LeafValidityDays > 825 {
+		errs = append(errs, errors.New("issuance.leaf_validity_days must be between 1 and 825"))
+	}
 	if len(c.RADIUS.AcceptancePoints) > 0 && c.RADIUS.IngestToken == "" {
 		errs = append(errs, errors.New("radius.acceptance_points set but no radius.ingest_token_file/_env; rejections could not be ingested"))
 	}
