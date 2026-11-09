@@ -97,7 +97,10 @@ th {
   text-align: left; font-size: 12px; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.03em; color: var(--muted); padding: 12px 20px; border-bottom: 1px solid var(--hairline);
 }
-td { overflow-wrap: anywhere; padding: 14px 20px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+/* break-word, not anywhere: anywhere shrinks a column to one character per line
+   when a table is squeezed, which turned "macOS" into a vertical column on phones. */
+td { overflow-wrap: break-word; padding: 14px 20px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+td form, td .btn { white-space: nowrap; }
 tr:last-child td { border-bottom: none; }
 td .sub { color: var(--muted); font-size: 13px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
@@ -166,6 +169,16 @@ pre { max-width: 100%; overflow: auto; }
   .topbar .user { margin-left: auto; }
   main { padding: 24px 16px 48px; }
   th, td { padding: 12px; }
+}
+/* Narrow screens: a data table scrolls inside its card instead of crushing its
+   columns or widening the page. The card is the scroll region. */
+@media (max-width: 700px) {
+  .card:has(> table) { overflow-x: auto; }
+  .card > table { min-width: 36rem; }
+  /* Key/value detail tables wrap instead of scrolling. */
+  .card > table.kv { min-width: 0; }
+  .card > table.kv th { width: 7rem !important; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 }
 
 /* Account setup keeps forms readable in both themes and on small screens. */

@@ -53,7 +53,7 @@
     <form method="post" action="/admin/groups/{{$gid}}/profiles" style="margin-top:12px">
       <input type="hidden" name="csrf" value="{{$csrf}}">
       <input type="hidden" name="action" value="assign">
-      <select name="profile_id" required>
+      <select name="profile_id" required aria-label="Profile to assign">
         <option value="" disabled selected>Assign a profile…</option>
         {{range .AddableProfiles}}<option value="{{.ID}}">{{.Name}} ({{.Identifier}})</option>{{end}}
       </select>
@@ -118,7 +118,7 @@
     <form method="post" action="/admin/groups/{{$gid}}/devices" style="margin-top:12px">
       <input type="hidden" name="csrf" value="{{$csrf}}">
       <input type="hidden" name="action" value="add">
-      <select name="device_id" required>
+      <select name="device_id" required aria-label="Device to add">
         <option value="" disabled selected>Add a device…</option>
         {{range .AddableDevices}}<option value="{{.ID}}">{{.DisplayName}} ({{.Serial}})</option>{{end}}
       </select>

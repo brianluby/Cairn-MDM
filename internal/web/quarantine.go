@@ -103,7 +103,10 @@ func (a *App) handleQuarantineDetail(w http.ResponseWriter, r *http.Request) {
 		"Resolution": res,
 		"Step":       res.Step(),
 		"Resolver":   a.resolver != nil,
-		"Embedded":   a.resolver != nil && a.resolver.EmbeddedBackend(),
+		// Steps are offered only when this hold's signer is the embedded CA this
+		// server can verify; an external-backend hold stays read-only even on an
+		// embedded-mode server.
+		"Embedded":   a.resolver != nil && a.resolver.EmbeddedBackend() && (iss.Backend == "" || iss.Backend == "embedded"),
 		"Flash":      r.URL.Query().Get("flash"),
 		"Error":      r.URL.Query().Get("error"),
 		"Missing":    strings.Split(r.URL.Query().Get("missing"), "\n"),

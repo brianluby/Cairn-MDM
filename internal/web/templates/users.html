@@ -35,7 +35,7 @@
               {{if $.CanSetRole}}
               <form method="post" action="/admin/users/{{.Username}}/role" style="display:inline">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                <select name="role">
+                <select name="role" aria-label="Role for {{.Username}}">
                   <option value="admin"{{if eq .Role "admin"}} selected{{end}}>admin</option>
                   <option value="operator"{{if eq .Role "operator"}} selected{{end}}>operator</option>
                   <option value="user"{{if eq .Role "user"}} selected{{end}}>user</option>

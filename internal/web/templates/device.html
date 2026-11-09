@@ -13,7 +13,7 @@
     {{if .Flash}}<div class="card callout" style="margin-top:0">{{.Flash}}</div>{{end}}
 
     <div class="card" style="margin-top:16px">
-      <table>
+      <table class="kv">
         <tbody>
           <tr><th style="width:180px">Status</th><td>{{if .Device.Enrolled}}Enrolled{{else}}Checked out{{end}}</td></tr>
           <tr><th>Enrollment ID</th><td class="mono">{{.Device.ID}}</td></tr>
@@ -127,7 +127,7 @@
     <form method="post" action="/admin/devices/{{.Device.ID}}/install" style="margin-top:12px">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="intent" value="{{.Intent}}">
-      <select name="profile_id" required>
+      <select name="profile_id" required aria-label="Profile to install">
         <option value="" disabled selected>Install a profile…</option>
         {{range .Library}}<option value="{{.ID}}">{{.Name}} ({{.Identifier}})</option>{{end}}
       </select>

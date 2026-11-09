@@ -10,7 +10,7 @@
     {{if .Error}}<div class="card callout error" role="alert">{{.Error}}</div>{{end}}
 
     <div class="card" style="margin-top:16px">
-      <table><tbody>
+      <table class="kv"><tbody>
         <tr><th style="width:200px">Quarantined (UTC)</th><td class="sub">{{.Issuance.QuarantinedAt}}</td></tr>
         <tr><th>Reason</th><td>{{.Issuance.QuarantineReason}}</td></tr>
         <tr><th>Backend</th><td>{{if .Issuance.Backend}}{{.Issuance.Backend}}{{else}}<span class="sub">unknown</span>{{end}}{{if .Issuance.BackendTxn}} <span class="sub mono">{{.Issuance.BackendTxn}}</span>{{end}}</td></tr>
