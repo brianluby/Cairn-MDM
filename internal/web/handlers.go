@@ -177,13 +177,35 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if len(recent) > 5 {
 		recent = recent[:5]
 	}
+	var alerts []sqlite.AlertState
+	var heartbeat string
+	if a.alerts != nil {
+		states, err := a.alerts.ListAlertStates(r.Context())
+		if err != nil {
+			a.log.Error("list alert states", "err", err)
+		}
+		for _, s := range states {
+			if s.Key == "heartbeat" {
+				if s.NotifiedAt.Valid {
+					heartbeat = s.NotifiedAt.String
+				}
+				continue
+			}
+			if s.Active {
+				alerts = append(alerts, s)
+			}
+		}
+	}
 	a.render(w, r, http.StatusOK, "dashboard.html", map[string]any{
-		"Title":         "Dashboard",
-		"Total":         total,
-		"Active":        active,
-		"Recent":        recent,
-		"EnrollmentURL": strings.TrimRight(a.cfg.PublicURL, "/") + "/enroll",
-		"APNs":          a.apnsStatus(r.Context()),
+		"Title":            "Dashboard",
+		"Total":            total,
+		"Active":           active,
+		"Recent":           recent,
+		"EnrollmentURL":    strings.TrimRight(a.cfg.PublicURL, "/") + "/enroll",
+		"APNs":             a.apnsStatus(r.Context()),
+		"Alerts":           alerts,
+		"AlertsConfigured": a.cfg.AlertsConfigured,
+		"LastHeartbeat":    heartbeat,
 	})
 }
 

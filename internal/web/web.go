@@ -124,6 +124,11 @@ type OwnershipStore interface {
 	GroupDirectoryDevices(ctx context.Context, groupID int64) ([]sqlite.Device, error)
 }
 
+// AlertStore reads remembered alert conditions for the dashboard.
+type AlertStore interface {
+	ListAlertStates(ctx context.Context) ([]sqlite.AlertState, error)
+}
+
 // Targeting re-evaluates directory rules for devices on operator request.
 type Targeting interface {
 	RefreshAndReconcile(ctx context.Context, deviceID string) (targeting.Outcome, error)
@@ -143,6 +148,7 @@ type Store interface {
 	DeployStore
 	QuarantineStore
 	OwnershipStore
+	AlertStore
 }
 
 // Commander runs device actions from the console.
@@ -174,6 +180,7 @@ type Config struct {
 	TLSMode             string // acme | files | proxy
 	LDAPEnabled         bool
 	DirectoryConfigured bool // auth.ldap.directory_id set
+	AlertsConfigured    bool // alerts.webhook_url set
 
 	// TrustedProxies lists reverse proxies (IP or CIDR) whose X-Forwarded-For
 	// header Cairn trusts for client-IP attribution. Empty = trust none: the
@@ -202,6 +209,7 @@ type App struct {
 	deploys          DeployStore
 	quarantine       QuarantineStore
 	ownership        OwnershipStore
+	alerts           AlertStore
 	targeting        Targeting // may be nil (no directory targeting)
 	cmd              Commander
 	rec              Reconciler   // may be nil (no auto-push)
@@ -221,7 +229,7 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	}
 	a := &App{
 		sessions: sessions, auth: authn,
-		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store, quarantine: store, ownership: store,
+		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store, quarantine: store, ownership: store, alerts: store,
 		cmd: cmd, rec: rec, cfg: cfg, trusted: trusted, log: log,
 	}
 	// oidcEnabled lets the login template render the SSO button only when an

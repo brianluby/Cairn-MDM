@@ -75,7 +75,44 @@ type Config struct {
 	Auth       Auth       `toml:"auth"`
 	Enrollment Enrollment `toml:"enrollment"`
 	Profile    Profile    `toml:"profile"`
+	Alerts     Alerts     `toml:"alerts"`
 	Log        Log        `toml:"log"`
+}
+
+// Alerts configures the out-of-band notification path: a webhook (ntfy-style
+// POST with Title/Priority headers, but any URL that accepts a text body works)
+// that receives certificate-expiry, quarantine, backup-freshness and backup
+// outcome messages plus a periodic heartbeat, so silence is not mistaken for
+// health. Disabled unless a webhook URL is configured.
+type Alerts struct {
+	WebhookURL     string `toml:"webhook_url"`
+	WebhookURLFile string `toml:"webhook_url_file"`
+	WebhookURLEnv  string `toml:"webhook_url_env"`
+	// HeartbeatHours is how often a heartbeat is sent (default 24).
+	HeartbeatHours int `toml:"heartbeat_hours"`
+	// APNSWarnDays is the expiry warning horizon (default 30).
+	APNSWarnDays int `toml:"apns_warn_days"`
+	// BackupDir, when set, is watched for bundles; none newer than
+	// BackupMaxAgeHours (default 36) raises an alert.
+	BackupDir         string `toml:"backup_dir"`
+	BackupMaxAgeHours int    `toml:"backup_max_age_hours"`
+}
+
+// Enabled reports whether a webhook is configured.
+func (a Alerts) Enabled() bool { return a.WebhookURL != "" }
+
+// WithDefaults fills zero fields with the documented defaults.
+func (a Alerts) WithDefaults() Alerts {
+	if a.HeartbeatHours <= 0 {
+		a.HeartbeatHours = 24
+	}
+	if a.APNSWarnDays <= 0 {
+		a.APNSWarnDays = 30
+	}
+	if a.BackupMaxAgeHours <= 0 {
+		a.BackupMaxAgeHours = 36
+	}
+	return a
 }
 
 // Enrollment configures device-enrollment access.
@@ -450,6 +487,13 @@ func resolveSecrets(cfg *Config) error {
 		cfg.Auth.LDAP.BindPassword = pw
 	}
 
+	// Alert webhook URL (treated as a secret: ntfy topics are bearer-like).
+	hook, err := readSecret("alerts.webhook_url", cfg.Alerts.WebhookURL, cfg.Alerts.WebhookURLFile, cfg.Alerts.WebhookURLEnv)
+	if err != nil {
+		return err
+	}
+	cfg.Alerts.WebhookURL = hook
+
 	// OIDC client secret.
 	if cfg.Auth.OIDC.Enabled {
 		sec, err := readSecret("auth.oidc.client_secret", "", cfg.Auth.OIDC.ClientSecretFile, cfg.Auth.OIDC.ClientSecretEnv)
@@ -485,6 +529,12 @@ func readSecret(name, inline, file, env string) (string, error) {
 // Validate checks that the resolved config is internally consistent.
 func (c Config) Validate() error {
 	var errs []error
+
+	if c.Alerts.WebhookURL != "" {
+		if u, err := url.Parse(c.Alerts.WebhookURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			errs = append(errs, errors.New("alerts.webhook_url must be an absolute http(s) URL"))
+		}
+	}
 
 	if c.Server.PublicURL == "" {
 		errs = append(errs, errors.New("server.public_url is required"))

@@ -1,0 +1,18 @@
+[Unit]
+Description=Cairn MDM backup bundle
+Documentation=https://github.com/nickpdawson/cairn-mdm
+After=cairn.service
+
+[Service]
+Type=oneshot
+User=cairn
+Group=cairn
+UMask=0077
+ExecStart=/bin/sh -c '/usr/local/bin/cairn backup --config /etc/cairn/cairn.toml -out /var/backups/cairn/cairn-$(date +%%Y%%m%%d-%%H%%M).tar.gz'
+# Keep 14 bundles; adjust to your retention. Off-host copy is a separate job.
+ExecStartPost=/bin/sh -c 'ls -1t /var/backups/cairn/cairn-*.tar.gz 2>/dev/null | tail -n +15 | xargs -r rm -f'
+ReadWritePaths=/var/backups/cairn /var/lib/cairn
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

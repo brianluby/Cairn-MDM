@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nickpdawson/cairn-mdm/internal/alert"
 	"github.com/nickpdawson/cairn-mdm/internal/assign"
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
@@ -148,6 +149,7 @@ func runServe(ctx context.Context, args []string) error {
 			TLSMode:             string(cfg.Server.TLS.Mode),
 			LDAPEnabled:         cfg.Auth.LDAP.Enabled,
 			DirectoryConfigured: cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "",
+			AlertsConfigured:    cfg.Alerts.Enabled(),
 		}, log)
 	if err != nil {
 		return err
@@ -192,6 +194,19 @@ func runServe(ctx context.Context, args []string) error {
 
 	deps.UI = console
 	log.Info("admin console ready", "path", "/admin")
+
+	// Out-of-band alerts: hourly checks for certificate expiry, quarantine and
+	// backup freshness, with transitions, reminders and a heartbeat posted to
+	// the webhook. Without a webhook the conditions are still recorded for the
+	// dashboard, so the console shows them either way.
+	var notifier *alert.Notifier
+	if cfg.Alerts.Enabled() {
+		notifier = alert.NewNotifier(cfg.Alerts.WebhookURL)
+		log.Info("alerts enabled", "heartbeat_hours", cfg.Alerts.WithDefaults().HeartbeatHours, "backup_dir", cfg.Alerts.BackupDir)
+	} else {
+		log.Warn("alerts.webhook_url not set: expiry, quarantine and backup alerts stay on the dashboard only")
+	}
+	go alert.New(db, notifier, cfg.Alerts, log).Loop(ctx, time.Hour)
 
 	srv := server.New(cfg, log, db, deps)
 	httpSrv := &http.Server{

@@ -167,3 +167,22 @@ func TestSetupRoutesAbsentWithExistingAdministrator(t *testing.T) {
 		t.Fatalf("settings checklist %d", rr.Code)
 	}
 }
+
+func TestDashboardShowsActiveAlertsAndWebhookState(t *testing.T) {
+	app, sessions, db := testApp(t)
+	if err := db.SetAlertState(context.Background(), "apns.missing", true, "No APNs push certificate is loaded.", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetAlertState(context.Background(), "backup.stale", false, "old", true); err != nil {
+		t.Fatal(err)
+	}
+	cookie, _ := adminSession(t, sessions)
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	mux(app).ServeHTTP(rr, req)
+	body := rr.Body.String()
+	if rr.Code != 200 || !strings.Contains(body, "No APNs push certificate is loaded.") || strings.Contains(body, "backup.stale") || !strings.Contains(body, "not configured") {
+		t.Fatalf("dashboard alerts %d %s", rr.Code, body)
+	}
+}

@@ -91,6 +91,11 @@ func (a *App) setupChecks(ctx context.Context) []setupCheck {
 	default:
 		out = append(out, setupCheck{Name: "Directory (Active Directory)", Status: "todo", Detail: "Optional. Configure auth.ldap with a directory_id to enroll devices for AD users and target profiles by group or OU."})
 	}
+	if a.cfg.AlertsConfigured {
+		out = append(out, setupCheck{Name: "Alerts", Status: "ok", Detail: "Webhook configured. Expiry, quarantine, backup and heartbeat messages leave this host."})
+	} else {
+		out = append(out, setupCheck{Name: "Alerts", Status: "todo", Detail: "No alerts.webhook_url. Certificate expiry and backup problems are shown here only; set a webhook (ntfy or similar) so a dead host is noticed."})
+	}
 	return out
 }
 

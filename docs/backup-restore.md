@@ -18,7 +18,52 @@ the database loses enrollments — treat it like the crown jewel it is.
 The DB already contains the APNs cert+key and (in embedded modes) the CA key,
 so the DB backup is confidential — store it encrypted, mode 0600.
 
-## Consistent database backup (no downtime)
+## Backup bundle (recommended)
+
+```
+cairn backup -config /etc/cairn/cairn.toml -out /var/backups/cairn/cairn-$(date +%F-%H%M).tar.gz
+```
+
+One `tar.gz`, mode 0600, containing: `cairn.db` (an online `VACUUM INTO`
+snapshot, integrity-checked), `mfa/key`, `config/cairn.toml` and every file the
+configuration references (TLS and signing certificates and keys, CA import or
+broker material, chain and secret files), plus `manifest.json` with the build,
+schema versions, SHA-256 of every member, record counts (devices, pushable,
+profiles, groups, grants, quarantined, MFA factors, local users) and the APNs
+topics with expiry. The command then extracts the bundle into a scratch
+directory and re-checks hashes, integrity and counts before reporting success.
+A referenced file that is missing is recorded as a note, not an error; a
+database with MFA factors but no key file is noted and fails verification. With
+`alerts.webhook_url` set, success or failure is posted to the webhook, so a
+timer that stops firing is caught by the stale-backup alert and a failing run
+is announced immediately.
+
+`packaging/systemd/cairn-backup.{service,timer}` run this nightly at 02:30 into
+`/var/backups/cairn` and keep 14 bundles. Copy bundles off-host; they contain
+private keys. `-db-only` keeps the older single-file snapshot behavior.
+
+## Restore rehearsal
+
+```
+cairn restore -bundle /var/backups/cairn/cairn-2026-11-09-0230.tar.gz -rehearse
+```
+
+Extracts into a temporary directory, verifies every hash, runs
+`PRAGMA integrity_check`, compares record counts and schema versions with the
+manifest, checks that the MFA key is present when factors exist and that no
+APNs certificate in the bundle has already expired, then deletes the scratch
+directory (`-keep -workdir DIR` to inspect it). It never touches the live
+database or starts a server. Rehearse monthly and after every upgrade.
+
+To restore for real, `cairn restore -bundle FILE -into /path/to/empty/dir`
+verifies first and refuses a bundle with problems or a non-empty target. It
+writes `cairn.db`, `cairn.db.mfa/key` and `config/…` with 0600 permissions.
+Point `storage.path` at the restored database, review the restored
+`cairn.toml` and referenced files, run `cairn migrate`, then start. Never start
+a restored copy where it can reach production devices unless it is the
+production replacement.
+
+## Consistent database backup (manual alternative)
 
 SQLite in WAL mode must not be copied with a plain `cp` while Cairn is running —
 you can capture a torn state. Use one of:
@@ -91,9 +136,8 @@ into a scratch instance quarterly** — an untested backup is a hope, not a back
 ## MFA key and recovery state
 
 The completion candidate creates `<storage.path>.mfa/key` at server startup, or
-when host bootstrap first runs. Back up that directory with the confidential
-configuration bundle once this candidate is installed. `cairn backup` copies
-only SQLite and prints a reminder; it does not copy this key. The key is not
+when host bootstrap first runs. `cairn backup` includes it in the bundle and
+verification fails when factors exist without it. The key is not
 rotated during routine operation. A database backup alone cannot recover MFA.
 Restore the matching directory/key before starting the restored service, owned
 by the service user, directory mode 0700 and key mode 0600. Startup refuses to

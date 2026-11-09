@@ -1,0 +1,278 @@
+// Package alert is Cairn's out-of-band notification path. A Checker derives
+// alert conditions from stored state (certificate expiry, quarantined issuances,
+// backup freshness), remembers which ones it has already announced, and posts
+// transitions, daily reminders and a heartbeat to a webhook. The webhook is
+// independent of the MDM host's mail, so a dead host or a stuck certificate is
+// noticed even when nothing else reports.
+package alert
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/nickpdawson/cairn-mdm/internal/config"
+	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
+)
+
+// Notifier posts a message to the configured webhook. ntfy understands the
+// Title/Priority/Tags headers; other receivers see a plain text body.
+type Notifier struct {
+	url    string
+	client *http.Client
+}
+
+// NewNotifier returns a Notifier for url, or nil when url is empty.
+func NewNotifier(url string) *Notifier {
+	if url == "" {
+		return nil
+	}
+	return &Notifier{url: url, client: &http.Client{Timeout: 10 * time.Second}}
+}
+
+// Send posts one message. priority is an ntfy level: min, low, default, high, urgent.
+func (n *Notifier) Send(ctx context.Context, title, body, priority string) error {
+	if n == nil {
+		return errors.New("alerts: no webhook configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	req.Header.Set("Title", title)
+	if priority != "" {
+		req.Header.Set("Priority", priority)
+	}
+	req.Header.Set("User-Agent", "cairn-alerts")
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("alerts: webhook returned %s", resp.Status)
+	}
+	return nil
+}
+
+// Store is what the Checker reads and remembers. *sqlite.DB satisfies it.
+type Store interface {
+	ListAPNSTopics(ctx context.Context) ([]sqlite.APNSTopic, error)
+	ListQuarantined(ctx context.Context) ([]sqlite.Issuance, error)
+	ListAlertStates(ctx context.Context) ([]sqlite.AlertState, error)
+	SetAlertState(ctx context.Context, key string, active bool, message string, notified bool) error
+}
+
+// Condition is one active alert.
+type Condition struct {
+	Key      string
+	Title    string
+	Message  string
+	Priority string
+}
+
+// Checker evaluates conditions and drives the Notifier.
+type Checker struct {
+	store    Store
+	notifier *Notifier
+	cfg      config.Alerts
+	log      *slog.Logger
+	now      func() time.Time
+	// remindAfter is how long an unresolved condition waits before a reminder.
+	remindAfter time.Duration
+}
+
+// HeartbeatKey is the alert_state row that records the last heartbeat.
+const HeartbeatKey = "heartbeat"
+
+// New builds a Checker. notifier may be nil (conditions are still recorded for
+// the console, nothing is sent).
+func New(store Store, notifier *Notifier, cfg config.Alerts, log *slog.Logger) *Checker {
+	return &Checker{store: store, notifier: notifier, cfg: cfg.WithDefaults(), log: log, now: time.Now, remindAfter: 24 * time.Hour}
+}
+
+// Evaluate derives the currently active conditions without sending anything.
+func (c *Checker) Evaluate(ctx context.Context) ([]Condition, error) {
+	var out []Condition
+	topics, err := c.store.ListAPNSTopics(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := c.now()
+	if len(topics) == 0 {
+		out = append(out, Condition{Key: "apns.missing", Title: "Cairn: no APNs push certificate", Message: "No APNs push certificate is loaded. Devices cannot enroll or receive commands.", Priority: "high"})
+	}
+	for _, t := range topics {
+		exp, perr := time.Parse(time.RFC3339, t.NotAfter)
+		if perr != nil {
+			out = append(out, Condition{Key: "apns.unreadable:" + t.Topic, Title: "Cairn: APNs expiry unreadable", Message: "Topic " + t.Topic + " has an unreadable expiry (" + t.NotAfter + ").", Priority: "high"})
+			continue
+		}
+		days := int(exp.Sub(now).Hours() / 24)
+		switch {
+		case !exp.After(now):
+			out = append(out, Condition{Key: "apns.expired:" + t.Topic, Title: "Cairn: APNs certificate EXPIRED", Message: fmt.Sprintf("Topic %s expired %s. Devices on this topic cannot be reached until it is renewed.", t.Topic, exp.Format("2006-01-02")), Priority: "urgent"})
+		case days < c.cfg.APNSWarnDays:
+			out = append(out, Condition{Key: "apns.expiring:" + t.Topic, Title: "Cairn: APNs certificate expires soon", Message: fmt.Sprintf("Topic %s expires %s (%d days). Renew it from the APNs page.", t.Topic, exp.Format("2006-01-02"), days), Priority: "high"})
+		}
+	}
+	held, err := c.store.ListQuarantined(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(held) > 0 {
+		out = append(out, Condition{Key: "issuance.quarantined", Title: "Cairn: certificate issuances quarantined", Message: fmt.Sprintf("%d certificate issuance(s) are held after an ambiguous CA outcome. Review the Quarantine page.", len(held)), Priority: "high"})
+	}
+	if c.cfg.BackupDir != "" {
+		newest, berr := newestBackup(c.cfg.BackupDir)
+		maxAge := time.Duration(c.cfg.BackupMaxAgeHours) * time.Hour
+		switch {
+		case berr != nil:
+			out = append(out, Condition{Key: "backup.unreadable", Title: "Cairn: backup directory unreadable", Message: "Cannot read " + c.cfg.BackupDir + ": " + berr.Error(), Priority: "high"})
+		case newest.IsZero():
+			out = append(out, Condition{Key: "backup.missing", Title: "Cairn: no backup found", Message: "No backup bundle exists in " + c.cfg.BackupDir + ".", Priority: "high"})
+		case now.Sub(newest) > maxAge:
+			out = append(out, Condition{Key: "backup.stale", Title: "Cairn: backup is stale", Message: fmt.Sprintf("Newest backup in %s is from %s, older than %d hours.", c.cfg.BackupDir, newest.Format("2006-01-02 15:04"), c.cfg.BackupMaxAgeHours), Priority: "high"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+// newestBackup returns the modification time of the newest bundle in dir
+// (zero when none).
+func newestBackup(dir string) (time.Time, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var newest time.Time
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".db") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	_ = filepath.Base
+	return newest, nil
+}
+
+// Run evaluates once and reconciles against remembered state: new conditions
+// are announced, persisting ones reminded daily, cleared ones reported as
+// resolved, and a heartbeat sent on its schedule. Delivery failures leave the
+// state unnotified so the next run retries.
+func (c *Checker) Run(ctx context.Context) error {
+	conditions, err := c.Evaluate(ctx)
+	if err != nil {
+		return err
+	}
+	states, err := c.store.ListAlertStates(ctx)
+	if err != nil {
+		return err
+	}
+	remembered := map[string]sqlite.AlertState{}
+	for _, s := range states {
+		remembered[s.Key] = s
+	}
+	now := c.now()
+	active := map[string]bool{}
+	for _, cond := range conditions {
+		active[cond.Key] = true
+		prev, known := remembered[cond.Key]
+		switch {
+		case !known || !prev.Active || !prev.NotifiedAt.Valid:
+			sent := c.send(ctx, cond.Title, cond.Message, cond.Priority)
+			if err := c.store.SetAlertState(ctx, cond.Key, true, cond.Message, sent); err != nil {
+				return err
+			}
+		case c.older(prev.NotifiedAt.String, now, c.remindAfter):
+			sent := c.send(ctx, cond.Title+" (still active)", cond.Message, cond.Priority)
+			if err := c.store.SetAlertState(ctx, cond.Key, true, cond.Message, sent); err != nil {
+				return err
+			}
+		}
+	}
+	for key, prev := range remembered {
+		if key == HeartbeatKey || !prev.Active || active[key] {
+			continue
+		}
+		sent := c.send(ctx, "Cairn: resolved", key+" cleared. Previous message: "+prev.Message, "default")
+		if err := c.store.SetAlertState(ctx, key, false, prev.Message, sent); err != nil {
+			return err
+		}
+	}
+	hb, known := remembered[HeartbeatKey]
+	if !known || !hb.NotifiedAt.Valid || c.older(hb.NotifiedAt.String, now, time.Duration(c.cfg.HeartbeatHours)*time.Hour) {
+		summary := fmt.Sprintf("Cairn is running. %d alert(s) active.", len(conditions))
+		sent := c.send(ctx, "Cairn heartbeat", summary, "min")
+		if err := c.store.SetAlertState(ctx, HeartbeatKey, len(conditions) > 0, summary, sent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// older reports whether a stored datetime('now') value is more than d before now.
+func (c *Checker) older(stamp string, now time.Time, d time.Duration) bool {
+	t, err := time.Parse("2006-01-02 15:04:05", stamp)
+	if err != nil {
+		return true
+	}
+	return now.Sub(t) > d
+}
+
+func (c *Checker) send(ctx context.Context, title, body, priority string) bool {
+	if c.notifier == nil {
+		return false
+	}
+	if err := c.notifier.Send(ctx, title, body, priority); err != nil {
+		c.log.Warn("alert delivery failed", "title", title, "err", err)
+		return false
+	}
+	c.log.Info("alert sent", "title", title)
+	return true
+}
+
+// Loop runs Run every interval until ctx ends. The first run happens after a
+// short delay so a restarting server finishes coming up first.
+func (c *Checker) Loop(ctx context.Context, interval time.Duration) {
+	first := time.NewTimer(time.Minute)
+	defer first.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-first.C:
+	}
+	for {
+		if err := c.Run(ctx); err != nil {
+			c.log.Warn("alert check failed", "err", err)
+		}
+		t := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+	}
+}

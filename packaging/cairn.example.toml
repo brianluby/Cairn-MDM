@@ -73,6 +73,17 @@ allow_open = false
 # idle_timeout_mins = 60
 # max_lifetime_mins = 720
 
+# Out-of-band alerts: POSTed to a webhook (ntfy topic URL or any endpoint that
+# accepts a text body). Sent on certificate expiry, quarantined issuances, stale
+# or missing backups, backup success/failure, plus a periodic heartbeat so
+# silence is not mistaken for health. Disabled until webhook_url is set.
+# [alerts]
+# webhook_url_file = "/etc/cairn/alert-webhook"   # or webhook_url / webhook_url_env
+# heartbeat_hours = 24
+# apns_warn_days = 30
+# backup_dir = "/var/backups/cairn"               # watched for bundle freshness
+# backup_max_age_hours = 36
+
 [log]
 level = "info"
 format = "text"   # text | json

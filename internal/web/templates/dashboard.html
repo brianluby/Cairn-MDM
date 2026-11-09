@@ -28,6 +28,25 @@
       </div>
     </div>
 
+    <h2>Alerts</h2>
+    <div class="card">
+      {{if .Alerts}}
+      <table>
+        <thead><tr><th>Condition</th><th>Since</th></tr></thead>
+        <tbody>
+          {{range .Alerts}}
+          <tr><td><span class="dot off"></span> {{.Message}}<div class="sub mono">{{.Key}}</div></td><td class="sub">{{.ChangedAt}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No active alerts.</div>
+      {{end}}
+      <p class="sub" style="margin:8px 16px 16px">
+        {{if .AlertsConfigured}}Webhook alerts enabled.{{if .LastHeartbeat}} Last heartbeat {{.LastHeartbeat}}.{{else}} No heartbeat sent yet.{{end}}{{else}}Webhook alerts are not configured (alerts.webhook_url); conditions appear here only. See <a href="/admin/settings">Settings</a>.{{end}}
+      </p>
+    </div>
+
     {{with .APNs}}
     {{if .Loaded}}
     <h2 id="apns-heading">APNs certificates</h2>
