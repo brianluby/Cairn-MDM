@@ -3,7 +3,10 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"net/http"
 	"net/url"
@@ -279,16 +282,74 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("list profiles", "err", err)
 	}
-	a.render(w, r, http.StatusOK, "device.html", map[string]any{
-		"Title":    d.DisplayName(),
-		"Intent":   newCommandIntent(),
-		"Device":   d,
-		"Commands": commands,
-		"Groups":   groups,
-		"Deploys":  deploys,
-		"Library":  library,
-		"Flash":    r.URL.Query().Get("flash"),
-	})
+	data := map[string]any{
+		"Title":            d.DisplayName(),
+		"Intent":           newCommandIntent(),
+		"Device":           d,
+		"Commands":         commands,
+		"Groups":           groups,
+		"Deploys":          deploys,
+		"Library":          library,
+		"Flash":            r.URL.Query().Get("flash"),
+		"DirectoryRefresh": a.targeting != nil,
+	}
+	if a.ownership != nil {
+		if owner, err := a.ownership.GetDeviceOwner(r.Context(), d.ID); err == nil {
+			data["Owner"] = owner
+		} else if !errors.Is(err, sqlite.ErrNoOwner) {
+			a.log.Error("device owner", "id", d.ID, "err", err)
+		}
+		memberships, err := a.ownership.DeviceDirectoryMemberships(r.Context(), d.ID)
+		if err != nil {
+			a.log.Error("device directory memberships", "id", d.ID, "err", err)
+		}
+		data["DirectoryMemberships"] = memberships
+		if ev, err := a.ownership.DeviceDirectoryEvaluation(r.Context(), d.ID); err == nil {
+			data["DirectoryEvaluation"] = ev
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			a.log.Error("device directory evaluation", "id", d.ID, "err", err)
+		}
+	}
+	a.render(w, r, http.StatusOK, "device.html", data)
+}
+
+// handleDeviceDirectoryRefresh re-binds the device's owner, re-evaluates the
+// directory rules and pushes newly entitled profiles. Admin-only: it changes the
+// device's desired profile set.
+func (a *App) handleDeviceDirectoryRefresh(w http.ResponseWriter, r *http.Request) {
+	limitForm(w, r)
+	if !a.checkCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	back := "/admin/devices/" + id
+	if a.targeting == nil {
+		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Directory targeting is not configured."), http.StatusSeeOther)
+		return
+	}
+	if _, err := a.devices.GetDevice(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	out, err := a.targeting.RefreshAndReconcile(ctx, id)
+	user := sessionFrom(r).Identity.Username
+	var flash string
+	switch {
+	case err != nil:
+		a.log.Error("directory refresh", "id", id, "user", user, "err", err)
+		flash = "Directory refresh failed; memberships were not changed."
+	case !out.Owned:
+		flash = "This device has no verified owner, so directory rules do not apply. " + out.Detail
+	case !out.Evaluated:
+		flash = "Directory unavailable; previous memberships were kept. " + out.Detail
+	default:
+		flash = fmt.Sprintf("Directory rules evaluated: %d matched, %d new group membership(s). Entitled profiles are being pushed.", out.Matched, len(out.Added))
+	}
+	a.log.Info("directory refresh", "id", id, "user", user, "owned", out.Owned, "evaluated", out.Evaluated, "matched", out.Matched)
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape(flash), http.StatusSeeOther)
 }
 
 // handleDeviceInstall pushes a library profile to one device as a one-off

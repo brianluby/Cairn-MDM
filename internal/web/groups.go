@@ -69,6 +69,12 @@ func (a *App) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 	for _, s := range deployStatus {
 		statusByProfile[s.ProfileID] = s
 	}
+	var directoryMembers []sqlite.Device
+	if a.ownership != nil {
+		if directoryMembers, err = a.ownership.GroupDirectoryDevices(ctx, g.ID); err != nil {
+			a.log.Error("group directory devices", "id", g.ID, "err", err)
+		}
+	}
 
 	// Options for the add-device / assign-profile selects: everything not
 	// already in the group.
@@ -96,15 +102,16 @@ func (a *App) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.render(w, r, http.StatusOK, "group.html", map[string]any{
-		"Title":           g.Name,
-		"Group":           g,
-		"Members":         members,
-		"Assigned":        assigned,
-		"DeployStatus":    statusByProfile,
-		"AddableDevices":  addableDevices,
-		"AddableProfiles": addableProfiles,
-		"Flash":           r.URL.Query().Get("flash"),
-		"Error":           r.URL.Query().Get("error"),
+		"Title":            g.Name,
+		"Group":            g,
+		"Members":          members,
+		"DirectoryMembers": directoryMembers,
+		"Assigned":         assigned,
+		"DeployStatus":     statusByProfile,
+		"AddableDevices":   addableDevices,
+		"AddableProfiles":  addableProfiles,
+		"Flash":            r.URL.Query().Get("flash"),
+		"Error":            r.URL.Query().Get("error"),
 	})
 }
 

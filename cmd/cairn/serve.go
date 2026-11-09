@@ -19,6 +19,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/server"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
+	"github.com/nickpdawson/cairn-mdm/internal/targeting"
 	"github.com/nickpdawson/cairn-mdm/internal/version"
 	"github.com/nickpdawson/cairn-mdm/internal/web"
 )
@@ -103,7 +104,22 @@ func runServe(ctx context.Context, args []string) error {
 	// Assignment reconciler: pushes assigned profiles when devices enroll and
 	// when admins change groups/assignments. Event-driven — no polling loop.
 	reconciler := assign.New(db, commander, log)
-	core.OnPushable(reconciler.DeviceNowPushable)
+	// Directory targeting runs ahead of the reconciler on enrollment: bind the
+	// verified owner, apply group/OU rules, then push. Without a verified
+	// directory it still binds owners and reconciles manual memberships.
+	var directoryProvider *directoryldap.Provider
+	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
+		directoryProvider, err = directoryldap.New(cfg.Auth.LDAP, log)
+		if err != nil {
+			return err
+		}
+	}
+	var targetingDirectory targeting.Directory
+	if directoryProvider != nil {
+		targetingDirectory = directoryProvider
+	}
+	targeter := targeting.New(db, targetingDirectory, reconciler, log)
+	core.OnPushable(targeter.DeviceNowPushable)
 
 	authn, err := buildAuthenticator(cfg, db, log)
 	if err != nil {
@@ -123,12 +139,9 @@ func runServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
-		directory, err := directoryldap.New(cfg.Auth.LDAP, log)
-		if err != nil {
-			return err
-		}
-		console.SetDirectory(directory)
+	if directoryProvider != nil {
+		console.SetDirectory(directoryProvider)
+		console.SetTargeting(targeter)
 	}
 	console.SetLoginThrottle(loginThrottle)
 	// Local-account management in the console (admin-only). Directory-backed

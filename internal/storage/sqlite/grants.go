@@ -31,6 +31,10 @@ type Grant struct {
 	RevokedAt      sql.NullString
 	ExpectedSerial string
 	LastUsedAt     sql.NullString
+	// AssignGroupID/Name is the explicit Cairn group chosen at authorization; the
+	// device joins it once it is bound to its owner. Zero/empty when none.
+	AssignGroupID   int64
+	AssignGroupName string
 }
 
 // Status summarizes a grant for display.
@@ -117,20 +121,24 @@ func (db *DB) RedeemGrant(ctx context.Context, rawToken string) (Redemption, err
 	return r, nil
 }
 
-const grantCols = `id, label, platform, owner, created_by, created_at, expires_at,
-	max_uses, use_count, revoked_at, expected_serial, last_used_at`
+const grantCols = `eg.id, eg.label, eg.platform, eg.owner, eg.created_by, eg.created_at, eg.expires_at,
+	eg.max_uses, eg.use_count, eg.revoked_at, eg.expected_serial, eg.last_used_at,
+	COALESCE(eg.assign_group_id, 0), COALESCE(ag.name, '')`
+
+const grantFrom = ` FROM enrollment_grants eg LEFT JOIN groups ag ON ag.id = eg.assign_group_id `
 
 func scanGrant(row interface{ Scan(...any) error }) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.Label, &g.Platform, &g.Owner, &g.CreatedBy, &g.CreatedAt,
-		&g.ExpiresAt, &g.MaxUses, &g.UseCount, &g.RevokedAt, &g.ExpectedSerial, &g.LastUsedAt)
+		&g.ExpiresAt, &g.MaxUses, &g.UseCount, &g.RevokedAt, &g.ExpectedSerial, &g.LastUsedAt,
+		&g.AssignGroupID, &g.AssignGroupName)
 	return g, err
 }
 
 // ListGrants returns grants newest-first.
 func (db *DB) ListGrants(ctx context.Context) ([]Grant, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		`SELECT `+grantCols+` FROM enrollment_grants ORDER BY created_at DESC, id DESC`)
+		`SELECT `+grantCols+grantFrom+`ORDER BY eg.created_at DESC, eg.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +157,7 @@ func (db *DB) ListGrants(ctx context.Context) ([]Grant, error) {
 // GetGrant returns one grant by ID.
 func (db *DB) GetGrant(ctx context.Context, id int64) (Grant, error) {
 	return scanGrant(db.sql.QueryRowContext(ctx,
-		`SELECT `+grantCols+` FROM enrollment_grants WHERE id = ?`, id))
+		`SELECT `+grantCols+grantFrom+`WHERE eg.id = ?`, id))
 }
 
 // RevokeGrant marks a grant revoked (idempotent for an already-revoked grant) and

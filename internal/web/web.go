@@ -16,6 +16,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
+	"github.com/nickpdawson/cairn-mdm/internal/targeting"
 )
 
 //go:embed templates/*.html assets/*
@@ -114,6 +115,21 @@ type QuarantineStore interface {
 	ListQuarantined(ctx context.Context) ([]sqlite.Issuance, error)
 }
 
+// OwnershipStore reads verified device ownership and the directory-derived
+// memberships that follow from it. *sqlite.DB satisfies it.
+type OwnershipStore interface {
+	GetDeviceOwner(ctx context.Context, deviceID string) (sqlite.DeviceOwner, error)
+	DeviceDirectoryMemberships(ctx context.Context, deviceID string) ([]sqlite.DirectoryMembership, error)
+	DeviceDirectoryEvaluation(ctx context.Context, deviceID string) (sqlite.DirectoryEvaluation, error)
+	GroupDirectoryDevices(ctx context.Context, groupID int64) ([]sqlite.Device, error)
+}
+
+// Targeting re-evaluates directory rules for devices on operator request.
+type Targeting interface {
+	RefreshAndReconcile(ctx context.Context, deviceID string) (targeting.Outcome, error)
+	RefreshAll(ctx context.Context) (targeting.Summary, error)
+}
+
 // Store bundles everything the console reads and writes; *sqlite.DB implements
 // all of it.
 type Store interface {
@@ -126,6 +142,7 @@ type Store interface {
 	AuditStore
 	DeployStore
 	QuarantineStore
+	OwnershipStore
 }
 
 // Commander runs device actions from the console.
@@ -177,6 +194,8 @@ type App struct {
 	audit            AuditStore
 	deploys          DeployStore
 	quarantine       QuarantineStore
+	ownership        OwnershipStore
+	targeting        Targeting // may be nil (no directory targeting)
 	cmd              Commander
 	rec              Reconciler   // may be nil (no auto-push)
 	oidc             OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
@@ -195,7 +214,7 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	}
 	a := &App{
 		sessions: sessions, auth: authn,
-		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store, quarantine: store,
+		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store, quarantine: store, ownership: store,
 		cmd: cmd, rec: rec, cfg: cfg, trusted: trusted, log: log,
 	}
 	// oidcEnabled lets the login template render the SSO button only when an
@@ -211,6 +230,10 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	return a, nil
 }
 
+// SetTargeting installs the directory-targeting service behind the console's
+// refresh actions. Nil hides those actions.
+func (a *App) SetTargeting(t Targeting) { a.targeting = t }
+
 // SetUsers installs (or clears, with nil) the local-account admin backend.
 // When nil the user-management pages render an "unavailable" notice.
 func (a *App) SetUsers(u UserAdmin) { a.users = u }
@@ -224,6 +247,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("POST /admin/directory/rules", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectorySave)))
 	mux.Handle("POST /admin/directory/preview", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryPreview)))
 	mux.Handle("POST /admin/directory/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryDelete)))
+	mux.Handle("POST /admin/directory/refresh", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryRefreshAll)))
+	mux.Handle("POST /admin/devices/{id}/directory-refresh", a.audited(a.requireRole(auth.RoleAdmin, a.handleDeviceDirectoryRefresh)))
 	// Static assets.
 	mux.Handle("GET /assets/", http.FileServerFS(files))
 

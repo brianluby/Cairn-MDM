@@ -2,20 +2,22 @@
 <html lang="en"><head>{{template "head" .}}</head><body>{{template "topbar" .}}<main>
 <p><a href="/admin/groups">Groups</a></p><h1>Directory profile rules</h1>
 <p>Match a user's AD group or OU to profiles assigned to a Cairn group.</p>
-<div class="card callout">Preview only. These rules do not enroll devices, change memberships or install profiles yet.</div>
+<div class="card callout">Rules apply to devices with a verified owner: evaluated when such a device enrolls and on refresh. A matched rule adds the device to the Cairn group, whose profiles are then pushed. Rules never change AD, enroll devices or remove installed profiles; a directory outage keeps existing memberships.</div>
+{{with .RefreshSummary}}<div class="card callout" role="status">Refreshed {{.Devices}} owned device(s): {{.Evaluated}} evaluated, {{.Unavailable}} kept previous memberships (directory unavailable), {{.Errors}} failed.</div>{{end}}
 {{if .Error}}<div class="card callout error" role="alert">{{.Error}}</div>{{end}}
 {{if not .DirectoryReady}}<p>Configure LDAP with a stable directory ID to enable lookup and preview.</p>{{end}}
 <h2>Saved rules</h2><div class="card">
 {{if .Rules}}<table><thead><tr><th>Directory scope</th><th>Membership</th><th>Cairn group</th><th>Action</th></tr></thead><tbody>
 {{range .Rules}}<tr><td>{{.Scope.Name}}<div class="sub">{{.Scope.DN}}</div></td><td>{{.Scope.Kind}} / {{.Scope.Mode}}</td><td><a href="/admin/groups/{{.GroupID}}">{{.GroupName}}</a></td><td><form method="post" action="/admin/directory/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn" type="submit">Delete rule</button></form></td></tr>{{end}}
-</tbody></table><p class="sub">Names shown here were recorded when saved. Preview resolves the current directory objects.</p>{{else}}<p>No directory rules saved.</p>{{end}}</div>
+</tbody></table><p class="sub">Names shown here were recorded when saved. Evaluation resolves the current directory objects by identity.</p>{{else}}<p>No directory rules saved.</p>{{end}}</div>
+{{if and .DirectoryReady .Rules}}<form method="post" action="/admin/directory/refresh" class="card"><input type="hidden" name="csrf" value="{{.CSRF}}"><p>Re-evaluate every owned device against the saved rules and push newly entitled profiles. One directory lookup per device.</p><button class="btn" type="submit">Refresh memberships for all owned devices</button></form>{{end}}
 {{if .DirectoryReady}}<h2>Add a rule</h2><form method="post" action="/admin/directory/rules" class="card">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <label for="scope-name">AD group or OU name</label><input id="scope-name" name="name" required maxlength="1024"><p class="sub">Use its exact name. If names overlap, enter the full distinguished name.</p>
 <label for="scope-kind">Membership to include</label><select id="scope-kind" name="scope"><option value="group:direct">AD group: direct members</option><option value="group:nested">AD group: include nested groups</option><option value="ou:direct">OU: immediate children</option><option value="ou:descendants">OU: include child OUs</option></select>
 <label for="cairn-group">Profiles from Cairn group</label><select id="cairn-group" name="group_id" required><option value="">Choose a group</option>{{range .Groups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>
-<button class="btn" type="submit">Resolve and save preview rule</button></form>
-<h2>Preview a user</h2><form method="post" action="/admin/directory/preview" class="card"><input type="hidden" name="csrf" value="{{.CSRF}}"><label for="account">AD account name or UPN</label><input id="account" name="account" required maxlength="256"><button class="btn" type="submit">Check matching profiles</button></form>{{end}}
+<button class="btn" type="submit">Resolve and save rule</button></form>
+<h2>Preview a user</h2><form method="post" action="/admin/directory/preview" class="card"><input type="hidden" name="csrf" value="{{.CSRF}}"><label for="account">AD account name or UPN</label><input id="account" name="account" required maxlength="256"><button class="btn" type="submit">Check matching profiles</button></form><p class="sub">Preview only: it reads the directory and changes nothing.</p>{{end}}
 {{with .Evaluation}}<h2>Preview for {{.Owner.UPN}}</h2><p>Checked {{.CheckedAt}}. No device changes were made.</p>
 <ul>{{range .Matches}}<li>{{.Scope.Name}}: {{if .Matches}}matches{{else}}does not match{{end}} ({{.Scope.Kind}}, {{.Scope.Mode}})</li>{{end}}</ul>{{end}}
 {{range .Conflicts}}<p class="callout error">{{.}}</p>{{end}}

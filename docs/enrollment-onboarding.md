@@ -1,7 +1,7 @@
 # Enrollment and recovery
 
 Accepted product behavior, November 2, 2026. This document records requirements;
-MFA registration/recovery is implemented in the completion candidate; verified-owner previews, MFA-bound grants and owner revalidation at issuance are implemented. Automatic profile targeting and hardware acceptance remain pending. See [MFA operation](mfa.md).
+MFA registration/recovery is implemented in the completion candidate; verified-owner previews, MFA-bound grants, owner revalidation at issuance and directory-rule profile targeting for owned devices are implemented. Hardware and live-directory acceptance remain pending. See [MFA operation](mfa.md) and [directory profile targeting](directory-profile-targeting.md).
 
 ## An administrator adds a device for someone
 
@@ -148,7 +148,7 @@ also remains quarantined; it cannot be called a proven clean failure.
 Opening an invitation shows instructions and does not consume it. Explicit POST
 starts the download. A missing APNs topic does not spend the link. Reopening an
 already-downloaded profile supports installation recovery; a lost download needs
-administrator replacement. Automatic profile assignment, self-service issuance,
+administrator replacement. Self-service issuance,
 renewal and cross-site hardware qualification remain open.
 
 Installation instructions follow Apple's [iPhone/iPad profile installation](https://support.apple.com/en-ie/102400)

@@ -17,6 +17,10 @@ type EnrollmentPreview struct {
 	Label    string
 	Platform string
 	Hours    int
+	// GroupID is an optional explicit Cairn device group the device should join
+	// after it is bound to this owner (0 = none). Validated again at creation.
+	GroupID   int64
+	GroupName string
 }
 
 func (db *DB) SaveEnrollmentPreview(ctx context.Context, rawSession string, p EnrollmentPreview) (string, error) {
@@ -78,7 +82,15 @@ func (db *DB) CreateAuthorizedGrant(ctx context.Context, rawSession, previewToke
 	if err != nil {
 		return 0, err
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO enrollment_grants(token_hash,label,platform,owner,created_by,expires_at,max_uses,expected_serial,owner_identity,actor_subject,actor_provider,mfa_verified_at) VALUES(?,?,?,?,?,?,1,'',?,?,?,?)`, grantHash, p.Label, p.Platform, owner.UPN, username, time.Now().Add(time.Duration(p.Hours)*time.Hour).UTC().Format("2006-01-02 15:04:05"), string(encoded), actor, provider, verified)
+	var assignGroup any // NULL unless the preview named an existing group
+	if p.GroupID != 0 {
+		var one int
+		if err = tx.QueryRowContext(ctx, `SELECT 1 FROM groups WHERE id=?`, p.GroupID).Scan(&one); err != nil {
+			return 0, ErrGrantInvalid
+		}
+		assignGroup = p.GroupID
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO enrollment_grants(token_hash,label,platform,owner,created_by,expires_at,max_uses,expected_serial,owner_identity,actor_subject,actor_provider,mfa_verified_at,assign_group_id) VALUES(?,?,?,?,?,?,1,'',?,?,?,?,?)`, grantHash, p.Label, p.Platform, owner.UPN, username, time.Now().Add(time.Duration(p.Hours)*time.Hour).UTC().Format("2006-01-02 15:04:05"), string(encoded), actor, provider, verified, assignGroup)
 	if err != nil {
 		return 0, err
 	}
@@ -86,7 +98,7 @@ func (db *DB) CreateAuthorizedGrant(ctx context.Context, rawSession, previewToke
 	if err != nil {
 		return 0, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_log(username,provider,action,target,result) VALUES(?,?,'enrollment.authorize',?,?)`, username, provider, fmt.Sprintf("grant:%d", id), "admin-assisted; actor="+actor+"; owner="+owner.DirectoryID+"/"+owner.ObjectID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_log(username,provider,action,target,result) VALUES(?,?,'enrollment.authorize',?,?)`, username, provider, fmt.Sprintf("grant:%d", id), fmt.Sprintf("admin-assisted; actor=%s; owner=%s/%s; group=%d", actor, owner.DirectoryID, owner.ObjectID, p.GroupID))
 	if err != nil {
 		return 0, err
 	}

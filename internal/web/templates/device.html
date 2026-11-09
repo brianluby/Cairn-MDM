@@ -26,19 +26,34 @@
           <tr><th>Last seen</th><td class="sub">{{nullStr .Device.LastSeen}}</td></tr>
           <tr><th>Last inventory</th><td class="sub">{{nullStr .Device.InventoryAt}}</td></tr>
           <tr><th>Token updated</th><td class="sub">{{nullStr .Device.TokenUpdatedAt}}</td></tr>
+          <tr><th>Owner</th><td>
+            {{with .Owner}}<strong>{{.Owner.UPN}}</strong>{{if .Owner.AccountName}} ({{.Owner.AccountName}}){{end}}
+            <div class="sub">Verified from the certificate issued for enrollment grant {{.GrantID}} · bound {{.BoundAt}}</div>
+            {{else}}<span class="sub">No verified owner. This device did not enroll through an owner-authorized link; directory rules do not apply to it.</span>{{end}}
+          </td></tr>
           <tr><th>Groups</th><td>
             {{if .Groups}}{{range .Groups}}<a class="tag" href="/admin/groups/{{.ID}}">{{.Name}}</a> {{end}}{{else}}—{{end}}
+          </td></tr>
+          <tr><th>Directory groups</th><td>
+            {{if .DirectoryMemberships}}{{range .DirectoryMemberships}}<div><a class="tag" href="/admin/groups/{{.GroupID}}">{{.GroupName}}</a> <span class="sub">via {{.Scope.Kind}} {{.Scope.Name}} ({{.Scope.Mode}})</span></div>{{end}}{{else}}<span class="sub">None</span>{{end}}
+            {{with .DirectoryEvaluation}}<div class="sub">{{if eq .Status "ok"}}Rules evaluated {{nullStr .EvaluatedAt}}.{{else}}Directory unavailable at {{.AttemptedAt}}; previous memberships kept.{{if .Detail}} {{.Detail}}{{end}}{{end}}</div>{{else}}{{if .Owner}}<div class="sub">Directory rules have not been evaluated for this device yet.</div>{{end}}{{end}}
           </td></tr>
         </tbody>
       </table>
     </div>
 
     <h2>Actions</h2>
-    <form method="post" action="/admin/devices/{{.Device.ID}}/refresh">
+    <form method="post" action="/admin/devices/{{.Device.ID}}/refresh" style="display:inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="intent" value="{{.Intent}}">
       <button class="btn" type="submit">Refresh device info</button>
     </form>
+    {{if and .DirectoryRefresh (.User.Role.AtLeast "admin")}}
+    <form method="post" action="/admin/devices/{{.Device.ID}}/directory-refresh" style="display:inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button class="btn" type="submit">Re-evaluate directory rules</button>
+    </form>
+    {{end}}
 
     <h2>Profiles</h2>
     <div class="card">
@@ -73,7 +88,7 @@
         </tbody>
       </table>
       {{else}}
-      <div class="empty">No group-assigned profiles deployed to this device.</div>
+      <div class="empty">No group-assigned profiles deployed to this device. Manual and directory group memberships both count.</div>
       {{end}}
     </div>
     {{if .Library}}

@@ -23,7 +23,7 @@
       {{if .Grants}}
       <table>
         <thead>
-          <tr><th>Label / owner</th><th>Platform</th><th>Uses</th><th>Status</th><th>Expires</th><th></th></tr>
+          <tr><th>Label / owner</th><th>Platform</th><th>Cairn group</th><th>Uses</th><th>Status</th><th>Expires</th><th></th></tr>
         </thead>
         <tbody>
           {{range .Grants}}
@@ -33,6 +33,7 @@
               {{if .Owner}}<div class="sub mono">{{.Owner}}</div>{{end}}
             </td>
             <td>{{.Platform}}</td>
+            <td>{{if .AssignGroupID}}<a href="/admin/groups/{{.AssignGroupID}}">{{.AssignGroupName}}</a>{{else}}<span class="sub">—</span>{{end}}</td>
             <td>{{.UseCount}}/{{.MaxUses}}</td>
             <td>
               <span class="dot {{if eq .Status "active"}}on{{else if eq .Status "used"}}wait{{else}}off{{end}}"></span>
@@ -58,7 +59,7 @@
     </div>
 
     <h2>Add a device for a user</h2>
- <p>Verify your MFA in <a href="/account/mfa">Account security</a>, then choose an AD owner. They do not need to sign in. Profile assignment remains a separate step after enrollment.</p>
+    <p>Verify your MFA in <a href="/account/mfa">Account security</a>, then choose an AD owner. They do not need to sign in. The preview shows which <a href="/admin/directory">directory rules</a> match the owner and the profiles the device will receive; an explicit Cairn group adds a site-specific exception without changing AD.</p>
     <div class="card">
       <form method="post" action="/admin/enrollment/preview">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -75,6 +76,14 @@
             </select>
           </label>
           &nbsp;<label>Expires in (hours) <input type="number" name="expires_hours" value="24" min="1" max="24" style="width:6em"></label>
+        </p>
+        <p>
+          <label>Also add to Cairn group
+            <select name="group_id">
+              <option value="">None (directory rules only)</option>
+              {{range .Groups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+            </select>
+          </label>
         </p>
         <p><button class="btn" type="submit">Preview owner</button></p>
       </form>

@@ -28,11 +28,16 @@ func (a *App) renderEnrollment(w http.ResponseWriter, r *http.Request, created m
 	if err != nil {
 		a.log.Error("list grants", "err", err)
 	}
+	groups, err := a.groups.ListGroups(r.Context())
+	if err != nil {
+		a.log.Error("list groups", "err", err)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "strict-origin")
 	a.render(w, r, http.StatusOK, "enrollment.html", map[string]any{
 		"Title":   "Enrollment",
 		"Grants":  grants,
+		"Groups":  groups,
 		"Created": created,
 		"Flash":   r.URL.Query().Get("flash"),
 		"Error":   r.URL.Query().Get("error"),
@@ -164,17 +169,46 @@ func (a *App) handleEnrollmentPreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Choose Mac or iPhone/iPad and an expiry from 1 to 24 hours.", 400)
 		return
 	}
+	var explicitGroup sqlite.Group
+	if raw := strings.TrimSpace(r.PostFormValue("group_id")); raw != "" {
+		gid, e := strconv.ParseInt(raw, 10, 64)
+		if e == nil {
+			explicitGroup, e = a.groups.GetGroup(r.Context(), gid)
+		}
+		if e != nil {
+			http.Error(w, "Choose an existing Cairn group or leave it blank.", 400)
+			return
+		}
+	}
 	owner, e := a.directory.ResolveOwner(r.Context(), strings.TrimSpace(r.PostFormValue("owner")))
 	if e != nil || owner == nil {
 		http.Error(w, "Cannot resolve an enabled, eligible AD owner.", 422)
 		return
 	}
-	result, e := a.directory.EvaluateScopes(r.Context(), *owner, nil)
-	if e != nil || result == nil {
+	// Owner verification and rule preview share one directory round: the rule
+	// results are display only, and the same evaluation runs again after enrollment.
+	var rules []sqlite.DirectoryProfileRule
+	if rs, ok := a.groups.(directoryRuleStore); ok {
+		if rules, e = rs.ListDirectoryProfileRules(r.Context()); e != nil {
+			http.Error(w, "Cannot load directory rules.", 503)
+			return
+		}
+	}
+	scopes := make([]auth.DirectoryScope, len(rules))
+	for i, rule := range rules {
+		scopes[i] = rule.Scope
+	}
+	result, e := a.directory.EvaluateScopes(r.Context(), *owner, scopes)
+	if e != nil || result == nil || len(result.Matches) != len(rules) {
 		http.Error(w, "Owner verification unavailable.", 503)
 		return
 	}
-	p := sqlite.EnrollmentPreview{Owner: result.Owner, Platform: platform, Hours: hours, Label: strings.TrimSpace(r.PostFormValue("label"))}
+	profiles, conflicts, e := a.rulePreviewProfiles(r.Context(), rules, result, explicitGroup.ID)
+	if e != nil {
+		http.Error(w, "Cannot read assigned profiles.", 503)
+		return
+	}
+	p := sqlite.EnrollmentPreview{Owner: result.Owner, Platform: platform, Hours: hours, Label: strings.TrimSpace(r.PostFormValue("label")), GroupID: explicitGroup.ID, GroupName: explicitGroup.Name}
 	if len(p.Label) > 200 {
 		http.Error(w, "Device label must be at most 200 bytes.", 400)
 		return
@@ -191,5 +225,9 @@ func (a *App) handleEnrollmentPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "strict-origin")
-	a.render(w, r, 200, "enrollment_preview.html", map[string]any{"Title": "Confirm device owner", "Preview": p, "Token": token, "IssuanceReady": a.cfg.OwnerEnrollment})
+	a.render(w, r, 200, "enrollment_preview.html", map[string]any{
+		"Title": "Confirm device owner", "Preview": p, "Token": token,
+		"IssuanceReady": a.cfg.OwnerEnrollment && len(conflicts) == 0,
+		"Matches":       result.Matches, "PreviewProfiles": profiles, "Conflicts": conflicts,
+	})
 }

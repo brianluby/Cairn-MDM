@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 )
 
@@ -131,9 +133,9 @@ func (db *DB) CompleteIssuance(ctx context.Context, grantID int64, txnID, spki, 
 	}
 	res, err := db.sql.ExecContext(ctx,
 		`UPDATE cert_issuance
-		    SET state='ISSUED', cert_serial=?, leaf_der=?, updated_at=datetime('now')
+		    SET state='ISSUED', cert_serial=?, leaf_der=?, leaf_sha256=?, updated_at=datetime('now')
 		  WHERE grant_id=? AND txn_id=? AND spki_sha256=? AND request_hash=? AND state='ISSUING'`,
-		certSerial, leafDER, grantID, txnID, spki, requestHash)
+		certSerial, leafDER, LeafHash(leafDER), grantID, txnID, spki, requestHash)
 	if err != nil {
 		return err
 	}
@@ -238,4 +240,47 @@ func (db *DB) ListQuarantined(ctx context.Context) ([]Issuance, error) {
 		out = append(out, i)
 	}
 	return out, rows.Err()
+}
+
+// LeafHash is the hex SHA-256 of a DER certificate: the same value NanoMDM's
+// certauth records for a device's identity certificate, so an issued leaf can be
+// joined to the enrollment that later authenticates with it. Empty for nil DER.
+func LeafHash(der []byte) string {
+	if len(der) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:])
+}
+
+// backfillLeafHashes fills leaf_sha256 for ISSUED rows written before schema 029.
+// SQLite has no SHA-256, so the one-time pass runs here on open.
+func (db *DB) backfillLeafHashes(ctx context.Context) error {
+	rows, err := db.sql.QueryContext(ctx, `SELECT grant_id, leaf_der FROM cert_issuance WHERE state='ISSUED' AND leaf_sha256='' AND leaf_der IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		grant int64
+		hash  string
+	}
+	var work []pending
+	for rows.Next() {
+		var p pending
+		var der []byte
+		if err := rows.Scan(&p.grant, &der); err != nil {
+			rows.Close()
+			return err
+		}
+		if p.hash = LeafHash(der); p.hash != "" {
+			work = append(work, p)
+		}
+	}
+	rows.Close()
+	for _, p := range work {
+		if _, err := db.sql.ExecContext(ctx, `UPDATE cert_issuance SET leaf_sha256=? WHERE grant_id=? AND leaf_sha256=''`, p.hash, p.grant); err != nil {
+			return err
+		}
+	}
+	return nil
 }

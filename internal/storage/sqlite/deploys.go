@@ -83,8 +83,8 @@ func (db *DB) ProfileDeploys(ctx context.Context, profileID int64) ([]ProfileDep
 }
 
 // GroupDeployStatus returns, for each profile assigned to a group, the count of
-// member devices whose deploy is installed / pending (sent) / failed. Devices
-// with no deploy row yet count toward none of the three.
+// member devices (manual or directory-derived) whose deploy is installed /
+// pending (sent) / failed. Devices with no deploy row yet count toward none.
 func (db *DB) GroupDeployStatus(ctx context.Context, groupID int64) ([]GroupProfileStatus, error) {
 	rows, err := db.sql.QueryContext(ctx,
 		`SELECT p.id, p.name, p.identifier,
@@ -93,7 +93,7 @@ func (db *DB) GroupDeployStatus(ctx context.Context, groupID int64) ([]GroupProf
 		        COALESCE(SUM(CASE WHEN dep.status = 'failed'    THEN 1 ELSE 0 END), 0) AS failed
 		 FROM group_profiles gp
 		 JOIN profiles p ON p.id = gp.profile_id
-		 LEFT JOIN group_devices gd ON gd.group_id = gp.group_id
+		 LEFT JOIN `+membershipUnion+` gd ON gd.group_id = gp.group_id
 		 LEFT JOIN profile_deploys dep ON dep.profile_id = p.id AND dep.device_id = gd.device_id
 		 WHERE gp.group_id = ?
 		 GROUP BY p.id

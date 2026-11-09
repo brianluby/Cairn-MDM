@@ -1,9 +1,10 @@
 # Directory profile targeting
 
 Product requirement added November 2, 2026. Existing Cairn groups are manual
-collections of devices with assigned profiles. Directory rules are stored separately from those tables and from LDAP login
-role mapping. An admin-only preview is implemented; automatic application and
-enrollment integration remain pending.
+collections of devices with assigned profiles. Directory rules are stored
+separately from those tables and from LDAP login role mapping. Rules now apply
+automatically to devices with a verified owner (see "Implemented behavior");
+live Samba and real-device qualification remain pending.
 
 ## Lynchburg example
 
@@ -73,6 +74,44 @@ not itself prove the device has lost network access.
   rules and survive refresh unless the administrator changes them.
 - Device acknowledgement and actual Wi-Fi acceptance remain separate evidence.
 
+## Implemented behavior (candidate, November 9)
+
+A device gets a verified owner when it authenticates to MDM with a certificate
+Cairn issued for an owner-authorized grant: `cert_auth` (the hash NanoMDM records
+for the device's identity certificate) joins `cert_issuance.leaf_sha256` to the
+grant's pinned owner identity and actor. Nothing on the enrollment form or the
+device's own claims can set an owner. Devices enrolled through direct external
+SCEP, open enrollment or the NanoMDM import have no verified owner, and rules do
+not apply to them; the device page says so. If a device later authenticates with
+a certificate from a newer grant, ownership follows that grant and the change is
+audited.
+
+When an owned device becomes pushable (TokenUpdate) Cairn evaluates every saved
+rule against the owner's current directory object in one round, replaces that
+device's directory-derived memberships with the matched rules' groups, then runs
+the ordinary assignment reconciler. Directory memberships live in their own table
+and count for deployment exactly like manual membership (profiles to deploy,
+group fan-out and group status all read the union). The optional explicit Cairn
+group chosen at authorization is applied as manual membership at binding time.
+
+An unknown directory answer (timeout, failover exhaustion, missing or replaced
+object, short result) records an "unavailable" evaluation and leaves the previous
+memberships in place. A successful evaluation that no longer matches removes the
+membership but never sends RemoveProfile; the device page keeps showing the
+deployed profile until an administrator removes it explicitly. Owner eligibility
+is not enforced here; it is enforced at grant creation and certificate issuance.
+
+Administrators can re-evaluate one device from its page ("Re-evaluate directory
+rules") or every owned device from the rules page; both push newly entitled
+profiles afterwards. The device page shows the owner, each directory membership
+with the rule that produced it, and the time/status of the last evaluation. The
+enrollment preview runs the same evaluation for the chosen owner and lists the
+resulting profiles with their sources before the link is created.
+
+Not yet done: platform/device-type conditions on rules, membership change
+notifications, scheduled (unattended) refresh, and acceptance against a real
+Samba directory and Apple devices.
+
 ## Implemented preview
 
 The Groups page links administrators to **Directory profile rules and preview**.
@@ -104,6 +143,5 @@ successful empty assignment set.
 
 Rules and audit writes commit together. Saving, deleting and previewing rules
 never changes manual membership, creates enrollment grants or queues device
-commands. Existing manual groups continue to work independently. Profile
-application must wait for verified device ownership and the enrollment/MFA path;
-this preview does not bypass that requirement.
+commands. Existing manual groups continue to work independently. Deleting a
+rule removes the memberships it produced; installed profiles stay.
