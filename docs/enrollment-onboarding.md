@@ -128,6 +128,19 @@ The unreviewed renewal/lineage contract remains a separate gate. Approval of
 these user flows does not establish certificate lifecycle safety or real-device
 Wi-Fi acceptance.
 
+## Automated end-to-end evidence
+
+`cmd/cairn` carries an HTTP-level test of the administrator-assisted path on the
+embedded CA: a fresh-MFA administrator previews the owner (matched rule and
+resulting profile shown) and creates the link; opening the link does not spend
+it; the POST download returns a profile whose SCEP challenge is the grant token;
+a hostile CSR receives a certificate carrying only the grant's owner identity,
+chained to the CA; a second key presenting the same token is refused; the
+device's signed MDM Authenticate/TokenUpdate with that certificate binds the
+owner, applies the directory rule and queues the group's profile with a history
+row; a link whose owner is disabled before download is refused unspent. The
+directory and APNs are faked; nothing here proves Apple-device behavior.
+
 ## Current candidate limits
 
 Initial owner-bound grants require a configured LDAP directory ID and embedded

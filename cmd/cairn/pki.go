@@ -14,7 +14,6 @@ import (
 	kitlog "github.com/go-kit/kit/log"
 	scepserver "github.com/micromdm/scep/v2/server"
 
-	directoryldap "github.com/nickpdawson/cairn-mdm/internal/auth/ldap"
 	"github.com/nickpdawson/cairn-mdm/internal/broker"
 	"github.com/nickpdawson/cairn-mdm/internal/ca"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
@@ -90,18 +89,12 @@ type pkiResult struct {
 	Anchors   [][]byte // trust-anchor certs (DER)
 }
 
-func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics enroll.TopicProvider, redeemer enroll.Redeemer, log *slog.Logger, deps *server.Deps) (*pkiResult, error) {
-	resolver := grantResolver{db: store}
-	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
-		provider, err := directoryldap.New(cfg.Auth.LDAP, log)
-		if err != nil {
-			return nil, err
-		}
-		resolver.directory = provider
-	}
+// resolver carries the verified-owner boundary shared by profile redemption and
+// certificate issuance: without a directory validator every grant fails closed.
+func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics enroll.TopicProvider, resolver grantResolver, log *slog.Logger, deps *server.Deps) (*pkiResult, error) {
 	// Redeem and issue use the same verified owner boundary. Legacy grants do not
 	// inherit authorization merely because their free-text owner happens to match.
-	redeemer = grantRedeemer{db: store, resolver: resolver}
+	redeemer := grantRedeemer{db: store, resolver: resolver}
 	host := publicHost(cfg.Server.PublicURL)
 	org := "cairn." + host
 

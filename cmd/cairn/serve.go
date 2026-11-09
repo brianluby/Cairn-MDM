@@ -59,8 +59,23 @@ func runServe(ctx context.Context, args []string) error {
 
 	deps := server.Deps{MDM: core.Handler()}
 
+	// One verified-directory provider serves owner checks at redemption and
+	// issuance, console lookups and directory targeting. Absent a directory ID,
+	// owner-authorized grants fail closed everywhere.
+	var directoryProvider *directoryldap.Provider
+	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
+		directoryProvider, err = directoryldap.New(cfg.Auth.LDAP, log)
+		if err != nil {
+			return err
+		}
+	}
+	resolver := grantResolver{db: db}
+	if directoryProvider != nil {
+		resolver.directory = directoryProvider
+	}
+
 	// Configure SCEP + enrollment per ca.mode (generate | import | external).
-	pki, err := wirePKI(ctx, cfg, db, db, grantRedeemer{db: db}, log, &deps)
+	pki, err := wirePKI(ctx, cfg, db, db, resolver, log, &deps)
 	if err != nil {
 		return err
 	}
@@ -107,13 +122,6 @@ func runServe(ctx context.Context, args []string) error {
 	// Directory targeting runs ahead of the reconciler on enrollment: bind the
 	// verified owner, apply group/OU rules, then push. Without a verified
 	// directory it still binds owners and reconciles manual memberships.
-	var directoryProvider *directoryldap.Provider
-	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
-		directoryProvider, err = directoryldap.New(cfg.Auth.LDAP, log)
-		if err != nil {
-			return err
-		}
-	}
 	var targetingDirectory targeting.Directory
 	if directoryProvider != nil {
 		targetingDirectory = directoryProvider
