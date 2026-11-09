@@ -32,10 +32,10 @@
     <div class="card">
       {{if .Alerts}}
       <table>
-        <thead><tr><th>Condition</th><th>Since</th></tr></thead>
+        <thead><tr><th>Condition</th><th>Since</th><th>Action</th></tr></thead>
         <tbody>
           {{range .Alerts}}
-          <tr><td><span class="dot off"></span> {{.Message}}<div class="sub mono">{{.Key}}</div></td><td class="sub">{{.ChangedAt}}</td></tr>
+          <tr><td><span class="dot off"></span> {{.Message}}<div class="sub mono">{{.Key}}</div></td><td class="sub">{{.ChangedAt}}</td><td>{{with alertAction .Key}}<a class="btn" href="{{.}}">{{if eq . "/admin/apns"}}Open APNs{{else if eq . "/admin/quarantine"}}Open quarantine{{else if eq . "/admin/devices"}}Open devices{{else}}Open settings{{end}}</a>{{end}}</td></tr>
           {{end}}
         </tbody>
       </table>

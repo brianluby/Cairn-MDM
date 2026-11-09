@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickpdawson/cairn-mdm/internal/auth"
 	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 )
@@ -133,4 +134,59 @@ func TestGroupOutcomesAndDeviceListColumns(t *testing.T) {
 	if !strings.Contains(body, "Provides: Wi-Fi network access") || !strings.Contains(body, "This takes away: Wi-Fi network access") {
 		t.Fatalf("device page consequence: %s", body)
 	}
+}
+
+func TestDashboardAlertActionsRefreshProgressAndRoleMappings(t *testing.T) {
+	app, sessions, db := testApp(t)
+	ctx := context.Background()
+	app.SetUsers(auth.NewLocalStore(db.SQL()))
+	app.cfg.LDAPEnabled = true
+	app.cfg.RoleMappings = []RoleMapping{{Provider: "ldap", Source: "CN=MDM Admins,CN=Users,DC=dzsec,DC=net", Role: "admin"}, {Provider: "ldap", Role: "user"}}
+	m := mux(app)
+	cookie, csrf := adminSession(t, sessions)
+	get := func(path string) string {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(cookie)
+		rr := httptest.NewRecorder()
+		m.ServeHTTP(rr, req)
+		if rr.Code != 200 {
+			t.Fatalf("%s %d", path, rr.Code)
+		}
+		return rr.Body.String()
+	}
+	_ = db.SetAlertState(ctx, "apns.expiring:topic", true, "Topic expires soon.", false)
+	_ = db.SetAlertState(ctx, "issuance.quarantined", true, "1 held.", false)
+	body := get("/admin")
+	if !strings.Contains(body, `href="/admin/apns"`) || !strings.Contains(body, `href="/admin/quarantine"`) || !strings.Contains(body, "Open quarantine") {
+		t.Fatalf("dashboard alert actions: %s", body)
+	}
+	for key, want := range map[string]string{"backup.stale": "/admin/settings", "device-cert.expiring": "/admin/devices", "renewal.refused": "/admin/devices", "unknown.key": ""} {
+		if got := alertAction(key); got != want {
+			t.Fatalf("alertAction(%s)=%s", key, got)
+		}
+	}
+
+	body = get("/admin/users")
+	if !strings.Contains(body, "CN=MDM Admins,CN=Users,DC=dzsec,DC=net") || !strings.Contains(body, "any other signed-in user") {
+		t.Fatalf("role mappings: %s", body)
+	}
+
+	// Refresh progress: queue a DeviceInformation, then resolve it.
+	_ = db.DeviceEnrolled(ctx, mdmcore.DeviceRecord{ID: "D1", UDID: "D1", Name: "Mac"})
+	_ = db.DeviceTokenUpdated(ctx, "D1")
+	if err := db.CommandSent(ctx, "D1", "cmd-di", "DeviceInformation"); err != nil {
+		t.Fatal(err)
+	}
+	body = get("/admin/devices/D1")
+	if !strings.Contains(body, "waiting for the device") {
+		t.Fatalf("pending refresh not shown: %s", body)
+	}
+	if err := db.CommandResult(ctx, "D1", "cmd-di", "Acknowledged", ""); err != nil {
+		t.Fatal(err)
+	}
+	body = get("/admin/devices/D1")
+	if !strings.Contains(body, "answered") {
+		t.Fatalf("answered refresh not shown: %s", body)
+	}
+	_ = csrf
 }

@@ -311,7 +311,18 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 			affects[p.Identifier] = strings.Join(list, "; ")
 		}
 	}
+	// The latest DeviceInformation request, so the page can say whether a refresh
+	// is still waiting on the device rather than leaving the operator to read the
+	// command table.
+	var refresh *sqlite.CommandEntry
+	for i := range commands {
+		if commands[i].RequestType == "DeviceInformation" {
+			refresh = &commands[i]
+			break
+		}
+	}
 	data := map[string]any{
+		"Refresh":          refresh,
 		"Affects":          affects,
 		"Title":            d.DisplayName(),
 		"Intent":           newCommandIntent(),

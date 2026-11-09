@@ -43,12 +43,15 @@ func (a *App) renderUsers(w http.ResponseWriter, r *http.Request, created map[st
 	}
 	_, canSetRole := a.users.(roleSetter)
 	a.render(w, r, http.StatusOK, "users.html", map[string]any{
-		"Title":      "Users",
-		"Users":      users,
-		"Created":    created,
-		"CanSetRole": canSetRole,
-		"Flash":      r.URL.Query().Get("flash"),
-		"Error":      r.URL.Query().Get("error"),
+		"Title":        "Users",
+		"Users":        users,
+		"Created":      created,
+		"CanSetRole":   canSetRole,
+		"RoleMappings": a.cfg.RoleMappings,
+		"LDAPEnabled":  a.cfg.LDAPEnabled,
+		"OIDCEnabled":  a.oidc != nil,
+		"Flash":        r.URL.Query().Get("flash"),
+		"Error":        r.URL.Query().Get("error"),
 	})
 }
 

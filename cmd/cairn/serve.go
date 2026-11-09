@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -151,6 +152,7 @@ func runServe(ctx context.Context, args []string) error {
 			LDAPEnabled:         cfg.Auth.LDAP.Enabled,
 			DirectoryConfigured: cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "",
 			AlertsConfigured:    cfg.Alerts.Enabled(),
+			RoleMappings:        roleMappings(cfg),
 		}, log)
 	if err != nil {
 		return err
@@ -294,4 +296,32 @@ func (g grantRedeemer) InspectGrant(ctx context.Context, rawToken string) error 
 		return sqlite.ErrGrantInvalid
 	}
 	return nil
+}
+
+// roleMappings flattens the configured group→role rules for the Users page,
+// sorted for a stable display, with each enabled provider's default role last.
+func roleMappings(cfg config.Config) []web.RoleMapping {
+	var out []web.RoleMapping
+	add := func(provider string, rules map[string]string, def string) {
+		keys := make([]string, 0, len(rules))
+		for k := range rules {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			out = append(out, web.RoleMapping{Provider: provider, Source: k, Role: rules[k]})
+		}
+		if def == "" {
+			def = "user"
+		}
+		out = append(out, web.RoleMapping{Provider: provider, Role: def})
+	}
+	if cfg.Auth.LDAP.Enabled {
+		add("ldap", cfg.Auth.LDAP.GroupRoles, cfg.Auth.LDAP.DefaultRole)
+	}
+	if cfg.Auth.OIDC.Enabled {
+		o := cfg.Auth.OIDC.WithDefaults()
+		add("oidc", o.GroupRoles, o.DefaultRole)
+	}
+	return out
 }

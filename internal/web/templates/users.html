@@ -70,6 +70,23 @@
       {{end}}
     </div>
 
+    <h2>Directory and SSO roles</h2>
+    <div class="card">
+      {{if .RoleMappings}}
+      <table>
+        <thead><tr><th>Provider</th><th>Group</th><th>Role</th></tr></thead>
+        <tbody>
+          {{range .RoleMappings}}
+          <tr><td>{{.Provider}}</td><td class="mono">{{if .Source}}{{.Source}}{{else}}<span class="sub">any other signed-in user</span>{{end}}</td><td>{{.Role}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">Roles for AD and SSO identities come from these mappings in cairn.toml (auth.ldap.group_roles, auth.oidc.group_roles) and change on restart. An identity in none of the listed groups gets the provider's default role; nobody becomes an administrator by signing in alone. Changing a person's group in AD changes their console role at their next sign-in.</p>
+      {{else}}
+      <div class="empty">{{if or .LDAPEnabled .OIDCEnabled}}No group-to-role mappings are configured; every directory or SSO identity gets the default role.{{else}}Only local accounts can sign in; LDAP and OIDC are not enabled.{{end}}</div>
+      {{end}}
+    </div>
+
     <h2>New user</h2>
     <div class="card">
       <form method="post" action="/admin/users">

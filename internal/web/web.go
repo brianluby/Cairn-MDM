@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
@@ -124,6 +125,30 @@ type OwnershipStore interface {
 	GroupDirectoryDevices(ctx context.Context, groupID int64) ([]sqlite.Device, error)
 }
 
+// RoleMapping is one configured group→role rule, or a provider's default role
+// when Source is empty.
+type RoleMapping struct {
+	Provider string // ldap | oidc
+	Source   string // group DN or claim value; "" for the default
+	Role     string
+}
+
+// alertAction maps an alert key to the console page that resolves it.
+func alertAction(key string) string {
+	switch {
+	case strings.HasPrefix(key, "apns."):
+		return "/admin/apns"
+	case strings.HasPrefix(key, "backup."):
+		return "/admin/settings"
+	case strings.HasPrefix(key, "device-cert."), key == "renewal.refused":
+		return "/admin/devices"
+	case key == "issuance.quarantined":
+		return "/admin/quarantine"
+	default:
+		return ""
+	}
+}
+
 // AlertStore reads remembered alert conditions for the dashboard.
 type AlertStore interface {
 	ListAlertStates(ctx context.Context) ([]sqlite.AlertState, error)
@@ -181,6 +206,10 @@ type Config struct {
 	LDAPEnabled         bool
 	DirectoryConfigured bool // auth.ldap.directory_id set
 	AlertsConfigured    bool // alerts.webhook_url set
+
+	// RoleMappings lists how directory and SSO identities obtain console roles
+	// (display only; the mappings live in cairn.toml).
+	RoleMappings []RoleMapping
 
 	// TrustedProxies lists reverse proxies (IP or CIDR) whose X-Forwarded-For
 	// header Cairn trusts for client-IP attribution. Empty = trust none: the
@@ -422,7 +451,8 @@ func clearSessionCookie(w http.ResponseWriter) {
 }
 
 var funcMap = template.FuncMap{
-	"nullStr": nullStr,
+	"nullStr":     nullStr,
+	"alertAction": alertAction,
 }
 
 // nullStr renders a nullable timestamp/string column as its value or an em dash.

@@ -43,6 +43,10 @@
     </div>
 
     <h2>Actions</h2>
+    {{with .Refresh}}<p class="sub">Last refresh request {{.SentAt}}:
+      {{if .Pending}}<span class="dot wait"></span> waiting for the device ({{.Status}}{{if .NotificationStatus}}; push {{.NotificationStatus}}, {{.NotificationAttempts}} attempt(s){{end}}). An offline device answers when it next connects.
+      {{else if eq .Status "Acknowledged"}}<span class="dot on"></span> answered {{nullStr .ResultAt}}; inventory above is from that answer.
+      {{else}}<span class="dot off"></span> {{.Status}}{{if .Error}}: {{.Error}}{{end}} at {{nullStr .ResultAt}}.{{end}}</p>{{end}}
     <form method="post" action="/admin/devices/{{.Device.ID}}/refresh" style="display:inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="intent" value="{{.Intent}}">
