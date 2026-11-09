@@ -69,6 +69,14 @@ cairn pushcert request -email you@example.org      # → decrypt → identity.ap
 cairn serve
 ```
 
+Prefer the browser? Write a `cairn.toml` (see `packaging/cairn.example.toml`),
+run `cairn serve`, and open `https://<public_url>/setup`. While no administrator
+exists Cairn writes a one-time token to `<storage.path>.setup-token` (0600) on
+the host; entering it creates the first administrator, signs you in and hands you
+the authenticator approval code. The page lists what is still missing (push
+certificate, directory) and disappears once setup completes. The APNs request,
+decrypt and install steps are also available under the console's APNs page.
+
 `packaging/cairn.example.toml` documents the full config surface. Health
 endpoints: `GET /healthz` (liveness), `GET /readyz` (readiness), `GET /version`.
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/assign"
@@ -136,17 +137,30 @@ func runServe(ctx context.Context, args []string) error {
 
 	console, err := web.New(sessions, authn, db, commander, reconciler,
 		web.Config{
-			PublicURL:       cfg.Server.PublicURL,
-			OwnerEnrollment: cfg.CA.Mode.Embedded() || cfg.CA.Mode == config.CABroker,
-			Organization:    pki.Org,
-			SCEPURL:         pki.SCEPURL,
-			SCEPChallenge:   pki.Challenge,
-			CAAnchorsDER:    pki.Anchors,
-			TrustedProxies:  cfg.Server.TLS.TrustedProxies,
+			PublicURL:           cfg.Server.PublicURL,
+			OwnerEnrollment:     cfg.CA.Mode.Embedded() || cfg.CA.Mode == config.CABroker,
+			Organization:        pki.Org,
+			SCEPURL:             pki.SCEPURL,
+			SCEPChallenge:       pki.Challenge,
+			CAAnchorsDER:        pki.Anchors,
+			TrustedProxies:      cfg.Server.TLS.TrustedProxies,
+			CAMode:              string(cfg.CA.Mode),
+			TLSMode:             string(cfg.Server.TLS.Mode),
+			LDAPEnabled:         cfg.Auth.LDAP.Enabled,
+			DirectoryConfigured: cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "",
 		}, log)
 	if err != nil {
 		return err
 	}
+	// Browser first-run: open only until the first local account exists, gated
+	// by a token file beside the database that only the host user can read.
+	setupGate := auth.NewSetupGate(db.SQL(), cfg.Storage.Path)
+	if open, err := setupGate.Prepare(ctx); err != nil {
+		return err
+	} else if open {
+		log.Warn("no administrator exists: first-time setup is open", "url", strings.TrimRight(cfg.Server.PublicURL, "/")+"/setup", "token_file", setupGate.TokenPath())
+	}
+	console.SetSetup(setupGate)
 	if directoryProvider != nil {
 		console.SetDirectory(directoryProvider)
 		console.SetTargeting(targeter)

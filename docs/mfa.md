@@ -11,7 +11,11 @@ not a substitute.
 
 ## First administrator
 
-On the Cairn host, with access to its protected configuration/database, run:
+Browser first-run (`/setup`, open only while no local account exists) creates
+the first administrator from the host token file `<storage.path>.setup-token`
+and shows the authenticator approval code at the end; the token file proves
+host access and is deleted on completion. Alternatively, on the Cairn host,
+with access to its protected configuration/database, run:
 
 ```
 cairn admin mfa-bootstrap -config /etc/cairn/cairn.toml -username admin

@@ -8,11 +8,27 @@
     <p class="sub">The effective running configuration. Read-only — values come from
       the config file and change on restart, not here.</p>
 
+    <div class="card">
+      <h2 style="margin:16px 24px 0">Setup checklist</h2>
+      <table>
+        <tbody>
+          {{range .Checks}}
+          <tr>
+            <th style="width:220px">{{if .Link}}<a href="{{.Link}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</th>
+            <td><span class="dot {{if eq .Status "ok"}}on{{else if eq .Status "warn"}}off{{else}}wait{{end}}"></span> {{.Detail}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+
     <div class="card" style="padding:24px">
       <h2 style="margin-top:0">Server</h2>
       <table>
         <tbody>
           <tr><th>Public URL</th><td class="mono">{{if .PublicURL}}{{.PublicURL}}{{else}}<span class="sub">—</span>{{end}}</td></tr>
+          <tr><th>TLS mode</th><td class="mono">{{.TLSMode}}</td></tr>
+          <tr><th>CA mode</th><td class="mono">{{.CAMode}}</td></tr>
           <tr>
             <th>Trusted proxies</th>
             <td>

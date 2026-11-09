@@ -169,6 +169,12 @@ type Config struct {
 	SCEPChallenge string   // its static challenge (may be empty)
 	CAAnchorsDER  [][]byte // Cairn's trust anchors (embedded CA cert or external chain)
 
+	// Environment facts for the setup checklist and Settings page (display only).
+	CAMode              string // generate | import | broker | external
+	TLSMode             string // acme | files | proxy
+	LDAPEnabled         bool
+	DirectoryConfigured bool // auth.ldap.directory_id set
+
 	// TrustedProxies lists reverse proxies (IP or CIDR) whose X-Forwarded-For
 	// header Cairn trusts for client-IP attribution. Empty = trust none: the
 	// direct peer is always used (correct for a direct listener). When Cairn
@@ -180,6 +186,7 @@ type Config struct {
 // App is the admin console.
 type App struct {
 	mfa              *auth.MFAStore
+	setup            *auth.SetupGate // may be nil (no browser first-run)
 	directory        DirectoryResolver
 	apnsRequests     *push.RequestManager
 	apnsCertificates push.CertificateStore
@@ -251,6 +258,11 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("POST /admin/devices/{id}/directory-refresh", a.audited(a.requireRole(auth.RoleAdmin, a.handleDeviceDirectoryRefresh)))
 	// Static assets.
 	mux.Handle("GET /assets/", http.FileServerFS(files))
+
+	// First-run setup: available only while no local account exists and only
+	// with the host token. Both routes 404 once setup has completed.
+	mux.HandleFunc("GET /setup", a.handleSetupForm)
+	mux.Handle("POST /setup", a.audited(http.HandlerFunc(a.handleSetupComplete)))
 
 	// Public auth routes. The mutating ones (POST /login, POST /logout) are
 	// wrapped with a.audited so every sign-in/sign-out is recorded.

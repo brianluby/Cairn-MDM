@@ -20,6 +20,9 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	a.render(w, r, http.StatusOK, "settings.html", map[string]any{
 		"Title":            "Settings",
+		"Checks":           a.setupChecks(r.Context()),
+		"CAMode":           a.cfg.CAMode,
+		"TLSMode":          a.cfg.TLSMode,
 		"PublicURL":        a.cfg.PublicURL,
 		"Organization":     a.cfg.Organization,
 		"SCEPURL":          a.cfg.SCEPURL,

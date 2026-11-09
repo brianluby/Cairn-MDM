@@ -101,7 +101,7 @@ func (a *App) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusFound)
 		return
 	}
-	a.render(w, r, http.StatusOK, "login.html", nil)
+	a.render(w, r, http.StatusOK, "login.html", map[string]any{"SetupOpen": a.setupOpen(r.Context())})
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
