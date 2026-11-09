@@ -84,6 +84,14 @@ allow_open = false
 # backup_dir = "/var/backups/cairn"               # watched for bundle freshness
 # backup_max_age_hours = 36
 
+# RADIUS acceptance points that rely on Cairn-issued certificates. Releasing a
+# quarantined issuance requires each listed server to report an observed
+# Access-Reject for every enumerated serial through POST /api/v1/radius/rejections
+# (bearer token below). Leave unset for an MDM-only deployment.
+# [radius]
+# acceptance_points = ["radius-a.example.org", "radius-b.example.org"]
+# ingest_token_file = "/etc/cairn/radius-ingest-token"
+
 [log]
 level = "info"
 format = "text"   # text | json

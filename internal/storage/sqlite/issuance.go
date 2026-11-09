@@ -193,6 +193,12 @@ func (db *DB) FailIssuance(ctx context.Context, grantID int64, txnID, spki, requ
 const issuanceCols = `grant_id, txn_id, spki_sha256, request_hash, state, cert_serial,
 	fail_reason, quarantine_reason, COALESCE(quarantined_at,''), backend, backend_txn, leaf_der`
 
+// prefixedIssuanceCols is issuanceCols with a table alias.
+func prefixedIssuanceCols(a string) string {
+	return a + ".grant_id, " + a + ".txn_id, " + a + ".spki_sha256, " + a + ".request_hash, " + a + ".state, " + a + ".cert_serial, " +
+		a + ".fail_reason, " + a + ".quarantine_reason, COALESCE(" + a + ".quarantined_at,''), " + a + ".backend, " + a + ".backend_txn, " + a + ".leaf_der"
+}
+
 // rowScanner is satisfied by both *sql.Row and *sql.Rows.
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -222,11 +228,15 @@ func (db *DB) GetIssuanceByTxn(ctx context.Context, txnID string) (Issuance, err
 		`SELECT `+issuanceCols+` FROM cert_issuance WHERE txn_id=? LIMIT 1`, txnID))
 }
 
-// ListQuarantined returns every issuance row in the QUARANTINED state, most recent
-// first — the work-list for out-of-band (operator / reconciler) resolution.
+// ListQuarantined returns every QUARANTINED issuance that has not been released
+// through the evidence-gated resolution, most recent first — the operator's
+// work list. Released holds stay QUARANTINED in cert_issuance (never reissued)
+// but leave this list.
 func (db *DB) ListQuarantined(ctx context.Context) ([]Issuance, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		`SELECT `+issuanceCols+` FROM cert_issuance WHERE state='QUARANTINED' ORDER BY quarantined_at DESC`)
+		`SELECT `+prefixedIssuanceCols("i")+` FROM cert_issuance i
+		 LEFT JOIN quarantine_resolutions r ON r.grant_id = i.grant_id
+		 WHERE i.state='QUARANTINED' AND r.released_at IS NULL ORDER BY i.quarantined_at DESC`)
 	if err != nil {
 		return nil, err
 	}

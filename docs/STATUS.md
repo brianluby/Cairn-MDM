@@ -1,7 +1,9 @@
 # Cairn — build status
 
-Current completion work: [requirements and acceptance matrix](completion-prd.md)
-and [APNs lifecycle guide](apns-lifecycle.md). The dated phase records below are
+Current completion work: [requirements and acceptance matrix](completion-prd.md),
+[APNs lifecycle guide](apns-lifecycle.md), [directory profile targeting](directory-profile-targeting.md),
+[enrollment and recovery](enrollment-onboarding.md), [backup and restore](backup-restore.md)
+and [quarantine resolution](quarantine-resolution.md). The dated phase records below are
 historical evidence, not a current beta-release verdict.
 
 ## Phase 0 — skeleton ✅

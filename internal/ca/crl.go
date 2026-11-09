@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/x509"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -96,4 +98,20 @@ func (c *CA) CRLHandler() http.Handler {
 		w.Header().Set("Content-Type", "application/pkix-crl")
 		w.Write(der)
 	})
+}
+
+// IsRevoked reports whether serialHex is in revoked_certs and when it was revoked.
+func (c *CA) IsRevoked(ctx context.Context, serialHex string) (revokedAt string, revoked bool, err error) {
+	serial, ok := new(big.Int).SetString(serialHex, 16)
+	if !ok {
+		return "", false, fmt.Errorf("ca: %q is not a hex serial", serialHex)
+	}
+	err = c.depot.db.QueryRowContext(ctx, `SELECT revoked_at FROM revoked_certs WHERE serial=?`, serial.Text(16)).Scan(&revokedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return revokedAt, true, nil
 }

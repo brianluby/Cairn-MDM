@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <p><a href="/admin/quarantine">← Quarantine</a></p>
+    <h1>Held issuance for grant #{{.Issuance.GrantID}}</h1>
+    {{if .Flash}}<div class="card callout" role="status">{{.Flash}}</div>{{end}}
+    {{if .Error}}<div class="card callout error" role="alert">{{.Error}}</div>{{end}}
+
+    <div class="card" style="margin-top:16px">
+      <table><tbody>
+        <tr><th style="width:200px">Quarantined (UTC)</th><td class="sub">{{.Issuance.QuarantinedAt}}</td></tr>
+        <tr><th>Reason</th><td>{{.Issuance.QuarantineReason}}</td></tr>
+        <tr><th>Backend</th><td>{{if .Issuance.Backend}}{{.Issuance.Backend}}{{else}}<span class="sub">unknown</span>{{end}}{{if .Issuance.BackendTxn}} <span class="sub mono">{{.Issuance.BackendTxn}}</span>{{end}}</td></tr>
+        {{with .Grant}}
+        <tr><th>Owner</th><td class="mono">{{.Owner}}</td></tr>
+        <tr><th>Device label / platform</th><td>{{.Label}} · {{.Platform}}</td></tr>
+        <tr><th>Authorized by</th><td>{{.CreatedBy}} at {{.CreatedAt}}</td></tr>
+        {{end}}
+        <tr><th>SCEP transaction</th><td class="mono sub">{{.Issuance.TxnID}}</td></tr>
+        <tr><th>Public key (SHA-256)</th><td class="mono sub">{{.Issuance.SPKISHA256}}</td></tr>
+        <tr><th>Recorded serial</th><td class="mono">{{if .Issuance.CertSerial}}{{.Issuance.CertSerial}}{{else}}<span class="sub">none</span>{{end}}</td></tr>
+      </tbody></table>
+    </div>
+
+    {{if not .Resolver}}<div class="card callout">Resolution is not configured on this server.</div>{{end}}
+    {{if and .Resolver (not .Embedded)}}<div class="card callout error">The backend behind this hold is external. Cairn cannot verify that its signer is fenced or enumerate what it issued, so this hold cannot be released here. Revoke at the backend CA, keep the device off the network, and enroll it again with a new link once the backend confirms the outcome.</div>{{end}}
+
+    <h2>1. Fence the signer {{if ge .Step 1}}<span class="tag">done {{nullStr .Resolution.FencedAt}} by {{.Resolution.FencedBy}}</span>{{end}}</h2>
+    <div class="card" style="padding:16px 24px">
+      <p>Proves no signer can still complete this attempt. For the embedded CA this is a storage fact: the grant's binding is terminal and the signer is local and atomic. The manifest is produced by the backend, not typed in.</p>
+      {{if .Fence}}<details><summary>Fence manifest</summary><pre class="mono sub">{{.Fence}}</pre></details>{{end}}
+      {{if and .Resolver .Embedded (lt .Step 4)}}<form method="post" action="/admin/quarantine/{{.Issuance.GrantID}}/fence"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn" type="submit">{{if ge .Step 1}}Re-fence (resets later steps){{else}}Record fence{{end}}</button></form>{{end}}
+    </div>
+
+    <h2>2. Enumerate issued certificates {{if ge .Step 2}}<span class="tag">done {{nullStr .Resolution.EnumeratedAt}}</span>{{end}}</h2>
+    <div class="card" style="padding:16px 24px">
+      <p>Lists every certificate the CA has ever issued for this attempt's public key, from the CA's complete record, reconciled with Cairn's own issuance row. A partial or stale answer never counts.</p>
+      {{if .Enumeration}}<details><summary>Enumeration manifest</summary><pre class="mono sub">{{.Enumeration}}</pre></details>{{end}}
+      {{if and .Resolver .Embedded (eq .Step 1)}}<form method="post" action="/admin/quarantine/{{.Issuance.GrantID}}/enumerate"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn" type="submit">Enumerate</button></form>{{else if lt .Step 1}}<p class="sub">Record the fence first.</p>{{end}}
+    </div>
+
+    <h2>3. Confirm rejected everywhere {{if ge .Step 3}}<span class="tag">done {{nullStr .Resolution.RejectedAt}}</span>{{end}}</h2>
+    <div class="card" style="padding:16px 24px">
+      <p>Revokes every enumerated certificate, removes its MDM authentication association, and requires an observed Access-Reject reported by each configured RADIUS acceptance point after revocation.</p>
+      {{if .AcceptancePoints}}<p>Acceptance points: {{range .AcceptancePoints}}<span class="tag mono">{{.}}</span> {{end}}</p>{{else}}<p class="callout">No RADIUS acceptance points are configured (radius.acceptance_points). This release covers MDM only; it does not prove anything about network access.</p>{{end}}
+      {{if .Missing}}<div class="callout error" role="alert"><p>Not yet confirmed:</p><ul>{{range .Missing}}<li>{{.}}</li>{{end}}</ul><p class="sub">Revocation was recorded. Have each acceptance point reload the CRL, attempt the certificate and report the rejection to the ingest endpoint, then confirm again.</p></div>{{end}}
+      {{if .Rejection}}<details><summary>Rejection manifest</summary><pre class="mono sub">{{.Rejection}}</pre></details>{{end}}
+      {{if and .Resolver .Embedded (eq .Step 2)}}<form method="post" action="/admin/quarantine/{{.Issuance.GrantID}}/confirm"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn" type="submit">Revoke and confirm rejection</button></form>{{else if lt .Step 2}}<p class="sub">Enumerate first.</p>{{end}}
+    </div>
+
+    <h2>4. Release</h2>
+    <div class="card" style="padding:16px 24px">
+      <p>Re-validates every manifest's content and coverage, then frees the lineage. Nothing is reissued; the device enrolls again with a new link. There is no override.</p>
+      {{if .Problems}}<div class="callout error" role="alert"><p>Release would be refused:</p><ul>{{range .Problems}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+      {{if and .Resolver .Embedded (eq .Step 3) (not .Problems)}}<form method="post" action="/admin/quarantine/{{.Issuance.GrantID}}/release" onsubmit="return confirm('Release this hold? The device will need a new enrollment link.')"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn danger" type="submit">Release</button></form>{{else if lt .Step 3}}<p class="sub">Confirm rejection first.</p>{{end}}
+    </div>
+    <p class="sub">Every step requires administrator role and a fresh authenticator code, and is recorded in the audit log with the actor.</p>
+  </main>
+</body>
+</html>

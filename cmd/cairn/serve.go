@@ -19,6 +19,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
 	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
+	"github.com/nickpdawson/cairn-mdm/internal/quarantine"
 	"github.com/nickpdawson/cairn-mdm/internal/server"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 	"github.com/nickpdawson/cairn-mdm/internal/targeting"
@@ -180,6 +181,10 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	console.SetMFA(mfa)
+	// Evidence-gated quarantine release. Only the embedded CA can produce the
+	// fence and enumeration manifests; other backends leave holds read-only.
+	console.SetQuarantineResolver(quarantine.New(db, pki.Authority, cfg.RADIUS.AcceptancePoints))
+	console.SetRadiusIngestToken(cfg.RADIUS.IngestToken)
 	console.SetAPNS(push.RequestManager{Root: filepath.Join(pushcertDir(cfg), "requests")}, db)
 
 	// OIDC single sign-on (redirect flow) is wired separately from the

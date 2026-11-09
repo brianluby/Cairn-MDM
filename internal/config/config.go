@@ -76,7 +76,21 @@ type Config struct {
 	Enrollment Enrollment `toml:"enrollment"`
 	Profile    Profile    `toml:"profile"`
 	Alerts     Alerts     `toml:"alerts"`
+	RADIUS     RADIUS     `toml:"radius"`
 	Log        Log        `toml:"log"`
+}
+
+// RADIUS names the network-access acceptance points that rely on Cairn-issued
+// certificates and the token they use to report observed Access-Rejects. The
+// quarantine release gate requires an ingested rejection for every enumerated
+// serial from every acceptance point listed here; with none listed, release
+// covers MDM only and the console says so.
+type RADIUS struct {
+	AcceptancePoints []string `toml:"acceptance_points"`
+	IngestTokenFile  string   `toml:"ingest_token_file"`
+	IngestTokenEnv   string   `toml:"ingest_token_env"`
+	// resolved:
+	IngestToken string `toml:"-"`
 }
 
 // Alerts configures the out-of-band notification path: a webhook (ntfy-style
@@ -494,6 +508,13 @@ func resolveSecrets(cfg *Config) error {
 	}
 	cfg.Alerts.WebhookURL = hook
 
+	// RADIUS rejection-ingest token.
+	tok, err := readSecret("radius.ingest_token", "", cfg.RADIUS.IngestTokenFile, cfg.RADIUS.IngestTokenEnv)
+	if err != nil {
+		return err
+	}
+	cfg.RADIUS.IngestToken = tok
+
 	// OIDC client secret.
 	if cfg.Auth.OIDC.Enabled {
 		sec, err := readSecret("auth.oidc.client_secret", "", cfg.Auth.OIDC.ClientSecretFile, cfg.Auth.OIDC.ClientSecretEnv)
@@ -530,6 +551,12 @@ func readSecret(name, inline, file, env string) (string, error) {
 func (c Config) Validate() error {
 	var errs []error
 
+	if len(c.RADIUS.AcceptancePoints) > 0 && c.RADIUS.IngestToken == "" {
+		errs = append(errs, errors.New("radius.acceptance_points set but no radius.ingest_token_file/_env; rejections could not be ingested"))
+	}
+	if len(c.RADIUS.AcceptancePoints) == 0 && c.RADIUS.IngestToken != "" {
+		errs = append(errs, errors.New("radius.ingest_token configured but radius.acceptance_points is empty"))
+	}
 	if c.Alerts.WebhookURL != "" {
 		if u, err := url.Parse(c.Alerts.WebhookURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			errs = append(errs, errors.New("alerts.webhook_url must be an absolute http(s) URL"))

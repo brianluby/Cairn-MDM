@@ -210,7 +210,9 @@ type App struct {
 	quarantine       QuarantineStore
 	ownership        OwnershipStore
 	alerts           AlertStore
-	targeting        Targeting // may be nil (no directory targeting)
+	resolver         QuarantineResolver // may be nil (read-only quarantine page)
+	radiusToken      string             // bearer token for the RADIUS rejection ingest endpoint
+	targeting        Targeting          // may be nil (no directory targeting)
 	cmd              Commander
 	rec              Reconciler   // may be nil (no auto-push)
 	oidc             OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
@@ -319,6 +321,10 @@ func (a *App) Register(mux *http.ServeMux) {
 	// security-sensitive. Read-only for now; the guided resolution flow lands with
 	// the ResolveQuarantine backend.
 	mux.Handle("GET /admin/quarantine", a.requireRole(auth.RoleAdmin, a.handleQuarantine))
+	mux.Handle("GET /admin/quarantine/{id}", a.requireRole(auth.RoleAdmin, a.handleQuarantineDetail))
+	mux.Handle("POST /admin/quarantine/{id}/{step}", a.audited(a.requireRole(auth.RoleAdmin, a.handleQuarantineStep)))
+	// RADIUS acceptance points report observed Access-Rejects here (bearer token).
+	mux.Handle("POST /api/v1/radius/rejections", a.audited(http.HandlerFunc(a.handleRadiusRejection)))
 
 	mux.Handle("POST /admin/devices/{id}/commands/{uuid}/retry-push", a.audited(a.requireRole(auth.RoleOperator, a.handleNotificationRetry)))
 	mux.Handle("GET /admin/apns", a.requireRole(auth.RoleAdmin, a.handleAPNS))

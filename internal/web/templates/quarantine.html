@@ -5,27 +5,30 @@
   {{template "topbar" .}}
   <main>
     <h1>Quarantine</h1>
-    <p class="sub">Enrollments held after an ambiguous certificate outcome — the CA may
-      have signed, so Cairn refuses to retry rather than risk a second live certificate.
-      Each one waits for an operator to resolve it (fence the signer, enumerate any issued
-      serials, confirm they are rejected at RADIUS). The guided resolution flow is coming;
-      for now this is a read-only view.</p>
+    <p class="sub">Enrollments held after an ambiguous certificate outcome: the CA may have
+      signed, so Cairn refuses to retry rather than risk a second live certificate. Each hold is
+      released only through four evidence-gated steps (fence, enumerate, confirm rejected,
+      release). Nothing is reissued; the device enrolls again with a new link.</p>
+    {{if .Flash}}<div class="card callout" role="status">{{.Flash}}</div>{{end}}
+    {{if .Error}}<div class="card callout error" role="alert">{{.Error}}</div>{{end}}
+    {{if not .Resolver}}<div class="card callout">Resolution is not configured on this server; holds are listed read-only.</div>
+    {{else if not .Embedded}}<div class="card callout">This server's certificate backend is external. Cairn cannot verify a fence or enumerate its issued certificates, so holds stay quarantined here; resolve at the backend CA and keep the device off the network.</div>{{end}}
 
     <div class="card">
       {{if .Items}}
       <table>
         <thead>
-          <tr><th>When (UTC)</th><th>Grant</th><th>Backend</th><th>Reason</th><th>Transaction</th><th>Public key (SHA-256)</th></tr>
+          <tr><th>When (UTC)</th><th>Grant</th><th>Owner</th><th>Backend</th><th>Reason</th><th>Progress</th></tr>
         </thead>
         <tbody>
           {{range .Items}}
           <tr>
             <td class="sub">{{if .QuarantinedAt}}{{.QuarantinedAt}}{{else}}—{{end}}</td>
-            <td class="mono">#{{.GrantID}}</td>
+            <td><a class="mono" href="/admin/quarantine/{{.GrantID}}">#{{.GrantID}}</a>{{if .Label}}<div class="sub">{{.Label}}</div>{{end}}</td>
+            <td class="mono sub">{{if .Owner}}{{.Owner}}{{else}}—{{end}}</td>
             <td>{{if .Backend}}{{.Backend}}{{else}}<span class="sub">—</span>{{end}}</td>
             <td>{{.QuarantineReason}}</td>
-            <td class="mono sub">{{.TxnID}}</td>
-            <td class="mono sub">{{.SPKISHA256}}</td>
+            <td>{{if eq .Step 0}}held{{else if eq .Step 1}}fenced{{else if eq .Step 2}}enumerated{{else}}rejection confirmed{{end}} <span class="sub">({{.Step}}/4)</span></td>
           </tr>
           {{end}}
         </tbody>
