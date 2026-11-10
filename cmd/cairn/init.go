@@ -171,7 +171,11 @@ func printInitSummary(cfg config.Config, configPath, adminUser, generatedPass st
 	fmt.Printf("       cairn pushcert import -config %s -cert push.pem -key push.key\n", configPath)
 	fmt.Printf("  2. Start the server:\n")
 	fmt.Printf("       cairn serve -config %s\n", configPath)
-	fmt.Printf("  3. Enroll devices at:  %s/enroll\n", cfg.Server.PublicURL)
+	if cfg.Enrollment.AllowOpen {
+		fmt.Printf("  3. Enroll devices at:  %s/enroll\n", cfg.Server.PublicURL)
+	} else {
+		fmt.Printf("  3. Sign in at %s/admin, open Enrollment and create a single-use link for each device.\n", cfg.Server.PublicURL)
+	}
 	if cfg.CA.Mode == config.CAGenerate {
 		fmt.Printf("     (Distribute the CA for offline trust with:  cairn ca export -config %s)\n", configPath)
 	}

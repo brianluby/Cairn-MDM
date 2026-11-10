@@ -75,7 +75,12 @@
       <span>📲</span>
       <div>
         <div>Enroll a device</div>
+        {{if .OpenEnrollment}}
         <div class="url">{{.EnrollmentURL}}</div>
+        <div class="sub">Open enrollment is on (enrollment.allow_open): anyone who can reach this URL can enroll.</div>
+        {{else}}
+        <div class="sub">Each device enrolls through a single-use link. <a href="/admin/enrollment">Create an enrollment link</a>, then send it to the device's owner or open it on the device.</div>
+        {{end}}
       </div>
     </div>
 

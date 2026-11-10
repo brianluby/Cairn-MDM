@@ -206,6 +206,7 @@ type Config struct {
 	LDAPEnabled         bool
 	DirectoryConfigured bool // auth.ldap.directory_id set
 	AlertsConfigured    bool // alerts.webhook_url set
+	OpenEnrollment      bool // enrollment.allow_open: bare /enroll is served
 
 	// RoleMappings lists how directory and SSO identities obtain console roles
 	// (display only; the mappings live in cairn.toml).

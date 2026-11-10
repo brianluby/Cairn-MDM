@@ -202,6 +202,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Active":           active,
 		"Recent":           recent,
 		"EnrollmentURL":    strings.TrimRight(a.cfg.PublicURL, "/") + "/enroll",
+		"OpenEnrollment":   a.cfg.OpenEnrollment,
 		"APNs":             a.apnsStatus(r.Context()),
 		"Alerts":           alerts,
 		"AlertsConfigured": a.cfg.AlertsConfigured,

@@ -152,6 +152,7 @@ func runServe(ctx context.Context, args []string) error {
 			LDAPEnabled:         cfg.Auth.LDAP.Enabled,
 			DirectoryConfigured: cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "",
 			AlertsConfigured:    cfg.Alerts.Enabled(),
+			OpenEnrollment:      cfg.Enrollment.AllowOpen,
 			RoleMappings:        roleMappings(cfg),
 		}, log)
 	if err != nil {
