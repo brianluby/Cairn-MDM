@@ -5,6 +5,11 @@
   --muted: #6e6e73;
   --accent: #0071e3;
   --accent-press: #0064c8;
+  /* Text colors measured against both backgrounds (WCAG AA 4.5:1): link
+     #0066cc is 5.6:1 on cards and 5.1:1 on the page; error #b3261e is 6.5:1. The
+     brighter accent stays for button fills (white on #0071e3 is 4.7:1). */
+  --link: #0066cc;
+  --error-text: #b3261e;
   --border: #d2d2d7;
   --hairline: #e8e8ed;
   --green: #34c759;
@@ -22,6 +27,8 @@
     --card: #1c1c1e;
     --text: #f5f5f7;
     --muted: #98989d;
+    --link: #5aaaff;       /* 7.0:1 on the dark card, 8.6:1 on black */
+    --error-text: #ff6b60; /* 6.1:1 on the dark card */
     --border: #38383a;
     --hairline: #2c2c2e;
     --shadow: none;
@@ -39,7 +46,7 @@ body {
   line-height: 1.5;
 }
 
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* Top bar ---------------------------------------------------------------- */
@@ -118,7 +125,7 @@ td .sub { color: var(--muted); font-size: 13px; }
   padding: 2px 8px; border-radius: 6px; margin: 1px 0;
 }
 
-.callout.error { color: var(--red); }
+.callout.error { color: var(--error-text); }
 
 /* Buttons ---------------------------------------------------------------- */
 .btn {
@@ -143,7 +150,7 @@ td .sub { color: var(--muted); font-size: 13px; }
 }
 .login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
 .login-card .btn { width: 100%; margin-top: 22px; padding: 11px; }
-.form-error { background: color-mix(in srgb, #ff3b30 12%, transparent); color: #d70015; border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 8px; }
+.form-error { background: color-mix(in srgb, #ff3b30 12%, transparent); color: var(--error-text); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 8px; }
 
 /* Long identifiers must stay within their card, including expanded metadata. */
 .mono, .url { overflow-wrap: anywhere; }
