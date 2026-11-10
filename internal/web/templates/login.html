@@ -5,6 +5,7 @@
   <div class="login-wrap">
     <div class="card login-card">
       <span class="wordmark">▲ <span class="peak">Cairn</span></span>
+      <h1 class="sr-only">Sign in to Cairn</h1>
       <div class="tagline">Device management, quietly.</div>
       {{if .Error}}<div class="form-error">{{.Error}}</div>{{end}}
       {{if .SetupOpen}}<div class="callout" style="text-align:left">No administrator exists yet. <a href="/setup">Run first-time setup</a> with the token from the Cairn host.</div>{{end}}

@@ -149,6 +149,9 @@ td .sub { color: var(--muted); font-size: 13px; }
 .mono, .url { overflow-wrap: anywhere; }
 input, select, textarea { max-width: 100%; }
 pre { max-width: 100%; overflow: auto; }
+/* Visually hidden, still announced: gives every page a heading for assistive technology. */
+pre.mono { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .table-scroll { max-width: 100%; overflow-x: auto; }
 .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .apns-table { table-layout: fixed; min-width: 34rem; }

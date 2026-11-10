@@ -127,6 +127,16 @@ old binary can't read, the pre-upgrade DB. Schema migrations are additive
 (`ADD COLUMN`, new tables), so an older binary generally still reads a
 newer DB, but back up first regardless.
 
+Rehearsed November 9, 2026, offline on a copy of the production database as it
+stood under `c25eb67` (15 schema versions, 12 devices, 34 certificate
+associations, 2 topics): the completion candidate's `migrate` took it to 32
+versions with every count unchanged and integrity ok; `cairn backup` then
+produced a bundle that `restore -rehearse` verified; the `c25eb67` binary run
+against the upgraded database applied no migrations, read both APNs topics and
+the local accounts, and left the schema at 32 with integrity ok. So a binary
+rollback after this upgrade does not require a database rollback. The
+rehearsal never started a server against the copied data.
+
 ## Schedule (recommendation)
 
 Nightly `VACUUM INTO` + config tar to `/var/backups`, synced off-host (the
