@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <p><a href="/admin/vpn">← VPN</a></p>
+    <h1>{{if .New}}Add OpenVPN server{{else}}{{.Form.Name}}{{end}}</h1>
+
+    {{if .Error}}<div class="card callout error">{{.Error}}</div>{{end}}
+    {{if .Skipped}}
+    <div class="card callout">
+      Read from the file. Check each field, then save. Left out:
+      {{range $i, $s := .Skipped}}{{if $i}}, {{end}}<span class="mono">{{$s}}</span>{{end}}.
+    </div>
+    {{end}}
+
+    <p class="sub">Saving needs an MFA code verified in the last five minutes
+    (<a href="/account/mfa">Account security</a>).</p>
+
+    {{if .New}}
+    <div class="card" style="padding:24px">
+      <h2 style="margin-top:0">Start from a client file</h2>
+      <form method="post" action="/admin/vpn/import">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p><label>Contents of an .ovpn file exported for this server<br>
+          <textarea name="ovpn" rows="6" cols="80" spellcheck="false" required></textarea></label></p>
+        <p class="sub">Fills in the form below. Nothing is saved yet, and any client certificate or key in the file is dropped.</p>
+        <p><button class="btn" type="submit">Read file</button></p>
+      </form>
+    </div>
+    {{end}}
+
+    <div class="card" style="padding:24px">
+      <form method="post" action="{{if .New}}/admin/vpn/new{{else}}/admin/vpn/{{.Form.ID}}{{end}}">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+
+        <h2 style="margin-top:0">Server</h2>
+        <p><label>Name<br><input type="text" name="name" value="{{.Form.Name}}" required size="40" maxlength="100"></label>
+          <span class="sub">Shown in OpenVPN Connect and in Settings on the device.</span></p>
+        {{if .New}}
+        <p><label>Identifier<br><input type="text" name="slug" value="{{.Form.Slug}}" size="40" pattern="[a-z0-9][a-z0-9-]*" maxlength="63"></label>
+          <span class="sub">Lowercase letters, digits and hyphens. Leave empty to derive it from the name. It cannot be changed later.</span></p>
+        {{else}}
+        <p>Identifier<br><span class="mono">{{.Form.Slug}}</span></p>
+        {{end}}
+        <p><label>Addresses, one per line: host port udp or tcp<br>
+          <textarea name="remotes" rows="3" cols="60" spellcheck="false" required placeholder="vpn.example.org 443 udp">{{.Form.Remotes}}</textarea></label>
+          <span class="sub">The client tries them in order. List a TCP address after UDP for networks that block UDP.</span></p>
+        <p><label>Server certificate name<br><input type="text" name="verify_x509_name" value="{{.Form.VerifyX509Name}}" required size="40"></label>
+          <span class="sub">The exact common name of the server certificate. Clients refuse any other.</span></p>
+        <p><label>CA chain that signed the server certificate (PEM)<br>
+          <textarea name="ca_pem" rows="6" cols="80" spellcheck="false" required placeholder="-----BEGIN CERTIFICATE-----">{{.Form.CAPEM}}</textarea></label></p>
+
+        <h2>TLS key</h2>
+        <p><label>Type<br>
+          <select name="tls_key_mode">
+            <option value="tls-auth"{{if eq .Form.TLSKeyMode "tls-auth"}} selected{{end}}>tls-auth</option>
+            <option value="tls-crypt"{{if eq .Form.TLSKeyMode "tls-crypt"}} selected{{end}}>tls-crypt</option>
+            <option value=""{{if eq .Form.TLSKeyMode ""}} selected{{end}}>None</option>
+          </select></label></p>
+        <p><label>Key direction (tls-auth only)<br>
+          <select name="key_direction">
+            <option value="1"{{if ne .Form.KeyDirection "0"}} selected{{end}}>1 (client side of a pfSense server)</option>
+            <option value="0"{{if eq .Form.KeyDirection "0"}} selected{{end}}>0</option>
+          </select></label></p>
+        <p><label>Static key<br>
+          <textarea name="tls_key" rows="6" cols="80" spellcheck="false" autocomplete="off" placeholder="-----BEGIN OpenVPN Static key V1-----">{{.Form.TLSKey}}</textarea></label>
+          <span class="sub">{{if .Form.HasStoredKey}}A key is stored and is not shown. Leave this empty to keep it, or paste a new one to replace it.{{else}}The server's shared key. It is encrypted before it is stored and goes into every profile.{{end}}</span></p>
+
+        <h2>Connection</h2>
+        <p><label>Cipher<br><input type="text" name="cipher" value="{{.Form.Cipher}}" size="24" placeholder="AES-256-GCM"></label></p>
+        <p><label>Auth digest<br><input type="text" name="auth" value="{{.Form.Auth}}" size="24" placeholder="SHA256"></label></p>
+        <p><label>Tunnel MTU<br><input type="text" name="tun_mtu" value="{{.Form.TunMTU}}" size="8" inputmode="numeric"></label>
+          <span class="sub">Leave empty for the client default.</span></p>
+        <p><label><input type="checkbox" name="user_auth"{{if .Form.UserAuth}} checked{{end}}> The server also asks for a username and password</label></p>
+        <p><label><input type="checkbox" name="on_demand"{{if .Form.OnDemand}} checked{{end}}> Connect on demand on Wi-Fi and cellular</label>
+          <span class="sub">Only for a server that needs no password.</span></p>
+        <p><label>Other client options, one per line<br>
+          <textarea name="extra" rows="3" cols="60" spellcheck="false">{{.Form.Extra}}</textarea></label></p>
+
+        <p style="margin-top:20px"><button class="btn" type="submit">Save</button></p>
+      </form>
+    </div>
+
+    {{if not .New}}
+    <h2>Delete</h2>
+    <div class="card" style="padding:24px">
+      <form method="post" action="/admin/vpn/{{.Form.ID}}/delete">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p>Deleting the server stops new profiles from being issued for it. Profiles already on devices stay installed and keep working.</p>
+        <p><button class="btn danger" type="submit">Delete server</button></p>
+      </form>
+    </div>
+    {{end}}
+  </main>
+</body>
+</html>

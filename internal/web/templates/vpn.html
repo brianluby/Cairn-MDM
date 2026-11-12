@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <h1>VPN</h1>
+
+    {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
+
+    <h2>OpenVPN servers</h2>
+    <div class="card">
+      {{if .Servers}}
+      <table>
+        <thead>
+          <tr><th>Server</th><th>Addresses</th><th>Certificate name</th><th>Sign-in</th></tr>
+        </thead>
+        <tbody>
+          {{range .Servers}}
+          <tr>
+            <td>
+              <a href="/admin/vpn/{{.ID}}">{{.Name}}</a>
+              <div class="sub mono">{{.Slug}}</div>
+            </td>
+            <td class="mono">{{range .Remotes}}{{.Host}} {{.Port}} {{.Proto}}<br>{{end}}</td>
+            <td class="mono">{{.VerifyX509Name}}</td>
+            <td class="sub">
+              Certificate{{if .UserAuth}} and password{{end}}{{if .OnDemand}}, connects on demand{{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No servers yet. Add one to issue VPN profiles to devices.</div>
+      {{end}}
+    </div>
+    <p style="margin-top:12px"><a class="btn" href="/admin/vpn/new">Add server</a></p>
+  </main>
+</body>
+</html>

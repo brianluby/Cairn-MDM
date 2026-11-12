@@ -19,6 +19,7 @@
     {{if .User.Role.AtLeast "admin"}}<a href="/admin/quarantine"{{if eq .Title "Quarantine"}} class="active"{{end}}>Quarantine</a>{{end}}
     <a href="/admin/activity"{{if eq .Title "Activity"}} class="active"{{end}}>Activity</a>
     {{if .User.Role.AtLeast "admin"}}<a href="/admin/users"{{if eq .Title "Users"}} class="active"{{end}}>Users</a>
+    {{if vpnEnabled}}<a href="/admin/vpn"{{if eq .Title "VPN"}} class="active"{{end}}>VPN</a>{{end}}
     <a href="/admin/apns"{{if eq .Title "APNs certificates"}} class="active"{{end}}>APNs</a>
     <a href="/admin/settings"{{if eq .Title "Settings"}} class="active"{{end}}>Settings</a>{{end}}
   </nav>

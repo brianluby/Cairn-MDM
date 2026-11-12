@@ -18,6 +18,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
+	"github.com/nickpdawson/cairn-mdm/internal/keyfile"
 	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/quarantine"
@@ -25,6 +26,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 	"github.com/nickpdawson/cairn-mdm/internal/targeting"
 	"github.com/nickpdawson/cairn-mdm/internal/version"
+	"github.com/nickpdawson/cairn-mdm/internal/vpn"
 	"github.com/nickpdawson/cairn-mdm/internal/web"
 )
 
@@ -184,6 +186,21 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	console.SetMFA(mfa)
+	if cfg.VPN.Enabled {
+		vpnKey, err := keyfile.Open(cfg.Storage.Path+".vpn", "VPN", func() (bool, error) {
+			n, err := db.CountSealedVPNKeys(ctx)
+			return n > 0, err
+		})
+		if err != nil {
+			return err
+		}
+		vpnServers, err := vpn.NewServers(db, vpnKey)
+		if err != nil {
+			return err
+		}
+		console.SetVPN(vpnServers)
+		log.Info("VPN profiles enabled")
+	}
 	// Evidence-gated quarantine release. Only the embedded CA can produce the
 	// fence and enumeration manifests; other backends leave holds read-only.
 	console.SetQuarantineResolver(quarantine.New(db, pki.Authority, cfg.RADIUS.AcceptancePoints))

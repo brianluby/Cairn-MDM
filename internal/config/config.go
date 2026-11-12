@@ -78,7 +78,14 @@ type Config struct {
 	Alerts     Alerts     `toml:"alerts"`
 	RADIUS     RADIUS     `toml:"radius"`
 	Issuance   Issuance   `toml:"issuance"`
+	VPN        VPN        `toml:"vpn"`
 	Log        Log        `toml:"log"`
+}
+
+// VPN turns on per-device OpenVPN profiles: admin-managed server records and
+// profiles rendered from them. Off by default.
+type VPN struct {
+	Enabled bool `toml:"enabled"`
 }
 
 // Issuance tunes certificates the embedded CA signs for devices.

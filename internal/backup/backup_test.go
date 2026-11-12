@@ -190,3 +190,47 @@ func TestVerifyDetectsTamperingAndMissingKey(t *testing.T) {
 		t.Fatal("traversal wrote outside the extraction directory")
 	}
 }
+
+func TestBundleCarriesVPNKey(t *testing.T) {
+	ctx := context.Background()
+	dir, opts := seed(t)
+	db, err := sqlite.OpenExisting(ctx, opts.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateVPNServer(ctx, sqlite.VPNServerRow{Name: "Office", Slug: "office", Config: []byte("{}"), SealedKey: []byte{1}}, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Sealed keys without the key file: noted at creation, refused at verification.
+	opts.VPNKeyPath = filepath.Join(opts.DBPath+".vpn", "key")
+	opts.Out = filepath.Join(dir, "novpnkey.tar.gz")
+	m, err := Create(ctx, opts)
+	if err != nil || m.VPNKeyIncluded || m.Counts.VPNKeys != 1 {
+		t.Fatalf("manifest %+v %v", m, err)
+	}
+	rep, err := Verify(ctx, opts.Out, filepath.Join(dir, "v-novpn"))
+	if err != nil || rep.OK() || !strings.Contains(strings.Join(rep.Problems, ";"), "no vpn/key") {
+		t.Fatalf("missing VPN key undetected: %v %v", err, rep)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(opts.VPNKeyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opts.VPNKeyPath, []byte("fedcba9876543210fedcba9876543210"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts.Out = filepath.Join(dir, "vpnkey.tar.gz")
+	if m, err = Create(ctx, opts); err != nil || !m.VPNKeyIncluded {
+		t.Fatalf("manifest %+v %v", m, err)
+	}
+	restored := filepath.Join(dir, "restored")
+	if rep, err = Restore(ctx, opts.Out, restored); err != nil || !rep.OK() {
+		t.Fatalf("restore: %v %v", err, rep)
+	}
+	got, err := os.ReadFile(filepath.Join(restored, "cairn.db.vpn", "key"))
+	if err != nil || string(got) != "fedcba9876543210fedcba9876543210" {
+		t.Fatalf("restored VPN key = %q, %v", got, err)
+	}
+}

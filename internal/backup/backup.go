@@ -48,6 +48,7 @@ type Counts struct {
 	Quarantined int `json:"quarantined"`
 	MFAFactors  int `json:"mfa_factors"`
 	LocalUsers  int `json:"local_users"`
+	VPNKeys     int `json:"vpn_keys"` // VPN servers holding a sealed TLS key
 }
 
 // TopicInfo is one APNs topic and its expiry.
@@ -66,6 +67,7 @@ type Manifest struct {
 	Counts         Counts      `json:"counts"`
 	Topics         []TopicInfo `json:"topics"`
 	MFAKeyIncluded bool        `json:"mfa_key_included"`
+	VPNKeyIncluded bool        `json:"vpn_key_included"`
 	Notes          []string    `json:"notes,omitempty"`
 }
 
@@ -73,6 +75,7 @@ type Manifest struct {
 type Options struct {
 	DBPath     string
 	MFAKeyPath string   // <storage.path>.mfa/key; skipped when absent
+	VPNKeyPath string   // <storage.path>.vpn/key; skipped when absent
 	ConfigPath string   // cairn.toml
 	Extra      []string // files referenced by the config (certs, keys, chains, challenge files)
 	Out        string   // destination .tar.gz (must not exist)
@@ -124,6 +127,21 @@ func Create(ctx context.Context, opts Options) (*Manifest, error) {
 			m.MFAKeyIncluded = true
 		} else if m.Counts.MFAFactors > 0 {
 			m.Notes = append(m.Notes, "MFA factors exist but the key file was not found at "+opts.MFAKeyPath+"; this bundle cannot restore MFA.")
+		}
+	}
+	if opts.VPNKeyPath != "" {
+		if _, err := os.Stat(opts.VPNKeyPath); err == nil {
+			if err := copyInto(opts.VPNKeyPath, filepath.Join(work, "vpn", "key"), 0o600); err != nil {
+				return nil, err
+			}
+			entry, err := describe(filepath.Join(work, "vpn", "key"), "vpn/key", opts.VPNKeyPath)
+			if err != nil {
+				return nil, err
+			}
+			m.Files = append(m.Files, entry)
+			m.VPNKeyIncluded = true
+		} else if m.Counts.VPNKeys > 0 {
+			m.Notes = append(m.Notes, "VPN servers hold sealed TLS keys but the key file was not found at "+opts.VPNKeyPath+"; this bundle cannot restore them.")
 		}
 	}
 	names := map[string]int{}
@@ -234,6 +252,7 @@ func inspect(ctx context.Context, path string, m *Manifest) error {
 		{`SELECT count(*) FROM cert_issuance WHERE state='QUARANTINED'`, &c.Quarantined},
 		{`SELECT count(*) FROM mfa_factors`, &c.MFAFactors},
 		{`SELECT count(*) FROM app_users`, &c.LocalUsers},
+		{`SELECT count(*) FROM vpn_servers WHERE tls_key IS NOT NULL`, &c.VPNKeys},
 	} {
 		if err := count(q.sql, q.dst); err != nil {
 			return err
@@ -473,6 +492,14 @@ func Verify(ctx context.Context, bundle, dir string) (*Report, error) {
 			r.Problems = append(r.Problems, "manifest claims an MFA key but mfa/key is absent")
 		}
 	}
+	if observed.Counts.VPNKeys > 0 && !m.VPNKeyIncluded {
+		r.Problems = append(r.Problems, "database holds sealed VPN server keys but the bundle has no vpn/key; restored VPN servers could not issue profiles")
+	}
+	if m.VPNKeyIncluded {
+		if _, err := os.Stat(filepath.Join(dir, "vpn", "key")); err != nil {
+			r.Problems = append(r.Problems, "manifest claims a VPN key but vpn/key is absent")
+		}
+	}
 	for _, t := range observed.Topics {
 		if exp, err := time.Parse(time.RFC3339, t.NotAfter); err != nil {
 			r.Problems = append(r.Problems, "APNs expiry unreadable for "+t.Topic)
@@ -483,7 +510,7 @@ func Verify(ctx context.Context, bundle, dir string) (*Report, error) {
 	return r, nil
 }
 
-// Restore places a verified bundle's data under dataDir: cairn.db, cairn.db.mfa/key
+// Restore places a verified bundle's data under dataDir: cairn.db, cairn.db.mfa/key, cairn.db.vpn/key
 // and config/ files. dataDir must not exist or must be empty. It writes files
 // only; migrating and starting the service remain explicit operator steps.
 func Restore(ctx context.Context, bundle, dataDir string) (*Report, error) {
@@ -512,6 +539,11 @@ func Restore(ctx context.Context, bundle, dataDir string) (*Report, error) {
 	}
 	if r.Manifest.MFAKeyIncluded {
 		if err := copyInto(filepath.Join(scratch, "mfa", "key"), filepath.Join(dataDir, "cairn.db.mfa", "key"), 0o600); err != nil {
+			return r, err
+		}
+	}
+	if r.Manifest.VPNKeyIncluded {
+		if err := copyInto(filepath.Join(scratch, "vpn", "key"), filepath.Join(dataDir, "cairn.db.vpn", "key"), 0o600); err != nil {
 			return r, err
 		}
 	}

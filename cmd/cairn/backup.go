@@ -73,6 +73,7 @@ func runBackup(ctx context.Context, args []string) error {
 	opts := backup.Options{
 		DBPath:     cfg.Storage.Path,
 		MFAKeyPath: filepath.Join(cfg.Storage.Path+".mfa", "key"),
+		VPNKeyPath: filepath.Join(cfg.Storage.Path+".vpn", "key"),
 		ConfigPath: *configPath,
 		Extra:      referencedFiles(cfg),
 		Out:        *out,
@@ -96,6 +97,9 @@ func runBackup(ctx context.Context, args []string) error {
 		fmt.Printf("  APNs topic %s expires %s\n", t.Topic, t.NotAfter)
 	}
 	fmt.Printf("  MFA key included: %v\n", m.MFAKeyIncluded)
+	if m.Counts.VPNKeys > 0 || m.VPNKeyIncluded {
+		fmt.Printf("  VPN key included: %v\n", m.VPNKeyIncluded)
+	}
 	for _, n := range m.Notes {
 		fmt.Printf("  note: %s\n", n)
 	}

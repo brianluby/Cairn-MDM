@@ -243,6 +243,7 @@ type App struct {
 	resolver         QuarantineResolver // may be nil (read-only quarantine page)
 	radiusToken      string             // bearer token for the RADIUS rejection ingest endpoint
 	targeting        Targeting          // may be nil (no directory targeting)
+	vpn              VPNServers         // may be nil (VPN profiles disabled); set via SetVPN
 	cmd              Commander
 	rec              Reconciler   // may be nil (no auto-push)
 	oidc             OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
@@ -269,6 +270,7 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	// after SetOIDC has (or has not) run during startup.
 	tmpl, err := template.New("").Funcs(funcMap).Funcs(template.FuncMap{
 		"oidcEnabled": func() bool { return a.oidc != nil },
+		"vpnEnabled":  func() bool { return a.vpn != nil },
 	}).ParseFS(files, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -381,6 +383,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("POST /admin/groups/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupDelete)))
 	mux.Handle("POST /admin/groups/{id}/devices", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupDeviceChange)))
 	mux.Handle("POST /admin/groups/{id}/profiles", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupProfileChange)))
+
+	a.registerVPN(mux)
 
 	// Bare "/" redirects to the console.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

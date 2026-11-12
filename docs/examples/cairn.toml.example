@@ -53,6 +53,13 @@ mode = "generate"
 # crl_url = "http://scep.example.com/crl"
 # challenge_env = "CAIRN_SCEP_CHALLENGE"
 
+# Per-device OpenVPN profiles. Adds the VPN page to the console, where an
+# administrator defines servers. The servers' shared TLS keys are encrypted with
+# a key file created next to the database (<storage.path>.vpn/key); `cairn
+# backup` includes it.
+# [vpn]
+# enabled = true
+
 [log]
 format = "text" # text | json
 level = "info"  # debug | info | warn | error
