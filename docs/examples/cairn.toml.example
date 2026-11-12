@@ -56,9 +56,12 @@ mode = "generate"
 # Per-device OpenVPN profiles. Adds the VPN page to the console, where an
 # administrator defines servers. The servers' shared TLS keys are encrypted with
 # a key file created next to the database (<storage.path>.vpn/key); `cairn
-# backup` includes it.
+# backup` includes it. Issuing needs Cairn's own CA (ca.mode generate or import)
+# and a verified LDAP directory. See docs/vpn-profiles.md.
 # [vpn]
 # enabled = true
+# leaf_validity_days = 365
+# key_type = "rsa2048"   # or "p256"
 
 [log]
 format = "text" # text | json

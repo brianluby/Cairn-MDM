@@ -36,6 +36,79 @@
       {{end}}
     </div>
     <p style="margin-top:12px"><a class="btn" href="/admin/vpn/new">Add server</a></p>
+    <p class="sub">Send a profile from a device's page.</p>
+
+    {{if .IssuerMissing}}<div class="card callout error">VPN certificates cannot be issued yet: {{.IssuerMissing}}</div>{{end}}
+
+    {{if .Held}}
+    <h2>Held for review</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Device</th><th>Server</th><th>Account</th><th>Reason</th><th>Serial</th><th></th></tr></thead>
+        <tbody>
+          {{range .Held}}
+          <tr>
+            <td><a href="/admin/devices/{{.DeviceID}}">{{if .DeviceName}}{{.DeviceName}}{{else}}{{.DeviceID}}{{end}}</a></td>
+            <td>{{.ServerName}}</td><td>{{.Owner.AccountName}}</td><td>{{.FailReason}}</td>
+            <td class="mono">{{if .CertSerial}}{{.CertSerial}}{{else}}unknown{{end}}</td>
+            <td><form method="post" action="/admin/vpn/identities/{{.ID}}/revoke"
+                      onsubmit="return confirm('Close this hold? Do this after checking the certificate authority.')">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <button class="btn" type="submit">Close hold</button>
+            </form></td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">The certificate authority's answer to these requests could not be trusted, so nothing was sent to the device.
+      Check the authority for a certificate issued to the account at that time and revoke it there, then send a new profile from the device page.</p>
+    </div>
+    {{end}}
+
+    {{if .AwaitingRevocation}}
+    <h2>Revoke at the certificate authority</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Serial</th><th>Account</th><th>Device</th><th>Why</th><th></th></tr></thead>
+        <tbody>
+          {{range .AwaitingRevocation}}
+          <tr>
+            <td class="mono">{{.CertSerial}}</td><td>{{.Owner.AccountName}}</td>
+            <td><a href="/admin/devices/{{.DeviceID}}">{{if .DeviceName}}{{.DeviceName}}{{else}}{{.DeviceID}}{{end}}</a></td>
+            <td class="sub">{{if eq .State "SUPERSEDED"}}Replaced by a newer certificate{{else if eq .State "REVOKED"}}Revoked by {{.Actor}}{{else}}Profile never installed{{end}}</td>
+            <td>{{if not $.CanRevoke}}
+              <form method="post" action="/admin/vpn/identities/{{.ID}}/revoked-at-ca">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">I revoked it</button>
+              </form>{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">{{if .CanRevoke}}Cairn revokes these within the hour.{{else}}Cairn cannot revoke at this certificate authority. Revoke each serial there, then confirm it here. Until the VPN server checks a revocation list, a disabled directory account is what stops a connection.{{end}}</p>
+    </div>
+    {{end}}
+
+    <h2>Certificates in use</h2>
+    <div class="card">
+      {{if .Current}}
+      <table>
+        <thead><tr><th>Device</th><th>Server</th><th>Account</th><th>Serial</th><th>Expires</th><th>Profile</th></tr></thead>
+        <tbody>
+          {{range .Current}}
+          <tr>
+            <td><a href="/admin/devices/{{.DeviceID}}">{{if .DeviceName}}{{.DeviceName}}{{else}}{{.DeviceID}}{{end}}</a></td>
+            <td>{{.ServerName}}</td><td>{{.Owner.AccountName}}</td>
+            <td class="mono">{{.CertSerial}}</td><td class="date">{{.ExpiresOn}}</td>
+            <td class="sub">{{if eq .DeployStatus "installed"}}installed{{else if eq .DeployStatus "sent"}}waiting for the device{{else}}not installed{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No VPN certificates issued yet.</div>
+      {{end}}
+    </div>
   </main>
 </body>
 </html>

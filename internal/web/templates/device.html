@@ -86,6 +86,63 @@
       {{end}}
     </div>
 
+    {{if .VPN}}
+    <h2>VPN</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Server</th><th>Profile on this device</th>{{if .User.Role.AtLeast "admin"}}<th>Actions</th>{{end}}</tr></thead>
+        <tbody>
+          {{range .VPN}}
+          <tr>
+            <td>{{.Server.Name}}<div class="sub mono">{{.Server.Slug}}</div></td>
+            <td>
+              {{with .Latest}}
+                {{if eq .State "ISSUED"}}
+                  {{if eq .DeployStatus "installed"}}<span class="dot on"></span> Installed for {{.Owner.AccountName}}
+                  {{else if eq .DeployStatus "sent"}}<span class="dot wait"></span> Waiting for the device to collect it ({{.Owner.AccountName}})
+                  {{else}}<span class="dot off"></span> Not installed{{if .FailReason}}: {{.FailReason}}{{end}}. No device holds this certificate.{{end}}
+                  <div class="sub">Certificate <span class="mono">{{.CertSerial}}</span>, expires {{.ExpiresOn}}</div>
+                {{else if eq .State "QUARANTINED"}}<span class="dot off"></span> Held for review: {{.FailReason}}. Nothing was sent.
+                {{else if eq .State "FAILED"}}<span class="dot off"></span> No certificate issued: {{.FailReason}}
+                {{else if eq .State "REVOKED"}}<span class="dot off"></span> Certificate <span class="mono">{{.CertSerial}}</span> revoked{{if not .RevokedAt.Valid}} in Cairn; not yet confirmed at the certificate authority{{end}}
+                {{else if eq .State "SUPERSEDED"}}<span class="dot off"></span> Replaced
+                {{else}}<span class="dot wait"></span> Requesting a certificate{{end}}
+              {{else}}<span class="sub">No VPN profile sent.</span>{{end}}
+            </td>
+            {{if $.User.Role.AtLeast "admin"}}
+            <td>
+              {{if $.VPNCanIssue}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/issue" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                {{if not $.Owner}}<label>Account <input type="text" name="account" required size="16" placeholder="jsmith" autocomplete="off"></label>{{end}}
+                <button class="btn" type="submit">{{if .Latest}}Send new profile{{else}}Send profile{{end}}</button>
+              </form>
+              {{with .Latest}}{{if eq .State "ISSUED"}}
+              {{if eq .DeployStatus "installed"}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.ServerID}}/remove" style="display:inline"
+                    onsubmit="return confirm('Remove the {{.ServerName}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">Remove profile</button>
+              </form>
+              {{end}}
+              <form method="post" action="/admin/vpn/identities/{{.ID}}/revoke" style="display:inline"
+                    onsubmit="return confirm('Revoke certificate {{.CertSerial}}? Use this for a lost or stolen device.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn danger" type="submit">Revoke certificate</button>
+              </form>
+              {{end}}{{end}}
+              {{else}}<span class="sub">{{$.VPNIssuerMissing}}</span>{{end}}
+            </td>
+            {{end}}
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">{{if .Owner}}The certificate is issued to this device's verified owner.{{else}}This device has no verified owner, so name the directory account the certificate is for. {{end}}
+      Sending needs an MFA code verified in the last five minutes. On an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app.</p>
+    </div>
+    {{end}}
+
     <h2>Profiles</h2>
     <div class="card">
       {{if .Deploys}}

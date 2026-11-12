@@ -24,8 +24,33 @@ type VPNServers interface {
 	Delete(ctx context.Context, id int64, actor string) error
 }
 
+// VPNIssuer issues VPN certificates and delivers their profiles; *vpn.Service
+// provides it.
+type VPNIssuer interface {
+	Issue(ctx context.Context, deviceID string, serverID int64, account, actor string) (sqlite.VPNIdentity, error)
+	Remove(ctx context.Context, deviceID string, serverID int64) error
+	Revoke(ctx context.Context, identityID int64, actor string) error
+	ConfirmRevokedAtCA(ctx context.Context, identityID int64) error
+	CanRevoke() bool
+}
+
+// VPNIdentityStore reads issued VPN certificates; *sqlite.DB provides it.
+type VPNIdentityStore interface {
+	GetVPNIdentity(ctx context.Context, id int64) (sqlite.VPNIdentity, error)
+	DeviceVPNIdentities(ctx context.Context, deviceID string) ([]sqlite.VPNIdentity, error)
+	CurrentVPNIdentities(ctx context.Context) ([]sqlite.VPNIdentity, error)
+	QuarantinedVPNIdentities(ctx context.Context) ([]sqlite.VPNIdentity, error)
+	VPNIdentitiesAwaitingRevocation(ctx context.Context) ([]sqlite.VPNIdentity, error)
+}
+
 // SetVPN installs the VPN server catalogue. Nil leaves the VPN pages off.
 func (a *App) SetVPN(s VPNServers) { a.vpn = s }
+
+// SetVPNIssuer turns on issuing from the device page. why says, for the
+// console, what is missing when issuer is nil.
+func (a *App) SetVPNIssuer(issuer VPNIssuer, identities VPNIdentityStore, why string) {
+	a.vpnIssuer, a.vpnIdentities, a.vpnIssuerMissing = issuer, identities, why
+}
 
 func (a *App) registerVPN(mux *http.ServeMux) {
 	mux.Handle("GET /admin/vpn", a.requireRole(auth.RoleAdmin, a.handleVPN))
@@ -35,6 +60,10 @@ func (a *App) registerVPN(mux *http.ServeMux) {
 	mux.Handle("GET /admin/vpn/{id}", a.requireRole(auth.RoleAdmin, a.handleVPNServerEdit))
 	mux.Handle("POST /admin/vpn/{id}", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerUpdate)))
 	mux.Handle("POST /admin/vpn/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerDelete)))
+	mux.Handle("POST /admin/devices/{id}/vpn/{server}/issue", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNIssue)))
+	mux.Handle("POST /admin/devices/{id}/vpn/{server}/remove", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNRemove)))
+	mux.Handle("POST /admin/vpn/identities/{id}/revoke", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNRevoke)))
+	mux.Handle("POST /admin/vpn/identities/{id}/revoked-at-ca", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNRevokedAtCA)))
 }
 
 func (a *App) vpnAvailable(w http.ResponseWriter) bool {
@@ -183,9 +212,193 @@ func (a *App) handleVPN(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Cannot read VPN servers. Check that the VPN key file matches this database.", http.StatusServiceUnavailable)
 		return
 	}
-	a.render(w, r, http.StatusOK, "vpn.html", map[string]any{
+	data := map[string]any{
 		"Title": "VPN", "Servers": servers, "Flash": r.URL.Query().Get("flash"),
-	})
+		"IssuerMissing": a.vpnIssuerMissing, "CanRevoke": a.vpnIssuer != nil && a.vpnIssuer.CanRevoke(),
+	}
+	if a.vpnIdentities != nil {
+		names := map[string]string{}
+		if devices, err := a.devices.ListDevices(r.Context()); err == nil {
+			for _, d := range devices {
+				names[d.ID] = d.DisplayName()
+			}
+		}
+		serverNames := map[int64]string{}
+		for _, s := range servers {
+			serverNames[s.ID] = s.Name
+		}
+		rows := func(list []sqlite.VPNIdentity, err error) []vpnIdentityRow {
+			if err != nil {
+				a.log.Error("list vpn identities", "err", err)
+			}
+			out := make([]vpnIdentityRow, 0, len(list))
+			for _, v := range list {
+				out = append(out, vpnIdentityRow{VPNIdentity: v, DeviceName: names[v.DeviceID], ServerName: serverNames[v.ServerID]})
+			}
+			return out
+		}
+		data["Current"] = rows(a.vpnIdentities.CurrentVPNIdentities(r.Context()))
+		data["Held"] = rows(a.vpnIdentities.QuarantinedVPNIdentities(r.Context()))
+		data["AwaitingRevocation"] = rows(a.vpnIdentities.VPNIdentitiesAwaitingRevocation(r.Context()))
+	}
+	a.render(w, r, http.StatusOK, "vpn.html", data)
+}
+
+// vpnIdentityRow is an identity with the names the tables show.
+type vpnIdentityRow struct {
+	sqlite.VPNIdentity
+	DeviceName string
+	ServerName string
+}
+
+// ExpiresOn is the certificate's last day, or "" when none was issued.
+func (v vpnIdentityRow) ExpiresOn() string {
+	if t := v.Expires(); !t.IsZero() {
+		return t.Format("2006-01-02")
+	}
+	return ""
+}
+
+// vpnDeviceRow is one server's state on a device page.
+type vpnDeviceRow struct {
+	Server vpn.Server
+	Latest *vpnIdentityRow // most recent attempt, whatever its outcome
+}
+
+func (a *App) deviceVPNRows(ctx context.Context, deviceID string) []vpnDeviceRow {
+	if a.vpn == nil || a.vpnIdentities == nil {
+		return nil
+	}
+	servers, err := a.vpn.List(ctx)
+	if err != nil {
+		a.log.Error("list vpn servers", "err", err)
+		return nil
+	}
+	identities, err := a.vpnIdentities.DeviceVPNIdentities(ctx, deviceID)
+	if err != nil {
+		a.log.Error("device vpn identities", "id", deviceID, "err", err)
+	}
+	rows := make([]vpnDeviceRow, 0, len(servers))
+	for _, s := range servers {
+		row := vpnDeviceRow{Server: s}
+		for i := range identities { // newest first
+			if identities[i].ServerID == s.ID {
+				row.Latest = &vpnIdentityRow{VPNIdentity: identities[i], ServerName: s.Name}
+				break
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// vpnIssueGate guards actions that create or end a credential: CSRF, an
+// administrator with a fresh second factor whose directory authorization still
+// holds, and a configured issuer.
+func (a *App) vpnIssueGate(w http.ResponseWriter, r *http.Request) bool {
+	limitForm(w, r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return false
+	}
+	if !a.checkCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return false
+	}
+	if a.vpnIssuer == nil {
+		http.Error(w, "VPN certificates cannot be issued: "+a.vpnIssuerMissing, http.StatusServiceUnavailable)
+		return false
+	}
+	return a.enrollmentActor(w, r)
+}
+
+func (a *App) handleVPNIssue(w http.ResponseWriter, r *http.Request) {
+	if !a.vpnIssueGate(w, r) {
+		return
+	}
+	deviceID := r.PathValue("id")
+	back := "/admin/devices/" + url.PathEscape(deviceID)
+	serverID, err := strconv.ParseInt(r.PathValue("server"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	actor := sessionFrom(r).Identity.Username
+	v, err := a.vpnIssuer.Issue(r.Context(), deviceID, serverID, strings.TrimSpace(r.PostFormValue("account")), actor)
+	if err != nil {
+		a.log.Warn("vpn issue refused", "device", deviceID, "server", serverID, "user", actor, "err", err)
+		http.Redirect(w, r, back+"?flash="+url.QueryEscape("VPN profile not sent: "+vpnFormError(err)), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape("VPN profile for "+v.Owner.AccountName+" queued. It installs when the device next connects."), http.StatusSeeOther)
+}
+
+func (a *App) handleVPNRemove(w http.ResponseWriter, r *http.Request) {
+	if !a.vpnIssueGate(w, r) {
+		return
+	}
+	deviceID := r.PathValue("id")
+	back := "/admin/devices/" + url.PathEscape(deviceID)
+	serverID, err := strconv.ParseInt(r.PathValue("server"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := a.vpnIssuer.Remove(r.Context(), deviceID, serverID); err != nil {
+		a.log.Error("vpn profile removal", "device", deviceID, "err", err)
+		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Removal not queued."), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape("Removal queued. The certificate stays valid until it is revoked or expires."), http.StatusSeeOther)
+}
+
+func (a *App) vpnIdentityFromPath(w http.ResponseWriter, r *http.Request) (sqlite.VPNIdentity, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err == nil {
+		var v sqlite.VPNIdentity
+		if v, err = a.vpnIdentities.GetVPNIdentity(r.Context(), id); err == nil {
+			return v, true
+		}
+	}
+	http.NotFound(w, r)
+	return sqlite.VPNIdentity{}, false
+}
+
+func (a *App) handleVPNRevoke(w http.ResponseWriter, r *http.Request) {
+	if !a.vpnIssueGate(w, r) {
+		return
+	}
+	v, ok := a.vpnIdentityFromPath(w, r)
+	if !ok {
+		return
+	}
+	back := "/admin/devices/" + url.PathEscape(v.DeviceID)
+	if err := a.vpnIssuer.Revoke(r.Context(), v.ID, sessionFrom(r).Identity.Username); err != nil {
+		a.log.Error("vpn revoke", "identity", v.ID, "err", err)
+		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Not revoked: "+vpnFormError(err)), http.StatusSeeOther)
+		return
+	}
+	msg := "Certificate " + v.CertSerial + " revoked."
+	if !a.vpnIssuer.CanRevoke() {
+		msg = "Certificate " + v.CertSerial + " marked revoked in Cairn. Revoke the same serial at the certificate authority, then confirm it on the VPN page."
+	}
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)
+}
+
+func (a *App) handleVPNRevokedAtCA(w http.ResponseWriter, r *http.Request) {
+	if !a.vpnIssueGate(w, r) {
+		return
+	}
+	v, ok := a.vpnIdentityFromPath(w, r)
+	if !ok {
+		return
+	}
+	if err := a.vpnIssuer.ConfirmRevokedAtCA(r.Context(), v.ID); err != nil {
+		http.Error(w, "Cannot record the revocation.", http.StatusServiceUnavailable)
+		return
+	}
+	a.log.Info("vpn certificate confirmed revoked at the CA", "identity", v.ID, "serial", v.CertSerial, "user", sessionFrom(r).Identity.Username)
+	http.Redirect(w, r, "/admin/vpn?flash="+url.QueryEscape("Recorded: "+v.CertSerial+" is revoked at the certificate authority."), http.StatusSeeOther)
 }
 
 func (a *App) renderVPNServer(w http.ResponseWriter, r *http.Request, status int, f vpnServerForm, message string, skipped []string) {

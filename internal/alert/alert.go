@@ -80,6 +80,67 @@ type lifecycleSource interface {
 	DeviceCertificates(ctx context.Context) ([]sqlite.DeviceCertificate, error)
 }
 
+// vpnSource is the optional store capability behind the VPN certificate
+// conditions. *sqlite.DB satisfies it.
+type vpnSource interface {
+	CurrentVPNIdentities(ctx context.Context) ([]sqlite.VPNIdentity, error)
+	QuarantinedVPNIdentities(ctx context.Context) ([]sqlite.VPNIdentity, error)
+	VPNIdentitiesAwaitingRevocation(ctx context.Context) ([]sqlite.VPNIdentity, error)
+}
+
+// vpnConditions reports VPN certificates near or past expiry, requests held
+// after an untrusted CA answer, and retired certificates the CA has not revoked.
+func vpnConditions(ctx context.Context, src vpnSource, now time.Time) ([]Condition, error) {
+	var out []Condition
+	current, err := src.CurrentVPNIdentities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var expiring, expired []string
+	for _, v := range current {
+		if v.DeployStatus != "installed" {
+			continue
+		}
+		exp := v.Expires()
+		who := fmt.Sprintf("%s on %s", v.Owner.AccountName, v.DeviceID)
+		switch {
+		case !exp.After(now):
+			expired = append(expired, who)
+		case exp.Sub(now) < 30*24*time.Hour:
+			expiring = append(expiring, fmt.Sprintf("%s (%s)", who, exp.Format("2006-01-02")))
+		}
+	}
+	if len(expired) > 0 {
+		out = append(out, Condition{Key: "vpn-cert.expired", Title: "Cairn: VPN certificate EXPIRED", Message: "VPN certificates have expired for: " + strings.Join(expired, ", ") + ". Send a new VPN profile from each device's page while the device can still reach Cairn.", Priority: "urgent"})
+	}
+	if len(expiring) > 0 {
+		out = append(out, Condition{Key: "vpn-cert.expiring", Title: "Cairn: VPN certificates expire within 30 days", Message: "Send a new VPN profile before expiry: " + strings.Join(expiring, ", ") + ".", Priority: "high"})
+	}
+	held, err := src.QuarantinedVPNIdentities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(held) > 0 {
+		out = append(out, Condition{Key: "vpn.held", Title: "Cairn: VPN certificate requests held", Message: fmt.Sprintf("%d VPN certificate request(s) are held after a certificate authority answer that could not be trusted. Review the VPN page.", len(held)), Priority: "high"})
+	}
+	waiting, err := src.VPNIdentitiesAwaitingRevocation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var serials []string
+	for _, v := range waiting {
+		// The hourly sweep revokes where the CA allows it; only what outlasts
+		// two sweeps needs a person.
+		if t, perr := time.Parse("2006-01-02 15:04:05", v.UpdatedAt); perr == nil && now.Sub(t) > 2*time.Hour {
+			serials = append(serials, v.CertSerial)
+		}
+	}
+	if len(serials) > 0 {
+		out = append(out, Condition{Key: "vpn.revocation-pending", Title: "Cairn: VPN certificates to revoke at the CA", Message: "Retired in Cairn but not revoked at the certificate authority: " + strings.Join(serials, ", ") + ". Revoke them there and confirm on the VPN page.", Priority: "high"})
+	}
+	return out, nil
+}
+
 // Condition is one active alert.
 type Condition struct {
 	Key      string
@@ -139,6 +200,13 @@ func (c *Checker) Evaluate(ctx context.Context) ([]Condition, error) {
 	}
 	if len(held) > 0 {
 		out = append(out, Condition{Key: "issuance.quarantined", Title: "Cairn: certificate issuances quarantined", Message: fmt.Sprintf("%d certificate issuance(s) are held after an ambiguous CA outcome. Review the Quarantine page.", len(held)), Priority: "high"})
+	}
+	if vs, ok := c.store.(vpnSource); ok {
+		conds, err := vpnConditions(ctx, vs, now)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, conds...)
 	}
 	if lc, ok := c.store.(lifecycleSource); ok {
 		attempts, err := lc.ListRenewalAttempts(ctx, now.Add(-7*24*time.Hour), 50)

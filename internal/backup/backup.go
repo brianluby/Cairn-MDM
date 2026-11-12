@@ -48,7 +48,8 @@ type Counts struct {
 	Quarantined int `json:"quarantined"`
 	MFAFactors  int `json:"mfa_factors"`
 	LocalUsers  int `json:"local_users"`
-	VPNKeys     int `json:"vpn_keys"` // VPN servers holding a sealed TLS key
+	VPNKeys     int `json:"vpn_keys"`    // VPN servers holding a sealed TLS key
+	VPNPending  int `json:"vpn_pending"` // VPN profiles queued for a device, private key included
 }
 
 // TopicInfo is one APNs topic and its expiry.
@@ -128,6 +129,9 @@ func Create(ctx context.Context, opts Options) (*Manifest, error) {
 		} else if m.Counts.MFAFactors > 0 {
 			m.Notes = append(m.Notes, "MFA factors exist but the key file was not found at "+opts.MFAKeyPath+"; this bundle cannot restore MFA.")
 		}
+	}
+	if m.Counts.VPNPending > 0 {
+		m.Notes = append(m.Notes, fmt.Sprintf("%d VPN profile(s) were waiting for their device when this bundle was made; the bundle holds their private keys. Store it accordingly.", m.Counts.VPNPending))
 	}
 	if opts.VPNKeyPath != "" {
 		if _, err := os.Stat(opts.VPNKeyPath); err == nil {
@@ -253,6 +257,7 @@ func inspect(ctx context.Context, path string, m *Manifest) error {
 		{`SELECT count(*) FROM mfa_factors`, &c.MFAFactors},
 		{`SELECT count(*) FROM app_users`, &c.LocalUsers},
 		{`SELECT count(*) FROM vpn_servers WHERE tls_key IS NOT NULL`, &c.VPNKeys},
+		{`SELECT count(*) FROM vpn_identities WHERE deploy_status='sent'`, &c.VPNPending},
 	} {
 		if err := count(q.sql, q.dst); err != nil {
 			return err

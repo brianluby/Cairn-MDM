@@ -86,6 +86,24 @@ type Config struct {
 // profiles rendered from them. Off by default.
 type VPN struct {
 	Enabled bool `toml:"enabled"`
+	// LeafValidityDays is the VPN certificate lifetime when Cairn's own CA signs
+	// it. Default 365: there is no automatic re-issue yet, so an administrator
+	// issues the profile again before expiry.
+	LeafValidityDays int `toml:"leaf_validity_days"`
+	// KeyType is the key Cairn generates for each VPN certificate: "rsa2048"
+	// (default) or "p256".
+	KeyType string `toml:"key_type"`
+}
+
+// WithDefaults fills zero fields.
+func (v VPN) WithDefaults() VPN {
+	if v.LeafValidityDays <= 0 {
+		v.LeafValidityDays = 365
+	}
+	if v.KeyType == "" {
+		v.KeyType = "rsa2048"
+	}
+	return v
 }
 
 // Issuance tunes certificates the embedded CA signs for devices.
@@ -577,6 +595,12 @@ func (c Config) Validate() error {
 
 	if c.Issuance.LeafValidityDays < 0 || c.Issuance.LeafValidityDays > 825 {
 		errs = append(errs, errors.New("issuance.leaf_validity_days must be between 1 and 825"))
+	}
+	if c.VPN.LeafValidityDays < 0 || c.VPN.LeafValidityDays > 825 {
+		errs = append(errs, errors.New("vpn.leaf_validity_days must be between 1 and 825"))
+	}
+	if k := c.VPN.KeyType; k != "" && k != "rsa2048" && k != "p256" {
+		errs = append(errs, fmt.Errorf("vpn.key_type must be rsa2048 or p256, got %q", k))
 	}
 	if len(c.RADIUS.AcceptancePoints) > 0 && c.RADIUS.IngestToken == "" {
 		errs = append(errs, errors.New("radius.acceptance_points set but no radius.ingest_token_file/_env; rejections could not be ingested"))

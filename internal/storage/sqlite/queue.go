@@ -165,6 +165,10 @@ func (s *nanoStore) ClearQueue(r *mdm.Request) error {
 	if err = newNanoKV(tx, s.log).ClearQueue(r); err != nil {
 		return err
 	}
+	// Clearing the queue leaves command bodies behind; a VPN profile's holds a key.
+	if _, err = withdrawVPNPayloads(r.Context(), tx, "failed", "Command queue cleared", `device_id=?`, r.ID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -216,6 +220,9 @@ func (s *nanoStore) Disable(r *mdm.Request) error {
 			return err
 		}
 		if _, err = tx.ExecContext(r.Context(), `UPDATE profile_deploys SET status='failed',updated_at=datetime('now') WHERE device_id=? AND status='sent'`, id); err != nil {
+			return err
+		}
+		if _, err = withdrawVPNPayloads(r.Context(), tx, "failed", "Enrollment disabled", `device_id=?`, id); err != nil {
 			return err
 		}
 	}

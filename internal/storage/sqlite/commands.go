@@ -68,10 +68,12 @@ func recordCommandResult(ctx context.Context, executor sqlExecutor, deviceID, co
 	// profile_deploys is keyed (device_id, profile_id) with command_uuid stored;
 	// an InstallProfile UUID is per-device, so command_uuid alone resolves the
 	// right row. Scope by device_id too as a belt-and-suspenders guard.
-	_, err = executor.ExecContext(ctx,
+	if _, err = executor.ExecContext(ctx,
 		`UPDATE profile_deploys SET status = ?, updated_at = datetime('now')
-		 WHERE command_uuid = ? AND device_id = ? AND status = 'sent'`, deployStatus, commandUUID, deviceID)
-	return err
+		 WHERE command_uuid = ? AND device_id = ? AND status = 'sent'`, deployStatus, commandUUID, deviceID); err != nil {
+		return err
+	}
+	return vpnCommandResult(ctx, executor, deviceID, commandUUID, deployStatus)
 }
 
 // ListCommands returns the most recent history for a device.

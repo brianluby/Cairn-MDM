@@ -144,6 +144,8 @@ func alertAction(key string) string {
 		return "/admin/devices"
 	case key == "issuance.quarantined":
 		return "/admin/quarantine"
+	case strings.HasPrefix(key, "vpn"):
+		return "/admin/vpn"
 	default:
 		return ""
 	}
@@ -244,6 +246,9 @@ type App struct {
 	radiusToken      string             // bearer token for the RADIUS rejection ingest endpoint
 	targeting        Targeting          // may be nil (no directory targeting)
 	vpn              VPNServers         // may be nil (VPN profiles disabled); set via SetVPN
+	vpnIssuer        VPNIssuer          // may be nil (no CA or directory for VPN certificates)
+	vpnIdentities    VPNIdentityStore   // may be nil with vpnIssuer
+	vpnIssuerMissing string             // why vpnIssuer is nil, for the console
 	cmd              Commander
 	rec              Reconciler   // may be nil (no auto-push)
 	oidc             OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
