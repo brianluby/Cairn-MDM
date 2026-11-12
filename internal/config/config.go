@@ -92,11 +92,33 @@ type VPN struct {
 	LeafValidityDays int `toml:"leaf_validity_days"`
 	// KeyType is the key Cairn generates for each VPN certificate: "rsa2048"
 	// (default) or "p256".
-	KeyType string `toml:"key_type"`
+	KeyType string    `toml:"key_type"`
+	Issuer  VPNIssuer `toml:"issuer"`
+}
+
+// VPNIssuer selects the CA that signs VPN certificates. It is separate from
+// ca.mode because a VPN server usually trusts one particular CA, which need not
+// be the one that signs device identities.
+type VPNIssuer struct {
+	// Backend is "embedded" (Cairn's own CA; the default) or "scep" (a SCEP CA
+	// that accepts requests signed by Cairn's RA certificate).
+	Backend    string `toml:"backend"`
+	SCEPURL    string `toml:"scep_url"`
+	RACertFile string `toml:"ra_cert_file"`
+	RAKeyFile  string `toml:"ra_key_file"`
+	// MaxLeafValidityDays is the longest lifetime Cairn accepts from the SCEP CA,
+	// which sets the real one. Default 400.
+	MaxLeafValidityDays int `toml:"max_leaf_validity_days"`
 }
 
 // WithDefaults fills zero fields.
 func (v VPN) WithDefaults() VPN {
+	if v.Issuer.Backend == "" {
+		v.Issuer.Backend = "embedded"
+	}
+	if v.Issuer.MaxLeafValidityDays <= 0 {
+		v.Issuer.MaxLeafValidityDays = 400
+	}
 	if v.LeafValidityDays <= 0 {
 		v.LeafValidityDays = 365
 	}
@@ -601,6 +623,18 @@ func (c Config) Validate() error {
 	}
 	if k := c.VPN.KeyType; k != "" && k != "rsa2048" && k != "p256" {
 		errs = append(errs, fmt.Errorf("vpn.key_type must be rsa2048 or p256, got %q", k))
+	}
+	switch is := c.VPN.Issuer; is.Backend {
+	case "", "embedded":
+	case "scep":
+		if is.SCEPURL == "" || is.RACertFile == "" || is.RAKeyFile == "" {
+			errs = append(errs, errors.New("vpn.issuer backend scep needs scep_url, ra_cert_file and ra_key_file"))
+		}
+		if is.MaxLeafValidityDays < 0 || is.MaxLeafValidityDays > 825 {
+			errs = append(errs, errors.New("vpn.issuer.max_leaf_validity_days must be between 1 and 825"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("vpn.issuer.backend must be embedded or scep, got %q", is.Backend))
 	}
 	if len(c.RADIUS.AcceptancePoints) > 0 && c.RADIUS.IngestToken == "" {
 		errs = append(errs, errors.New("radius.acceptance_points set but no radius.ingest_token_file/_env; rejections could not be ingested"))

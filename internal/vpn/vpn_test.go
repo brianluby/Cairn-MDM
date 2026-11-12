@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -122,14 +123,34 @@ func TestRenderOnDemandCertOnlyTwoRemotes(t *testing.T) {
 	s := testServer(caPEM)
 	s.UserAuth, s.OnDemand = false, true
 	s.TLSKeyMode, s.TLSKey = TLSKeyNone, ""
-	s.Remotes = append(s.Remotes, Remote{Host: "vpn.example.org", Port: 443, Proto: "tcp"})
+	s.TunMTU = 1420
+	s.Remotes = append(s.Remotes, Remote{Host: "vpn.example.org", Port: 443, Proto: "tcp", TunMTU: 1400})
 	out, err := RenderMobileconfig("org.example", s, Identity{DeviceID: "DEV1", Username: "alice", CertPEM: cert, KeyPEM: key})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, vpn, v := vendorOf(t, out)
-	if v["remote.1"] != "vpn.example.org 443 udp" || v["remote.2"] != "vpn.example.org 443 tcp" || v["remote"] != nil {
-		t.Errorf("remotes = %v / %v / %v", v["remote"], v["remote.1"], v["remote.2"])
+	top, vpn, v := vendorOf(t, out)
+	payloads := top["PayloadContent"].([]any)
+	if len(payloads) != 2 {
+		t.Fatalf("payloads = %d, want one per address", len(payloads))
+	}
+	second := payloads[1].(map[string]any)
+	v2 := second["VendorConfig"].(map[string]any)
+	if v["remote"] != "vpn.example.org 443 udp" || v2["remote"] != "vpn.example.org 443 tcp" {
+		t.Errorf("remotes = %v / %v", v["remote"], v2["remote"])
+	}
+	if v["tun-mtu"] != "1420" || v2["tun-mtu"] != "1400" {
+		t.Errorf("tun-mtu = %v / %v, want the server value then the address override", v["tun-mtu"], v2["tun-mtu"])
+	}
+	if v["cert"] != v2["cert"] || v["key"] != v2["key"] {
+		t.Error("the two connections do not share one identity")
+	}
+	first := payloads[0].(map[string]any)
+	if first["PayloadUUID"] == second["PayloadUUID"] || first["PayloadIdentifier"] == second["PayloadIdentifier"] {
+		t.Error("the two payloads share a UUID or identifier")
+	}
+	if first["UserDefinedName"] != "Office VPN (UDP 443)" || second["UserDefinedName"] != "Office VPN (TCP 443)" {
+		t.Errorf("names = %v / %v", first["UserDefinedName"], second["UserDefinedName"])
 	}
 	for _, k := range []string{"vpn-on-demand", "auth-user-pass", "USERNAME", "tls-auth", "key-direction"} {
 		if _, ok := v[k]; ok {
@@ -138,6 +159,10 @@ func TestRenderOnDemandCertOnlyTwoRemotes(t *testing.T) {
 	}
 	if rules, _ := vpn["OnDemandRules"].([]any); len(rules) != 2 {
 		t.Errorf("OnDemandRules = %v", vpn["OnDemandRules"])
+	}
+	// Only the first address connects on demand.
+	if fmt.Sprint(second["VPN"].(map[string]any)["OnDemandEnabled"]) != "0" || v2["vpn-on-demand"] != "0" {
+		t.Errorf("second connection is on demand: %v / %v", second["VPN"], v2["vpn-on-demand"])
 	}
 }
 

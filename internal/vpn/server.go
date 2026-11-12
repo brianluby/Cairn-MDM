@@ -25,6 +25,9 @@ type Remote struct {
 	Host  string
 	Port  int
 	Proto string // "udp" or "tcp"
+	// TunMTU overrides Server.TunMTU for this address. A UDP and a TCP listener
+	// on one host often differ here.
+	TunMTU int `json:"TunMTU,omitempty"`
 }
 
 // Server is an admin-managed OpenVPN server definition.
@@ -111,6 +114,9 @@ func (s Server) Validate() error {
 		}
 		if r.Proto != "udp" && r.Proto != "tcp" {
 			return fmt.Errorf("protocol for %s must be udp or tcp", r.Host)
+		}
+		if r.TunMTU != 0 && (r.TunMTU < 576 || r.TunMTU > 9000) {
+			return fmt.Errorf("tunnel MTU for %s must be between 576 and 9000", r.Host)
 		}
 	}
 	if !nameRE.MatchString(s.VerifyX509Name) {

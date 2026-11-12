@@ -134,7 +134,11 @@ func formFromServer(s vpn.Server, showKey bool) vpnServerForm {
 	}
 	var lines []string
 	for _, r := range s.Remotes {
-		lines = append(lines, fmt.Sprintf("%s %d %s", r.Host, r.Port, r.Proto))
+		line := fmt.Sprintf("%s %d %s", r.Host, r.Port, r.Proto)
+		if r.TunMTU != 0 {
+			line += " " + strconv.Itoa(r.TunMTU)
+		}
+		lines = append(lines, line)
 	}
 	f.Remotes = strings.Join(lines, "\n")
 	lines = nil
@@ -168,14 +172,20 @@ func (f vpnServerForm) server() (vpn.Server, error) {
 		if len(p) == 0 {
 			continue
 		}
-		if len(p) != 3 {
-			return s, fmt.Errorf("server address %q must be \"host port udp\" or \"host port tcp\"", strings.TrimSpace(line))
+		if len(p) != 3 && len(p) != 4 {
+			return s, fmt.Errorf("server address %q must be \"host port udp\" or \"host port tcp\", with an optional tunnel MTU", strings.TrimSpace(line))
 		}
 		port, err := strconv.Atoi(p[1])
 		if err != nil {
 			return s, fmt.Errorf("port %q is not a number", p[1])
 		}
-		s.Remotes = append(s.Remotes, vpn.Remote{Host: p[0], Port: port, Proto: p[2]})
+		remote := vpn.Remote{Host: p[0], Port: port, Proto: p[2]}
+		if len(p) == 4 {
+			if remote.TunMTU, err = strconv.Atoi(p[3]); err != nil {
+				return s, fmt.Errorf("tunnel MTU %q is not a number", p[3])
+			}
+		}
+		s.Remotes = append(s.Remotes, remote)
 	}
 	if f.KeyDirection != "" {
 		n, err := strconv.Atoi(f.KeyDirection)

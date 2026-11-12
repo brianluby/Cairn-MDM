@@ -46,7 +46,7 @@
         {{end}}
         <p><label>Addresses, one per line: host port udp or tcp<br>
           <textarea name="remotes" rows="3" cols="60" spellcheck="false" required placeholder="vpn.example.org 443 udp">{{.Form.Remotes}}</textarea></label>
-          <span class="sub">The client tries them in order. List a TCP address after UDP for networks that block UDP.</span></p>
+          <span class="sub">Each address becomes its own connection on the device, with the same certificate. Add a TCP address for networks that block UDP. A fourth value sets the tunnel MTU for that address only.</span></p>
         <p><label>Server certificate name<br><input type="text" name="verify_x509_name" value="{{.Form.VerifyX509Name}}" required size="40"></label>
           <span class="sub">The exact common name of the server certificate. Clients refuse any other.</span></p>
         <p><label>CA chain that signed the server certificate (PEM)<br>

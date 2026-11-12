@@ -16,6 +16,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/alert"
 	"github.com/nickpdawson/cairn-mdm/internal/assign"
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
+	"github.com/nickpdawson/cairn-mdm/internal/broker"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
@@ -201,20 +202,32 @@ func runServe(ctx context.Context, args []string) error {
 		}
 		console.SetVPN(vpnServers)
 		vpnCfg := cfg.VPN.WithDefaults()
-		// VPN certificates come from Cairn's own CA when it has one.
+		policy := issue.Policy{LeafValidity: time.Duration(vpnCfg.LeafValidityDays) * 24 * time.Hour, Backdate: 5 * time.Minute}
+		var vpnCA issue.CABackend
 		var missing string
 		switch {
-		case pki.Authority == nil:
-			missing = "no certificate authority is configured for VPN certificates (Cairn's own CA is off in ca.mode " + string(cfg.CA.Mode) + ")."
 		case directoryProvider == nil:
 			missing = "a verified LDAP directory (auth.ldap with directory_id) is required to name certificate owners."
+		case vpnCfg.Issuer.Backend == "scep":
+			raCert, raKey, err := loadRAIdentity(vpnCfg.Issuer.RACertFile, vpnCfg.Issuer.RAKeyFile)
+			if err != nil {
+				return fmt.Errorf("vpn.issuer: %w", err)
+			}
+			if vpnCA, err = broker.New(broker.Config{URL: vpnCfg.Issuer.SCEPURL, RACert: raCert, RAKey: raKey}); err != nil {
+				return fmt.Errorf("vpn.issuer: %w", err)
+			}
+			// The SCEP CA sets the lifetime; accept it up to the configured ceiling.
+			policy.MaxLeafValidity = time.Duration(vpnCfg.Issuer.MaxLeafValidityDays) * 24 * time.Hour
+		case pki.Authority == nil:
+			missing = "no certificate authority is configured for VPN certificates. Cairn's own CA is off in ca.mode " + string(cfg.CA.Mode) + "; set [vpn.issuer] backend = \"scep\" to use an external one."
+		default:
+			vpnCA = pki.Authority.EmbeddedBackend()
 		}
 		if missing != "" {
 			console.SetVPNIssuer(nil, db, missing)
 			log.Warn("VPN server records enabled; issuing is off", "reason", missing)
 		} else {
-			policy := issue.Policy{LeafValidity: time.Duration(vpnCfg.LeafValidityDays) * 24 * time.Hour, Backdate: 5 * time.Minute}
-			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, pki.Authority.EmbeddedBackend(), commander,
+			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, vpnCA, commander,
 				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType}, log)
 			if err != nil {
 				return err
@@ -232,7 +245,7 @@ func runServe(ctx context.Context, args []string) error {
 					}
 				}
 			}()
-			log.Info("VPN profiles enabled", "ca", "embedded", "leaf_validity_days", vpnCfg.LeafValidityDays, "key_type", vpnCfg.KeyType)
+			log.Info("VPN profiles enabled", "ca", vpnCfg.Issuer.Backend, "leaf_validity_days", vpnCfg.LeafValidityDays, "key_type", vpnCfg.KeyType)
 		}
 	}
 	// Evidence-gated quarantine release. Only the embedded CA can produce the

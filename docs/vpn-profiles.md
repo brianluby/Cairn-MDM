@@ -2,8 +2,9 @@
 
 Status: in development, November 2026. Server records, the profile renderer,
 issuance from Cairn's own CA and delivery are implemented and covered by
-automated tests. No profile rendered by Cairn has been installed on a real
-device yet, issuance from an external CA is not built, and macOS is not built.
+automated tests. Issuance from an external SCEP CA is wired but has not run
+against a real CA. No profile rendered by Cairn has been installed on a real
+device yet, and macOS is not built.
 
 ## What it does
 
@@ -48,11 +49,29 @@ backup` says so in the bundle's notes.
 enabled = true
 # leaf_validity_days = 365
 # key_type = "rsa2048"   # or "p256"
+
+# Without this section Cairn's own CA signs VPN certificates.
+# [vpn.issuer]
+# backend = "scep"
+# scep_url = "https://ca.example.org/scep/vpn"
+# ra_cert_file = "/etc/cairn/vpn-ra.crt"
+# ra_key_file = "/etc/cairn/vpn-ra.key"
+# max_leaf_validity_days = 400
 ```
+
+The VPN server decides which CA works: its client-certificate trust has to
+include the CA that signs here. A server that trusts an existing CA needs the
+`scep` backend pointed at that CA.
 
 Requirements for issuing:
 
-- `ca.mode` is `generate` or `import`, so Cairn has a CA to sign with.
+- A CA. Either `ca.mode` is `generate` or `import`, so Cairn has its own, or
+  `[vpn.issuer] backend = "scep"` names a SCEP endpoint that accepts requests
+  signed by the RA certificate in `ra_cert_file`. Cairn sends the account name
+  as the common name and the account's UPN as an email SAN, and holds any
+  certificate that comes back with a different common name, a different SAN
+  set, a usage other than client authentication, or a longer lifetime than
+  `max_leaf_validity_days`.
 - `auth.ldap` is configured with a `directory_id`, so certificate owners are
   verified directory accounts.
 
@@ -69,8 +88,9 @@ VPN > Add server. Paste a client `.ovpn` file exported for the server to fill in
 the form, check the fields, save. A client certificate or key in the pasted file
 is dropped. Fields:
 
-- Addresses, tried in order. Put a TCP address after the UDP one for networks
-  that block UDP.
+- Addresses, one per line. Each becomes its own connection on the device and
+  all share one certificate. Add a TCP address for networks that block UDP. A
+  fourth value on a line sets the tunnel MTU for that address.
 - Server certificate name: the exact common name of the server's certificate.
 - CA chain that signed the server certificate.
 - TLS key: `tls-auth` (with key direction) or `tls-crypt`, and the static key.
@@ -110,6 +130,8 @@ certificate is marked replaced once the new profile is acknowledged.
 - Revoke certificate, on the device page, is for a lost or stolen device.
 - With Cairn's own CA the certificate is revoked immediately and appears in the
   CRL. Replaced and never-installed certificates are revoked by an hourly sweep.
+- With a SCEP CA, Cairn cannot revoke. The VPN page lists the serials to revoke
+  at the CA, and an administrator confirms each one there.
 - The VPN server has to read that CRL for a revocation to stop a connection.
   Until it does, disabling the directory account is what stops access.
 
@@ -128,7 +150,9 @@ new profile.
 
 ## Not built yet
 
-- Issuing from an external CA over SCEP.
+- A run of the SCEP issuer against a real CA.
+- One connection that tries several addresses in turn.
+- Native IKEv2 profiles that use the device's enrolled identity.
 - macOS: a keychain identity pushed by MDM plus a Viscosity connection.
 - Automatic re-issue before expiry.
 - Certificate classes that keep a VPN certificate from being accepted where a

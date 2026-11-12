@@ -49,89 +49,103 @@ func RenderMobileconfig(org string, s Server, id Identity) ([]byte, error) {
 		return nil, err
 	}
 
-	vendor := map[string]string{
-		"client":           "NOARGS",
-		"dev":              "tun",
-		"nobind":           "NOARGS",
-		"remote-cert-tls":  "server",
-		"verify-x509-name": fmt.Sprintf("%q name", s.VerifyX509Name),
-		"ca":               inline(s.CAPEM),
-		"cert":             inline(string(id.CertPEM)),
-		"key":              inline(string(id.KeyPEM)),
-	}
-	for i, r := range s.Remotes {
-		k := "remote"
-		if len(s.Remotes) > 1 {
-			k = fmt.Sprintf("remote.%d", i+1)
-		}
-		vendor[k] = fmt.Sprintf("%s %d %s", r.Host, r.Port, r.Proto)
-	}
-	if s.Cipher != "" {
-		vendor["cipher"] = s.Cipher
-	}
-	if s.Auth != "" {
-		vendor["auth"] = s.Auth
-	}
-	if s.TunMTU != 0 {
-		vendor["tun-mtu"] = fmt.Sprint(s.TunMTU)
-	}
-	switch s.TLSKeyMode {
-	case TLSKeyAuth:
-		vendor["tls-auth"] = inline(s.TLSKey)
-		vendor["key-direction"] = fmt.Sprint(s.KeyDirection)
-	case TLSKeyCrypt:
-		vendor["tls-crypt"] = inline(s.TLSKey)
-	}
-	if s.UserAuth {
-		vendor["auth-user-pass"] = "NOARGS"
-		// Access Server meta-directive; Connect prefills the username from it.
-		vendor["USERNAME"] = id.Username
-	}
-	if !s.OnDemand {
-		vendor["vpn-on-demand"] = "0"
-	}
-	for _, d := range s.Extra {
-		v := d.Value
-		if v == "" {
-			v = "NOARGS"
-		}
-		vendor[d.Name] = v
-	}
-
 	identifier := PayloadIdentifier(org, s)
 	ns := uuid5(nsDNS, identifier+"."+id.DeviceID)
-	vpnUUID := strings.ToUpper(uuid5(ns, "vpn").String())
 
-	// AuthenticationMethod stays Certificate even when the server wants a password:
-	// with Password, iOS owns the credentials and hands Connect an empty one.
-	vpn := map[string]any{
-		"AuthenticationMethod": "Certificate",
-		"AuthName":             "DEFAULT",
-		"RemoteAddress":        "DEFAULT",
-		"DisconnectOnIdle":     0,
-		"OnDemandEnabled":      0,
-	}
-	if s.OnDemand {
-		vpn["OnDemandEnabled"] = 1
-		vpn["OnDemandRules"] = []any{
-			map[string]any{"Action": "Connect", "InterfaceTypeMatch": "WiFi"},
-			map[string]any{"Action": "Connect", "InterfaceTypeMatch": "Cellular"},
+	// One payload per address. OpenVPN Connect's handling of several remotes in
+	// one VendorConfig is untested on a device, so each address is its own
+	// connection and the user picks the TCP one where UDP is blocked. They share
+	// the certificate and key.
+	var payloads []any
+	for i, r := range s.Remotes {
+		vendor := map[string]string{
+			"client":           "NOARGS",
+			"dev":              "tun",
+			"nobind":           "NOARGS",
+			"remote":           fmt.Sprintf("%s %d %s", r.Host, r.Port, r.Proto),
+			"remote-cert-tls":  "server",
+			"verify-x509-name": fmt.Sprintf("%q name", s.VerifyX509Name),
+			"ca":               inline(s.CAPEM),
+			"cert":             inline(string(id.CertPEM)),
+			"key":              inline(string(id.KeyPEM)),
 		}
-	}
-	payload := map[string]any{
-		"PayloadType":        "com.apple.vpn.managed",
-		"PayloadVersion":     1,
-		"PayloadIdentifier":  identifier + ".vpn",
-		"PayloadUUID":        vpnUUID,
-		"PayloadDisplayName": "VPN",
-		"PayloadDescription": "OpenVPN Connect configuration for " + s.Name,
-		"UserDefinedName":    s.Name,
-		"VPNType":            "VPN",
-		"VPNSubType":         openVPNConnectSubType,
-		"VPN":                vpn,
-		"VendorConfig":       vendor,
-		"IPv4":               map[string]any{"OverridePrimary": 1},
-		"Proxies":            map[string]any{"HTTPEnable": 0, "HTTPSEnable": 0},
+		if s.Cipher != "" {
+			vendor["cipher"] = s.Cipher
+		}
+		if s.Auth != "" {
+			vendor["auth"] = s.Auth
+		}
+		mtu := r.TunMTU
+		if mtu == 0 {
+			mtu = s.TunMTU
+		}
+		if mtu != 0 {
+			vendor["tun-mtu"] = fmt.Sprint(mtu)
+		}
+		switch s.TLSKeyMode {
+		case TLSKeyAuth:
+			vendor["tls-auth"] = inline(s.TLSKey)
+			vendor["key-direction"] = fmt.Sprint(s.KeyDirection)
+		case TLSKeyCrypt:
+			vendor["tls-crypt"] = inline(s.TLSKey)
+		}
+		if s.UserAuth {
+			vendor["auth-user-pass"] = "NOARGS"
+			// Access Server meta-directive; Connect prefills the username from it.
+			vendor["USERNAME"] = id.Username
+		}
+		// Only the first address connects on demand; two on-demand connections
+		// would compete.
+		onDemand := s.OnDemand && i == 0
+		if !onDemand {
+			vendor["vpn-on-demand"] = "0"
+		}
+		for _, d := range s.Extra {
+			v := d.Value
+			if v == "" {
+				v = "NOARGS"
+			}
+			vendor[d.Name] = v
+		}
+
+		// AuthenticationMethod stays Certificate even when the server wants a password:
+		// with Password, iOS owns the credentials and hands Connect an empty one.
+		vpn := map[string]any{
+			"AuthenticationMethod": "Certificate",
+			"AuthName":             "DEFAULT",
+			"RemoteAddress":        "DEFAULT",
+			"DisconnectOnIdle":     0,
+			"OnDemandEnabled":      0,
+		}
+		if onDemand {
+			vpn["OnDemandEnabled"] = 1
+			vpn["OnDemandRules"] = []any{
+				map[string]any{"Action": "Connect", "InterfaceTypeMatch": "WiFi"},
+				map[string]any{"Action": "Connect", "InterfaceTypeMatch": "Cellular"},
+			}
+		}
+		name, tag := s.Name, "vpn"
+		if len(s.Remotes) > 1 {
+			name = fmt.Sprintf("%s (%s %d)", s.Name, strings.ToUpper(r.Proto), r.Port)
+		}
+		if i > 0 {
+			tag = fmt.Sprintf("vpn.%d", i+1)
+		}
+		payloads = append(payloads, map[string]any{
+			"PayloadType":        "com.apple.vpn.managed",
+			"PayloadVersion":     1,
+			"PayloadIdentifier":  identifier + "." + tag,
+			"PayloadUUID":        strings.ToUpper(uuid5(ns, tag).String()),
+			"PayloadDisplayName": "VPN",
+			"PayloadDescription": "OpenVPN Connect configuration for " + name,
+			"UserDefinedName":    name,
+			"VPNType":            "VPN",
+			"VPNSubType":         openVPNConnectSubType,
+			"VPN":                vpn,
+			"VendorConfig":       vendor,
+			"IPv4":               map[string]any{"OverridePrimary": 1},
+			"Proxies":            map[string]any{"HTTPEnable": 0, "HTTPSEnable": 0},
+		})
 	}
 	prof := map[string]any{
 		"PayloadType":              "Configuration",
@@ -142,7 +156,7 @@ func RenderMobileconfig(org string, s Server, id Identity) ([]byte, error) {
 		"PayloadDescription":       s.Name + " for " + id.Username + ". Install OpenVPN Connect first.",
 		"PayloadOrganization":      org,
 		"PayloadRemovalDisallowed": false,
-		"PayloadContent":           []any{payload},
+		"PayloadContent":           payloads,
 	}
 	out, err := plist.MarshalIndent(prof, "\t")
 	if err != nil {
@@ -185,14 +199,16 @@ func checkIdentity(id Identity) error {
 type profileShape struct {
 	PayloadIdentifier string
 	PayloadUUID       string
-	PayloadContent    []struct {
-		PayloadType  string
-		PayloadUUID  string
-		VPNType      string
-		VPNSubType   string
-		VPN          map[string]any
-		VendorConfig map[string]any
-	}
+	PayloadContent    []vpnPayloadShape
+}
+
+type vpnPayloadShape struct {
+	PayloadType  string
+	PayloadUUID  string
+	VPNType      string
+	VPNSubType   string
+	VPN          map[string]any
+	VendorConfig map[string]any
 }
 
 // Check applies the rules a profile must meet for iOS to install it and OpenVPN
@@ -203,10 +219,31 @@ func Check(profile []byte) error {
 	if err := plist.Unmarshal(profile, &p); err != nil {
 		return fmt.Errorf("not a property list: %w", err)
 	}
-	if p.PayloadIdentifier == "" || p.PayloadUUID == "" || len(p.PayloadContent) != 1 {
-		return errors.New("profile needs an identifier, a UUID and exactly one payload")
+	if p.PayloadIdentifier == "" || p.PayloadUUID == "" || len(p.PayloadContent) == 0 {
+		return errors.New("profile needs an identifier, a UUID and at least one payload")
 	}
-	c := p.PayloadContent[0]
+	onDemand := 0
+	seen := map[string]bool{}
+	for i := range p.PayloadContent {
+		c := &p.PayloadContent[i]
+		if c.PayloadUUID == "" || seen[c.PayloadUUID] {
+			return errors.New("every payload needs its own UUID")
+		}
+		seen[c.PayloadUUID] = true
+		if err := checkPayload(c); err != nil {
+			return err
+		}
+		if fmt.Sprint(c.VPN["OnDemandEnabled"]) == "1" {
+			onDemand++
+		}
+	}
+	if onDemand > 1 {
+		return errors.New("only one connection in a profile may connect on demand")
+	}
+	return nil
+}
+
+func checkPayload(c *vpnPayloadShape) error {
 	if c.PayloadType != "com.apple.vpn.managed" || c.VPNType != "VPN" || c.VPNSubType != openVPNConnectSubType {
 		return errors.New("payload is not an OpenVPN Connect VPN payload")
 	}
@@ -231,19 +268,13 @@ func Check(profile []byte) error {
 			return fmt.Errorf("%s must be inline", k)
 		}
 	}
-	remotes := 0
-	for k, val := range v {
-		if k != "remote" && !strings.HasPrefix(k, "remote.") {
-			continue
-		}
-		remotes++
-		f := strings.Fields(val)
-		if len(f) != 3 || (f[2] != "udp" && f[2] != "tcp") {
-			return fmt.Errorf("%s must be \"host port udp|tcp\", got %q", k, val)
+	for k := range v {
+		if strings.HasPrefix(k, "remote.") {
+			return fmt.Errorf("%s: one remote per payload", k)
 		}
 	}
-	if remotes == 0 {
-		return errors.New("no remote")
+	if f := strings.Fields(v["remote"]); len(f) != 3 || (f[2] != "udp" && f[2] != "tcp") {
+		return fmt.Errorf("remote must be \"host port udp|tcp\", got %q", v["remote"])
 	}
 	if p, ok := v["proto"]; ok && p != "udp" && p != "tcp" {
 		return fmt.Errorf("proto %q: OpenVPN Connect accepts udp or tcp only", p)

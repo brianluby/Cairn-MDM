@@ -188,6 +188,7 @@ func referencedFiles(cfg config.Config) []string {
 		cfg.CA.Import.CertFile, cfg.CA.Import.KeyFile, cfg.CA.Import.RootCertFile,
 		cfg.CA.External.CAChainFile, cfg.CA.External.ChallengeFile,
 		cfg.CA.Broker.RACertFile, cfg.CA.Broker.RAKeyFile, cfg.CA.Broker.CAChainFile, cfg.CA.Broker.ChallengeFile,
+		cfg.VPN.Issuer.RACertFile, cfg.VPN.Issuer.RAKeyFile,
 		cfg.Auth.LDAP.BindPasswordFile, cfg.Auth.OIDC.ClientSecretFile, cfg.Alerts.WebhookURLFile,
 	}
 	seen := map[string]bool{}
