@@ -122,6 +122,12 @@ func (b *scepBackend) recipients(ctx context.Context) ([]*x509.Certificate, erro
 		return nil, errors.New("broker: backend returned no CA certificates")
 	}
 	for _, c := range certs {
+		// A SCEP endpoint presents CA certificates and an RA certificate that can
+		// sign or decrypt. An ordinary client certificate from the same CA is
+		// someone posing as the endpoint.
+		if len(b.anchors) > 0 && !c.IsCA && c.KeyUsage&(x509.KeyUsageKeyEncipherment|x509.KeyUsageDigitalSignature) == 0 {
+			return nil, fmt.Errorf("broker: GetCACert returned %q, which is neither a CA nor an RA certificate", c.Subject.CommonName)
+		}
 		if err := b.chainsToAnchors(c, certs); err != nil {
 			return nil, fmt.Errorf("broker: GetCACert returned %q, which is not under the pinned CA chain: %w", c.Subject.CommonName, err)
 		}

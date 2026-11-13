@@ -28,10 +28,11 @@ type VPNServers interface {
 // provides it.
 type VPNIssuer interface {
 	Issue(ctx context.Context, deviceID string, serverID int64, account, actor string) (sqlite.VPNIdentity, error)
-	Remove(ctx context.Context, deviceID string, serverID int64) error
+	Remove(ctx context.Context, deviceID string, serverID int64, actor string) error
 	Revoke(ctx context.Context, identityID int64, actor string) error
-	ConfirmRevokedAtCA(ctx context.Context, identityID int64) error
+	ConfirmRevokedAtCA(ctx context.Context, identityID int64, actor string) error
 	CanRevoke() bool
+	CanRevokeIdentity(v sqlite.VPNIdentity) bool
 }
 
 // VPNIdentityStore reads issued VPN certificates; *sqlite.DB provides it.
@@ -95,7 +96,30 @@ func (a *App) vpnChange(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "Fresh MFA required. Open Account security, verify your code, then submit again.", http.StatusForbidden)
 		return false
 	}
+	// A session outlives a change in the directory. Someone removed from the
+	// administrators group must not keep editing what every later profile trusts.
+	if !a.directoryAdminCurrent(r) {
+		http.Error(w, "Current directory administrator authorization unavailable.", http.StatusForbidden)
+		return false
+	}
 	return true
+}
+
+// directoryAdminCurrent reports whether a directory-backed administrator still
+// holds that role in the directory right now. Local administrators have no
+// directory to ask and pass.
+func (a *App) directoryAdminCurrent(r *http.Request) bool {
+	s := sessionFrom(r)
+	if s == nil {
+		return false
+	}
+	if s.Identity.Provider != "ldap" {
+		return true
+	}
+	validator, ok := a.directory.(interface {
+		RevalidateAdministrator(context.Context, auth.DirectoryIdentity) error
+	})
+	return ok && s.Identity.Directory != nil && validator.RevalidateAdministrator(r.Context(), *s.Identity.Directory) == nil
 }
 
 // vpnServerForm is a server record as form text, so a rejected submission can be
@@ -243,7 +267,8 @@ func (a *App) handleVPN(w http.ResponseWriter, r *http.Request) {
 			}
 			out := make([]vpnIdentityRow, 0, len(list))
 			for _, v := range list {
-				out = append(out, vpnIdentityRow{VPNIdentity: v, DeviceName: names[v.DeviceID], ServerName: serverNames[v.ServerID]})
+				out = append(out, vpnIdentityRow{VPNIdentity: v, DeviceName: names[v.DeviceID], ServerName: serverNames[v.ServerID],
+					Manual: a.vpnIssuer == nil || !a.vpnIssuer.CanRevokeIdentity(v)})
 			}
 			return out
 		}
@@ -259,6 +284,7 @@ type vpnIdentityRow struct {
 	sqlite.VPNIdentity
 	DeviceName string
 	ServerName string
+	Manual     bool // Cairn cannot revoke this one at its CA
 }
 
 // ExpiresOn is the certificate's last day, or "" when none was issued.
@@ -354,7 +380,7 @@ func (a *App) handleVPNRemove(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := a.vpnIssuer.Remove(r.Context(), deviceID, serverID); err != nil {
+	if err := a.vpnIssuer.Remove(r.Context(), deviceID, serverID, sessionFrom(r).Identity.Username); err != nil {
 		a.log.Error("vpn profile removal", "device", deviceID, "err", err)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Removal not queued."), http.StatusSeeOther)
 		return
@@ -389,7 +415,9 @@ func (a *App) handleVPNRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg := "Certificate " + v.CertSerial + " revoked."
-	if !a.vpnIssuer.CanRevoke() {
+	if v.CertSerial == "" {
+		msg = "Hold closed."
+	} else if !a.vpnIssuer.CanRevokeIdentity(v) {
 		msg = "Certificate " + v.CertSerial + " marked revoked in Cairn. Revoke the same serial at the certificate authority, then confirm it on the VPN page."
 	}
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)
@@ -403,8 +431,9 @@ func (a *App) handleVPNRevokedAtCA(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.vpnIssuer.ConfirmRevokedAtCA(r.Context(), v.ID); err != nil {
-		http.Error(w, "Cannot record the revocation.", http.StatusServiceUnavailable)
+	if err := a.vpnIssuer.ConfirmRevokedAtCA(r.Context(), v.ID, sessionFrom(r).Identity.Username); err != nil {
+		a.log.Warn("vpn revoked-at-ca refused", "identity", v.ID, "err", err)
+		http.Error(w, "Not recorded. Only a retired certificate that Cairn cannot revoke itself can be confirmed here.", http.StatusConflict)
 		return
 	}
 	a.log.Info("vpn certificate confirmed revoked at the CA", "identity", v.ID, "serial", v.CertSerial, "user", sessionFrom(r).Identity.Username)

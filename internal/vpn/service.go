@@ -12,6 +12,7 @@ import (
 
 	"github.com/nickpdawson/cairn-mdm/internal/directory"
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
+	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 )
 
@@ -22,12 +23,12 @@ type IdentityStore interface {
 	CompleteVPNIdentity(ctx context.Context, id int64, serial string, leafDER []byte, notAfter time.Time) error
 	FailVPNIdentity(ctx context.Context, id int64, reason string) error
 	QuarantineVPNIdentity(ctx context.Context, id int64, reason, serial string, leafDER []byte) error
-	MarkVPNDeploySent(ctx context.Context, id int64, commandUUID string) error
 	MarkVPNDeployFailed(ctx context.Context, id int64, reason string) error
 	GetVPNIdentity(ctx context.Context, id int64) (sqlite.VPNIdentity, error)
 	DeviceVPNIdentities(ctx context.Context, deviceID string) ([]sqlite.VPNIdentity, error)
 	MarkVPNIdentityRevoked(ctx context.Context, id int64, actor string) error
-	MarkVPNCertificateRevoked(ctx context.Context, id int64) error
+	MarkVPNCertificateRevoked(ctx context.Context, id int64, actor string) error
+	QuarantineStaleVPNIssuing(ctx context.Context, before time.Time) (int, error)
 	VPNIdentitiesAwaitingRevocation(ctx context.Context) ([]sqlite.VPNIdentity, error)
 	WithdrawStaleVPNPayloads(ctx context.Context, before time.Time) (int, error)
 	GetDeviceOwner(ctx context.Context, deviceID string) (sqlite.DeviceOwner, error)
@@ -42,7 +43,7 @@ type Directory interface {
 
 // Commander queues MDM commands for a device.
 type Commander interface {
-	SendInstallProfileUUID(ctx context.Context, profile []byte, id string) (string, error)
+	SendInstallProfileAs(ctx context.Context, uuid string, profile []byte, id string) error
 	SendRemoveProfile(ctx context.Context, identifier string, ids ...string) error
 }
 
@@ -54,6 +55,10 @@ type Options struct {
 	// UncollectedAfter is how long a queued profile, and the key in it, waits for
 	// a device before it is withdrawn. Zero means seven days.
 	UncollectedAfter time.Duration
+	// IssuedHere reports whether the configured CA issued a certificate. Set it
+	// when the CA's identity is known locally (Cairn's own CA), so a certificate
+	// from an earlier issuer is never sent to this one for revocation.
+	IssuedHere func(*x509.Certificate) bool
 }
 
 // Service issues VPN certificates and delivers the profiles that carry them.
@@ -89,6 +94,7 @@ var (
 	ErrOwnerIneligible = errors.New("the account is disabled, missing or cannot be verified in the directory")
 	ErrDeviceGone      = errors.New("the device is not enrolled or cannot receive commands")
 	ErrAwaitingDevice  = errors.New("a profile is already waiting for this device and installs when it next connects; revoke that certificate first to send a new one")
+	ErrPlatform        = errors.New("OpenVPN profiles are built for iPhone and iPad; this device is a Mac")
 	ErrHeld            = errors.New("the certificate authority's answer could not be trusted; the request is held for review and no profile was sent")
 )
 
@@ -137,6 +143,9 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 	if err != nil || dev.CheckedOutAt.Valid || !dev.TokenUpdatedAt.Valid {
 		return none, ErrDeviceGone
 	}
+	if strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac") {
+		return none, ErrPlatform
+	}
 	server, err := s.servers.Get(ctx, serverID)
 	if err != nil {
 		return none, fmt.Errorf("vpn: server: %w", err)
@@ -171,17 +180,28 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 		return none, err
 	}
 	backendName := s.backend.Capabilities().Name
+	// The profile's CommandUUID is fixed and recorded before anything is queued,
+	// so the device's answer finds this row however fast it comes.
+	commandUUID := mdmcore.NewCommandUUID()
 	id, err := s.store.BeginVPNIdentity(ctx, sqlite.VPNIdentity{
 		ServerID: serverID, DeviceID: deviceID, Owner: owner, Actor: actor, SPKISHA256: req.SPKISHA256, Backend: backendName,
+		CommandUUID: commandUUID,
 	})
+	if errors.Is(err, sqlite.ErrVPNIssuanceInFlight) {
+		return none, ErrAwaitingDevice
+	}
 	if err != nil {
 		return none, err
 	}
+	// From here the outcome has to be recorded even if the administrator's
+	// browser goes away: an unrecorded CA answer or queued key cannot be cleaned up.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
+	defer cancel()
 
 	// Recheck the owner immediately before signing; nothing has been asked of the
 	// CA yet, so a change here is a clean refusal.
 	if fresh, rerr := s.dir.RevalidateOwner(ctx, owner); rerr != nil || fresh == nil || *fresh != owner {
-		_ = s.store.FailVPNIdentity(ctx, id, "owner authorization changed before signing")
+		s.record(id, s.store.FailVPNIdentity(ctx, id, "owner authorization changed before signing"))
 		return none, ErrOwnerIneligible
 	}
 
@@ -190,7 +210,7 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 	clean := res.Status == issue.StatusFailedClean || s.backend.Capabilities().AtomicIssue
 	switch {
 	case err != nil && clean:
-		_ = s.store.FailVPNIdentity(ctx, id, "CA refused: "+err.Error())
+		s.record(id, s.store.FailVPNIdentity(ctx, id, "CA refused: "+err.Error()))
 		return none, fmt.Errorf("vpn: the certificate authority refused the request: %w", err)
 	case err != nil || res.Status != issue.StatusIssued:
 		// Unknown or pending: the CA may have signed. Never retried with this key.
@@ -198,14 +218,14 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 		if err != nil {
 			reason += ": " + err.Error()
 		}
-		_ = s.store.QuarantineVPNIdentity(ctx, id, reason, res.Serial, nil)
+		s.record(id, s.store.QuarantineVPNIdentity(ctx, id, reason, res.Serial, nil))
 		return none, ErrHeld
 	case res.Leaf == nil || res.Serial == "":
-		_ = s.store.QuarantineVPNIdentity(ctx, id, "CA reported success without a certificate", res.Serial, nil)
+		s.record(id, s.store.QuarantineVPNIdentity(ctx, id, "CA reported success without a certificate", res.Serial, nil))
 		return none, ErrHeld
 	}
 	if verr := issue.VerifyLeaf(res.Leaf, req, s.opts.Policy, s.now()); verr != nil {
-		_ = s.store.QuarantineVPNIdentity(ctx, id, "certificate differs from the request: "+verr.Error(), res.Serial, res.Leaf.Raw)
+		s.record(id, s.store.QuarantineVPNIdentity(ctx, id, "certificate differs from the request: "+verr.Error(), res.Serial, res.Leaf.Raw))
 		return none, ErrHeld
 	}
 	if err = s.store.CompleteVPNIdentity(ctx, id, res.Serial, res.Leaf.Raw, res.Leaf.NotAfter); err != nil {
@@ -221,14 +241,11 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 			KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
 		})
 		if err == nil {
-			var uuid string
-			if uuid, err = s.cmd.SendInstallProfileUUID(ctx, profile, deviceID); err == nil {
-				err = s.store.MarkVPNDeploySent(ctx, id, uuid)
-			}
+			err = s.cmd.SendInstallProfileAs(ctx, commandUUID, profile, deviceID)
 		}
 	}
 	if err != nil {
-		_ = s.store.MarkVPNDeployFailed(ctx, id, err.Error())
+		s.record(id, s.store.MarkVPNDeployFailed(ctx, id, "Profile not queued: "+err.Error()))
 		s.log.Error("vpn: profile not queued; certificate has no holder", "identity", id, "device", deviceID, "serial", res.Serial, "err", err)
 		return none, fmt.Errorf("vpn: certificate %s was issued but the profile could not be queued: %w", res.Serial, err)
 	}
@@ -238,12 +255,27 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 
 // Remove queues removal of the server's profile from the device. The
 // certificate stays valid until it is revoked or expires.
-func (s *Service) Remove(ctx context.Context, deviceID string, serverID int64) error {
+func (s *Service) Remove(ctx context.Context, deviceID string, serverID int64, actor string) error {
+	if _, err := s.store.GetDevice(ctx, deviceID); err != nil {
+		return ErrDeviceGone
+	}
 	server, err := s.servers.Get(ctx, serverID)
 	if err != nil {
 		return err
 	}
-	return s.cmd.SendRemoveProfile(ctx, PayloadIdentifier(s.opts.Organization, server), deviceID)
+	if err = s.cmd.SendRemoveProfile(ctx, PayloadIdentifier(s.opts.Organization, server), deviceID); err != nil {
+		return err
+	}
+	s.log.Info("vpn: profile removal queued", "device", deviceID, "server", server.Slug, "actor", actor)
+	return nil
+}
+
+// record logs a failure to store an outcome. The row then stays as it was and
+// the hourly sweep holds it for review.
+func (s *Service) record(id int64, err error) {
+	if err != nil {
+		s.log.Error("vpn: outcome not recorded", "identity", id, "err", err)
+	}
 }
 
 // Revoke marks a certificate revoked and, when the CA backend can revoke,
@@ -262,7 +294,7 @@ func (s *Service) Revoke(ctx context.Context, identityID int64, actor string) er
 }
 
 func (s *Service) revokeAtCA(ctx context.Context, v sqlite.VPNIdentity) error {
-	if !s.backend.Capabilities().CanRevoke || v.CertSerial == "" || v.RevokedAt.Valid {
+	if !s.CanRevokeIdentity(v) || v.CertSerial == "" || v.RevokedAt.Valid {
 		return nil
 	}
 	reason := issue.RevokeSuperseded
@@ -272,21 +304,50 @@ func (s *Service) revokeAtCA(ctx context.Context, v sqlite.VPNIdentity) error {
 	if err := s.backend.Revoke(ctx, v.CertSerial, reason); err != nil {
 		return fmt.Errorf("vpn: revoke %s at the CA: %w", v.CertSerial, err)
 	}
-	return s.store.MarkVPNCertificateRevoked(ctx, v.ID)
+	return s.store.MarkVPNCertificateRevoked(ctx, v.ID, "cairn")
 }
 
 // ConfirmRevokedAtCA records that an administrator revoked the serial at a CA
-// Cairn cannot revoke at itself.
-func (s *Service) ConfirmRevokedAtCA(ctx context.Context, identityID int64) error {
-	return s.store.MarkVPNCertificateRevoked(ctx, identityID)
+// Cairn cannot revoke at itself. It is refused for a certificate Cairn revokes
+// by itself and for one that is still in use.
+func (s *Service) ConfirmRevokedAtCA(ctx context.Context, identityID int64, actor string) error {
+	v, err := s.store.GetVPNIdentity(ctx, identityID)
+	if err != nil {
+		return err
+	}
+	if s.CanRevokeIdentity(v) {
+		return errors.New("vpn: Cairn revokes this certificate itself")
+	}
+	return s.store.MarkVPNCertificateRevoked(ctx, identityID, actor)
 }
 
-// CanRevoke reports whether the CA backend revokes on Cairn's request.
+// CanRevoke reports whether the configured CA revokes on Cairn's request.
 func (s *Service) CanRevoke() bool { return s.backend.Capabilities().CanRevoke }
+
+// CanRevokeIdentity reports whether Cairn can revoke this certificate: the
+// configured CA must be the one that issued it. After a change of issuer, the
+// earlier CA's certificates have to be revoked there by hand; sending their
+// serials to the new CA would revoke nothing, or the wrong certificate.
+func (s *Service) CanRevokeIdentity(v sqlite.VPNIdentity) bool {
+	caps := s.backend.Capabilities()
+	if !caps.CanRevoke || v.Backend != caps.Name {
+		return false
+	}
+	if s.opts.IssuedHere == nil {
+		return true
+	}
+	leaf, err := x509.ParseCertificate(v.LeafDER)
+	return err == nil && s.opts.IssuedHere(leaf)
+}
 
 // Sweep withdraws profiles no device collected and revokes certificates that
 // were replaced or never delivered. It is safe to run repeatedly.
 func (s *Service) Sweep(ctx context.Context) {
+	if n, err := s.store.QuarantineStaleVPNIssuing(ctx, s.now().Add(-15*time.Minute)); err != nil {
+		s.log.Error("vpn: hold abandoned requests", "err", err)
+	} else if n > 0 {
+		s.log.Warn("vpn: held requests whose CA outcome was never recorded", "count", n)
+	}
 	if n, err := s.store.WithdrawStaleVPNPayloads(ctx, s.now().Add(-s.opts.UncollectedAfter)); err != nil {
 		s.log.Error("vpn: withdraw stale profiles", "err", err)
 	} else if n > 0 {

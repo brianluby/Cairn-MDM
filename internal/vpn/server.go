@@ -148,13 +148,21 @@ func (s Server) Validate() error {
 	if s.TunMTU != 0 && (s.TunMTU < 576 || s.TunMTU > 9000) {
 		return errors.New("tunnel MTU must be between 576 and 9000, or empty")
 	}
+	seen := map[string]bool{}
 	for _, d := range s.Extra {
 		if !extraAllowed[d.Name] {
 			return fmt.Errorf("option %q is not supported in a server record", d.Name)
 		}
-		if strings.ContainsAny(d.Value, "\r\n<>") || len(d.Value) > 200 {
+		// A backslash could be read as an escaped line break by the client and
+		// carry a second option past the list above.
+		if strings.ContainsAny(d.Value, "\r\n<>\\") || len(d.Value) > 200 {
 			return fmt.Errorf("option %q has an invalid value", d.Name)
 		}
+		// The profile format holds one value per option name.
+		if seen[d.Name] {
+			return fmt.Errorf("option %q appears more than once; a profile can carry it once. Have the server push the others", d.Name)
+		}
+		seen[d.Name] = true
 	}
 	return nil
 }

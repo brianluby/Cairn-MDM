@@ -15,9 +15,24 @@ OpenVPN Connect on iOS and iPadOS reads. The certificate's common name is the
 account name, so a server set to match the certificate name against the login
 name refuses a certificate used with someone else's password.
 
-The certificate identifies the device and its owner. The directory decides at
-every connection whether that owner may connect. Disable the account to cut off
-a person; revoke the certificate for a lost device.
+The certificate identifies the device and its owner. What it grants is decided
+by the VPN server, not by Cairn. Cairn checks the owner's account when it
+issues; it is not asked at each connection. For a disabled account to stop
+access, the server has to ask the directory for a password as well as a
+certificate. For a revoked certificate to stop access, the server has to check
+the CA's revocation list. A server set to accept a certificate alone, with no
+revocation list, keeps accepting it until it expires. Test both refusals on
+your own server before relying on them.
+
+Everyone's certificates for one person carry the same common name. An OpenVPN
+server drops the earlier connection when a second one arrives with that name
+unless it allows duplicate names, so a person with two devices needs that
+setting.
+
+Supported today: Active Directory or Samba as the owner directory, and either
+Cairn's own CA or a SCEP CA that accepts requests signed by an RA certificate.
+Profiles are for OpenVPN Connect on iPhone and iPad; Cairn refuses to send one
+to a Mac.
 
 ## Why Cairn makes the key
 
@@ -38,6 +53,11 @@ When the device acknowledges or rejects the profile, Cairn replaces the queued
 command body with a placeholder in the same transaction. A profile no device
 collects for seven days is withdrawn the same way and its certificate is
 revoked. Cairn never writes the key to any other table or to its logs.
+
+Replacing the body removes the key from the live database rows. It does not
+wipe earlier copies in the SQLite write-ahead log, free pages, filesystem
+snapshots or backups taken while the profile waited. Protect the database
+volume and backups accordingly.
 
 A backup taken while a profile waits in the queue contains that key. `cairn
 backup` says so in the bundle's notes.
@@ -147,14 +167,18 @@ certificate is marked replaced once the new profile is acknowledged.
 - With a SCEP CA, Cairn cannot revoke. The VPN page lists the serials to revoke
   at the CA, and an administrator confirms each one there.
 - The VPN server has to read that CRL for a revocation to stop a connection.
-  Until it does, disabling the directory account is what stops access.
+- Cairn revokes only at the CA that issued the certificate. After a change of
+  issuer, certificates from the earlier CA are listed for revocation by hand.
+- Disabling a device in Cairn or removing the profile does not retire the
+  certificate. Revoke it.
 
 ## When the CA's answer cannot be trusted
 
 If the CA returns a certificate that differs from the request, Cairn sends
 nothing, records the request as held and raises an alert. The VPN page lists
 held requests. Check the CA, revoke what it issued, close the hold and send a
-new profile.
+new profile. A request is also held when Cairn stopped before it recorded the
+CA's answer.
 
 ## Alerts
 
@@ -166,6 +190,8 @@ new profile.
 
 - A run of the SCEP issuer against a real CA.
 - One connection that tries several addresses in turn.
+- More than one value for an option such as `route` or `dhcp-option`; the
+  server form refuses a repeat and the importer keeps the first.
 - Native IKEv2 profiles that use the device's enrolled identity.
 - macOS: a keychain identity pushed by MDM plus a Viscosity connection.
 - Automatic re-issue before expiry.

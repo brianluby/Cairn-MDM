@@ -85,20 +85,34 @@ func (db *DB) queryVPNIdentities(ctx context.Context, where string, args ...any)
 }
 
 // BeginVPNIdentity records the intent to issue before any CA is contacted, with
-// the audit entry naming the administrator and the owner.
+// the audit entry naming the administrator and the owner. v.CommandUUID is the
+// UUID the profile will be queued under; recording it here means the device's
+// answer always finds this row, however quickly it arrives.
+//
+// One row per device and server may be unresolved at a time: a request the CA
+// has not answered, or a profile the device has not collected.
 func (db *DB) BeginVPNIdentity(ctx context.Context, v VPNIdentity) (int64, error) {
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `INSERT INTO vpn_identities(server_id, device_id, directory_id, object_id, upn, account_name, actor, spki_sha256, backend)
-		VALUES(?,?,?,?,?,?,?,?,?)`, v.ServerID, v.DeviceID, v.Owner.DirectoryID, v.Owner.ObjectID, v.Owner.UPN, v.Owner.AccountName, v.Actor, v.SPKISHA256, v.Backend)
+	if v.CommandUUID == "" {
+		return 0, errors.New("a VPN identity needs the CommandUUID its profile will use")
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO vpn_identities(server_id, device_id, directory_id, object_id, upn, account_name, actor, spki_sha256, backend, command_uuid)
+		SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM vpn_identities WHERE device_id=? AND server_id=?
+			AND (state='ISSUING' OR (state='ISSUED' AND deploy_status='sent')))`,
+		v.ServerID, v.DeviceID, v.Owner.DirectoryID, v.Owner.ObjectID, v.Owner.UPN, v.Owner.AccountName, v.Actor, v.SPKISHA256, v.Backend, v.CommandUUID,
+		v.DeviceID, v.ServerID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return 0, ErrVPNIssuanceInFlight
 		}
 		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return 0, ErrVPNIssuanceInFlight
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
@@ -128,12 +142,14 @@ func (db *DB) vpnTransition(ctx context.Context, id int64, set string, args ...a
 	return nil
 }
 
-// CompleteVPNIdentity records the issued certificate.
+// CompleteVPNIdentity records the issued certificate and that its profile is on
+// the way to the device under the CommandUUID recorded at the start. The caller
+// queues the command next; MarkVPNDeployFailed undoes this if that fails.
 func (db *DB) CompleteVPNIdentity(ctx context.Context, id int64, serial string, leafDER []byte, notAfter time.Time) error {
 	if serial == "" || len(leafDER) == 0 {
 		return errors.New("an issued VPN identity needs a serial and a certificate")
 	}
-	return db.vpnTransition(ctx, id, `state='ISSUED', cert_serial=?, leaf_der=?, not_after=?`, serial, leafDER, notAfter.UTC().Format(time.RFC3339))
+	return db.vpnTransition(ctx, id, `state='ISSUED', deploy_status='sent', cert_serial=?, leaf_der=?, not_after=?`, serial, leafDER, notAfter.UTC().Format(time.RFC3339))
 }
 
 // FailVPNIdentity records that the CA definitely issued nothing.
@@ -148,18 +164,33 @@ func (db *DB) QuarantineVPNIdentity(ctx context.Context, id int64, reason, seria
 	return db.vpnTransition(ctx, id, `state='QUARANTINED', fail_reason=?, cert_serial=?, leaf_der=?`, reason, serial, leafDER)
 }
 
-// MarkVPNDeploySent ties an issued identity to the InstallProfile command that
-// carries its key.
-func (db *DB) MarkVPNDeploySent(ctx context.Context, id int64, commandUUID string) error {
-	_, err := db.sql.ExecContext(ctx, `UPDATE vpn_identities SET command_uuid=?, deploy_status='sent', updated_at=datetime('now') WHERE id=? AND state='ISSUED'`, commandUUID, id)
-	return err
+// MarkVPNDeployFailed records that the profile could not be queued. The
+// certificate exists but no device holds its key. Queueing can fail after the
+// command was stored, so the body is scrubbed here as well.
+func (db *DB) MarkVPNDeployFailed(ctx context.Context, id int64, reason string) error {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = withdrawVPNPayloads(ctx, tx, "failed", reason, `id=? AND state='ISSUED'`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// MarkVPNDeployFailed records that the profile never reached the queue. The
-// certificate exists but no device holds its key.
-func (db *DB) MarkVPNDeployFailed(ctx context.Context, id int64, reason string) error {
-	_, err := db.sql.ExecContext(ctx, `UPDATE vpn_identities SET deploy_status='failed', fail_reason=?, updated_at=datetime('now') WHERE id=? AND state='ISSUED'`, reason, id)
-	return err
+// QuarantineStaleVPNIssuing holds requests that have waited for a CA outcome
+// since before the given time. Cairn stopped or lost the request midway, so
+// whether the CA issued is unknown.
+func (db *DB) QuarantineStaleVPNIssuing(ctx context.Context, before time.Time) (int, error) {
+	res, err := db.sql.ExecContext(ctx, `UPDATE vpn_identities SET state='QUARANTINED',
+		fail_reason='Cairn stopped before recording the CA outcome', updated_at=datetime('now')
+		WHERE state='ISSUING' AND updated_at < ?`, before.UTC().Format("2006-01-02 15:04:05"))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // GetVPNIdentity returns one identity or sql.ErrNoRows.
@@ -203,7 +234,21 @@ func (db *DB) MarkVPNIdentityRevoked(ctx context.Context, id int64, actor string
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE vpn_identities SET state='REVOKED', updated_at=datetime('now') WHERE id=? AND state IN ('ISSUED','SUPERSEDED','QUARANTINED')`, id)
+	// A held request with no certificate on record has nothing to revoke. Closing
+	// it records the administrator's finding that the CA issued nothing.
+	res, err := tx.ExecContext(ctx, `UPDATE vpn_identities SET state='FAILED',
+		fail_reason=fail_reason || ' Hold closed after checking the certificate authority.', updated_at=datetime('now')
+		WHERE id=? AND state='QUARANTINED' AND cert_serial=''`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		if err = vpnIdentityAudit(ctx, tx, actor, "vpn.identity.close-hold", fmt.Sprintf("identity=%d", id)); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE vpn_identities SET state='REVOKED', updated_at=datetime('now') WHERE id=? AND state IN ('ISSUED','SUPERSEDED','QUARANTINED')`, id)
 	if err != nil {
 		return err
 	}
@@ -220,10 +265,29 @@ func (db *DB) MarkVPNIdentityRevoked(ctx context.Context, id int64, actor string
 	return tx.Commit()
 }
 
-// MarkVPNCertificateRevoked records that the CA accepted the revocation.
-func (db *DB) MarkVPNCertificateRevoked(ctx context.Context, id int64) error {
-	_, err := db.sql.ExecContext(ctx, `UPDATE vpn_identities SET revoked_at=datetime('now'), updated_at=datetime('now') WHERE id=? AND revoked_at IS NULL`, id)
-	return err
+// MarkVPNCertificateRevoked records that the certificate is revoked at its CA:
+// by Cairn, or by an administrator who did it there by hand. Only a certificate
+// that is retired in Cairn and has a serial qualifies, so this cannot be used
+// to make a certificate in use look revoked.
+func (db *DB) MarkVPNCertificateRevoked(ctx context.Context, id int64, actor string) error {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE vpn_identities SET revoked_at=datetime('now'), updated_at=datetime('now')
+		WHERE id=? AND revoked_at IS NULL AND cert_serial <> '' AND (
+		state IN ('SUPERSEDED','REVOKED') OR (state='ISSUED' AND deploy_status IN ('failed','expired')))`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("vpn identity %d is not a retired certificate awaiting revocation", id)
+	}
+	if err = vpnIdentityAudit(ctx, tx, actor, "vpn.identity.revoked-at-ca", fmt.Sprintf("identity=%d", id)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // vpnCommandResult resolves the delivery of a VPN profile when its

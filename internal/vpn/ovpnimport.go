@@ -111,6 +111,15 @@ func ImportOVPN(text string) (Imported, error) {
 			s.UserAuth = true
 		case dropped[name]:
 		case extraAllowed[name]:
+			repeated := false
+			for _, d := range s.Extra {
+				repeated = repeated || d.Name == name
+			}
+			if repeated {
+				// A profile holds one value per option name.
+				imp.Skipped = append(imp.Skipped, name+" (repeated; only the first is kept)")
+				continue
+			}
 			s.Extra = append(s.Extra, Directive{Name: name, Value: value})
 		default:
 			imp.Skipped = append(imp.Skipped, name)

@@ -282,3 +282,23 @@ func TestSlugify(t *testing.T) {
 		}
 	}
 }
+
+func TestExtraOptionsCannotRepeatOrEscape(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testServer(caPEM)
+	s.Extra = []Directive{{Name: "route", Value: "10.0.0.0 255.0.0.0"}, {Name: "route", Value: "10.1.0.0 255.255.0.0"}}
+	if err := s.Validate(); err == nil {
+		t.Error("two route options were accepted; the profile would keep only one")
+	}
+	s.Extra = []Directive{{Name: "route", Value: `10.0.0.0 255.0.0.0\nup /bin/sh`}}
+	if err := s.Validate(); err == nil {
+		t.Error("an option value with a backslash was accepted")
+	}
+	imp, err := ImportOVPN("client\nremote vpn.example.org 443 udp\nverify-x509-name vpn.example.org name\ndhcp-option DNS 10.0.0.1\ndhcp-option DNS 10.0.0.2\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imp.Server.Extra) != 1 || len(imp.Skipped) != 1 || !strings.Contains(imp.Skipped[0], "repeated") {
+		t.Errorf("import kept %+v, skipped %v", imp.Server.Extra, imp.Skipped)
+	}
+}

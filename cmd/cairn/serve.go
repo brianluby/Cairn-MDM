@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -203,6 +204,7 @@ func runServe(ctx context.Context, args []string) error {
 		vpnCfg := cfg.VPN.WithDefaults()
 		policy := issue.Policy{LeafValidity: time.Duration(vpnCfg.LeafValidityDays) * 24 * time.Hour, Backdate: 5 * time.Minute}
 		var vpnCA issue.CABackend
+		var issuedHere func(*x509.Certificate) bool
 		var missing string
 		switch {
 		case directoryProvider == nil:
@@ -217,13 +219,15 @@ func runServe(ctx context.Context, args []string) error {
 			missing = "no certificate authority is configured for VPN certificates. Cairn's own CA is off in ca.mode " + string(cfg.CA.Mode) + "; set [vpn.issuer] backend = \"scep\" to use an external one."
 		default:
 			vpnCA = pki.Authority.EmbeddedBackend()
+			caCert := pki.Authority.Certificate()
+			issuedHere = func(leaf *x509.Certificate) bool { return leaf.CheckSignatureFrom(caCert) == nil }
 		}
 		if missing != "" {
 			console.SetVPNIssuer(nil, db, missing)
 			log.Warn("VPN server records enabled; issuing is off", "reason", missing)
 		} else {
 			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, vpnCA, commander,
-				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType}, log)
+				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType, IssuedHere: issuedHere}, log)
 			if err != nil {
 				return err
 			}

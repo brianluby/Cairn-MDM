@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nickpdawson/cairn-mdm/internal/auth"
 	"github.com/nickpdawson/cairn-mdm/internal/vpn"
 )
 
@@ -179,5 +181,41 @@ func TestVPNPagesOffWhenDisabled(t *testing.T) {
 	m.ServeHTTP(rr, req)
 	if strings.Contains(rr.Body.String(), `href="/admin/vpn"`) {
 		t.Fatal("nav shows VPN while disabled")
+	}
+}
+
+type adminCheck struct {
+	DirectoryResolver
+	err error
+}
+
+func (c adminCheck) RevalidateAdministrator(context.Context, auth.DirectoryIdentity) error {
+	return c.err
+}
+
+// A directory administrator's session outlives removal from the admin group.
+// Server-record writes and issuing both ask the directory again.
+func TestDirectoryAdminIsRecheckedForVPNWrites(t *testing.T) {
+	request := func(id auth.Identity) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/admin/vpn/new", nil)
+		return r.WithContext(context.WithValue(r.Context(), sessionKey, &auth.Session{Identity: id}))
+	}
+	ldapAdmin := auth.Identity{Provider: "ldap", Role: auth.RoleAdmin, Directory: &auth.DirectoryIdentity{}}
+	cases := []struct {
+		name string
+		app  *App
+		id   auth.Identity
+		want bool
+	}{
+		{"still an administrator", &App{directory: adminCheck{}}, ldapAdmin, true},
+		{"removed from the group", &App{directory: adminCheck{err: errors.New("not a member")}}, ldapAdmin, false},
+		{"directory not configured", &App{}, ldapAdmin, false},
+		{"session without a directory identity", &App{directory: adminCheck{}}, auth.Identity{Provider: "ldap", Role: auth.RoleAdmin}, false},
+		{"local administrator", &App{}, auth.Identity{Provider: "local", Role: auth.RoleAdmin}, true},
+	}
+	for _, c := range cases {
+		if got := c.app.directoryAdminCurrent(request(c.id)); got != c.want {
+			t.Errorf("%s: allowed = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

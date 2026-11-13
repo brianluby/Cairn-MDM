@@ -73,8 +73,12 @@ func DeviceInformationCommand(queries ...string) (*mdm.Command, error) {
 // command marshals a command dict with a fresh CommandUUID and decodes it into
 // an mdm.Command (which also validates it and retains the raw plist).
 func command(inner map[string]any) (*mdm.Command, error) {
+	return commandAs(newCommandUUID(), inner)
+}
+
+func commandAs(uuid string, inner map[string]any) (*mdm.Command, error) {
 	raw, err := plist.Marshal(map[string]any{
-		"CommandUUID": newCommandUUID(),
+		"CommandUUID": uuid,
 		"Command":     inner,
 	})
 	if err != nil {
@@ -200,6 +204,25 @@ func (c *Commander) SendInstallProfileUUID(ctx context.Context, profile []byte, 
 		return "", err
 	}
 	return cmd.CommandUUID, nil
+}
+
+// NewCommandUUID returns a CommandUUID for a caller that has to record it before
+// the command exists.
+func NewCommandUUID() string { return newCommandUUID() }
+
+// SendInstallProfileAs queues an InstallProfile for one device under a
+// CommandUUID the caller chose and has already recorded. A device can answer a
+// command the moment it is queued, so anything that must react to the answer
+// has to know the UUID first.
+func (c *Commander) SendInstallProfileAs(ctx context.Context, uuid string, profile []byte, id string) error {
+	if uuid == "" {
+		return errors.New("mdmcore: a CommandUUID is required")
+	}
+	cmd, err := commandAs(uuid, map[string]any{"RequestType": "InstallProfile", "Payload": profile})
+	if err != nil {
+		return err
+	}
+	return c.enqueue(ctx, []string{id}, cmd)
 }
 
 // SendRemoveProfile removes the profile with the given PayloadIdentifier.

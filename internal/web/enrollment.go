@@ -139,14 +139,9 @@ func (a *App) enrollmentActor(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "Configure a verified LDAP directory before enrolling an owner.", 503)
 		return false
 	}
-	if s.Identity.Provider == "ldap" {
-		validator, ok := a.directory.(interface {
-			RevalidateAdministrator(context.Context, auth.DirectoryIdentity) error
-		})
-		if !ok || s.Identity.Directory == nil || validator.RevalidateAdministrator(r.Context(), *s.Identity.Directory) != nil {
-			http.Error(w, "Current directory administrator authorization unavailable.", 403)
-			return false
-		}
+	if !a.directoryAdminCurrent(r) {
+		http.Error(w, "Current directory administrator authorization unavailable.", 403)
+		return false
 	}
 	return true
 }
