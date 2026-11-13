@@ -16,7 +16,6 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/alert"
 	"github.com/nickpdawson/cairn-mdm/internal/assign"
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
-	"github.com/nickpdawson/cairn-mdm/internal/broker"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
@@ -209,12 +208,8 @@ func runServe(ctx context.Context, args []string) error {
 		case directoryProvider == nil:
 			missing = "a verified LDAP directory (auth.ldap with directory_id) is required to name certificate owners."
 		case vpnCfg.Issuer.Backend == "scep":
-			raCert, raKey, err := loadRAIdentity(vpnCfg.Issuer.RACertFile, vpnCfg.Issuer.RAKeyFile)
-			if err != nil {
-				return fmt.Errorf("vpn.issuer: %w", err)
-			}
-			if vpnCA, err = broker.New(broker.Config{URL: vpnCfg.Issuer.SCEPURL, RACert: raCert, RAKey: raKey}); err != nil {
-				return fmt.Errorf("vpn.issuer: %w", err)
+			if vpnCA, err = vpnSCEPIssuer(vpnCfg.Issuer); err != nil {
+				return err
 			}
 			// The SCEP CA sets the lifetime; accept it up to the configured ceiling.
 			policy.MaxLeafValidity = time.Duration(vpnCfg.Issuer.MaxLeafValidityDays) * 24 * time.Hour

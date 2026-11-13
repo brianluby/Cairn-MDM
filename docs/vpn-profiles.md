@@ -56,12 +56,26 @@ enabled = true
 # scep_url = "https://ca.example.org/scep/vpn"
 # ra_cert_file = "/etc/cairn/vpn-ra.crt"
 # ra_key_file = "/etc/cairn/vpn-ra.key"
+# ca_chain_file = "/etc/cairn/ca-chain.pem"
 # max_leaf_validity_days = 400
 ```
 
 The VPN server decides which CA works: its client-certificate trust has to
 include the CA that signs here. A server that trusts an existing CA needs the
 `scep` backend pointed at that CA.
+
+`ca_chain_file` pins the SCEP CA. Cairn refuses an endpoint whose certificates
+do not chain to it and holds any issued certificate that does not.
+
+Before the first device, test the CA with a throwaway account name:
+
+```
+cairn vpn check-issuer -cn vpn-test -email vpn-test@example.org
+```
+
+It sends one real request, prints the certificate the CA returned and says
+whether Cairn would accept it. The key is discarded and nothing is stored.
+Revoke the test certificate at the CA afterwards.
 
 Requirements for issuing:
 

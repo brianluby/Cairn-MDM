@@ -106,6 +106,9 @@ type VPNIssuer struct {
 	SCEPURL    string `toml:"scep_url"`
 	RACertFile string `toml:"ra_cert_file"`
 	RAKeyFile  string `toml:"ra_key_file"`
+	// CAChainFile pins the SCEP CA: PEM certificates the endpoint's own
+	// certificates and every issued certificate must chain to.
+	CAChainFile string `toml:"ca_chain_file"`
 	// MaxLeafValidityDays is the longest lifetime Cairn accepts from the SCEP CA,
 	// which sets the real one. Default 400.
 	MaxLeafValidityDays int `toml:"max_leaf_validity_days"`
@@ -627,8 +630,8 @@ func (c Config) Validate() error {
 	switch is := c.VPN.Issuer; is.Backend {
 	case "", "embedded":
 	case "scep":
-		if is.SCEPURL == "" || is.RACertFile == "" || is.RAKeyFile == "" {
-			errs = append(errs, errors.New("vpn.issuer backend scep needs scep_url, ra_cert_file and ra_key_file"))
+		if is.SCEPURL == "" || is.RACertFile == "" || is.RAKeyFile == "" || is.CAChainFile == "" {
+			errs = append(errs, errors.New("vpn.issuer backend scep needs scep_url, ra_cert_file, ra_key_file and ca_chain_file"))
 		}
 		if is.MaxLeafValidityDays < 0 || is.MaxLeafValidityDays > 825 {
 			errs = append(errs, errors.New("vpn.issuer.max_leaf_validity_days must be between 1 and 825"))

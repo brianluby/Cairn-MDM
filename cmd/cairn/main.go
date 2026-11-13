@@ -60,6 +60,8 @@ func main() {
 		err = runBackup(ctx, args)
 	case "restore":
 		err = runRestore(ctx, args)
+	case "vpn":
+		err = runVPN(ctx, args)
 	case "version", "-v", "--version":
 		fmt.Println(version.Info())
 	case "help", "-h", "--help":
@@ -93,6 +95,7 @@ Commands:
   import     migrate a NanoMDM MySQL deployment (zero re-enrollment)
   backup     write a verified backup bundle (database snapshot, MFA key, config, manifest)
   restore    rehearse a restore from a bundle, or restore into an empty directory
+  vpn        check the certificate authority configured for VPN certificates (check-issuer)
   version    print build information
   help       show this help
 

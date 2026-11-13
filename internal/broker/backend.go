@@ -49,6 +49,10 @@ type Config struct {
 	URL    string            // backend SCEP endpoint
 	RACert *x509.Certificate // RA identity: signs the envelope, decrypts the reply
 	RAKey  crypto.PrivateKey
+	// Anchors, when set, pins the backend: every certificate GetCACert returns
+	// and every issued certificate must chain to one of them. Set it whenever
+	// the endpoint is reached over plain HTTP.
+	Anchors []*x509.Certificate
 }
 
 // scepBackend relays enrollment to a backend SCEP CA.
@@ -57,6 +61,7 @@ type scepBackend struct {
 	raCert  *x509.Certificate
 	raKey   crypto.PrivateKey
 	client  scepclient.Client
+	anchors []*x509.Certificate
 	caCerts []*x509.Certificate // backend CA chain (recipient + reply verify), fetched lazily
 }
 
@@ -69,7 +74,7 @@ func New(cfg Config) (issue.CABackend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("broker: scep client: %w", err)
 	}
-	return &scepBackend{url: cfg.URL, raCert: cfg.RACert, raKey: cfg.RAKey, client: cl}, nil
+	return &scepBackend{url: cfg.URL, raCert: cfg.RACert, raKey: cfg.RAKey, client: cl, anchors: cfg.Anchors}, nil
 }
 
 func (*scepBackend) Capabilities() issue.Capability {
@@ -115,8 +120,33 @@ func (b *scepBackend) recipients(ctx context.Context) ([]*x509.Certificate, erro
 	if len(certs) == 0 {
 		return nil, errors.New("broker: backend returned no CA certificates")
 	}
+	for _, c := range certs {
+		if err := b.chainsToAnchors(c, certs); err != nil {
+			return nil, fmt.Errorf("broker: GetCACert returned %q, which is not under the pinned CA chain: %w", c.Subject.CommonName, err)
+		}
+	}
 	b.caCerts = certs
 	return certs, nil
+}
+
+// chainsToAnchors reports whether c is a pinned anchor or chains to one. With no
+// anchors configured the backend is unpinned and everything passes.
+func (b *scepBackend) chainsToAnchors(c *x509.Certificate, intermediates []*x509.Certificate) error {
+	if len(b.anchors) == 0 {
+		return nil
+	}
+	roots, inter := x509.NewCertPool(), x509.NewCertPool()
+	for _, a := range b.anchors {
+		if a.Equal(c) {
+			return nil
+		}
+		roots.AddCert(a)
+	}
+	for _, i := range intermediates {
+		inter.AddCert(i)
+	}
+	_, err := c.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	return err
 }
 
 // encryptionRecipients selects the SCEP request-encryption target(s) from a
@@ -250,6 +280,10 @@ func (b *scepBackend) Issue(ctx context.Context, req issue.IssueRequest) (issue.
 		leaf := respMsg.CertRepMessage.Certificate
 		if leaf == nil {
 			return issue.IssueResult{Status: issue.StatusAmbiguous}, errors.New("broker: SUCCESS reply carried no certificate")
+		}
+		if err := b.chainsToAnchors(leaf, recips); err != nil {
+			// Something was issued, by a CA other than the pinned one.
+			return issue.IssueResult{Status: issue.StatusAmbiguous}, fmt.Errorf("broker: issued certificate is not under the pinned CA chain: %w", err)
 		}
 		return issue.IssueResult{Status: issue.StatusIssued, Leaf: leaf, Serial: leaf.SerialNumber.Text(16)}, nil
 	case scep.PENDING:

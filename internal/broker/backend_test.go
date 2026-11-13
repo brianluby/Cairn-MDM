@@ -188,3 +188,41 @@ func TestBrokerRelayQuarantinesMismatch(t *testing.T) {
 		t.Fatalf("state = %q, want QUARANTINED on leaf-vs-intent mismatch", iss.State)
 	}
 }
+
+// A pinned backend issues when the endpoint's CA is the pinned one and refuses,
+// before sending any request, when it is a different CA.
+func TestBackendPinsCAChain(t *testing.T) {
+	url, backendCA := backendServer(t)
+	_, otherCA := backendServer(t)
+	raCert, raKey := makeRA(t)
+	pol := issue.Policy{LeafValidity: 24 * time.Hour, Backdate: 5 * time.Minute, MaxLeafValidity: 400 * 24 * time.Hour}
+	request := func() issue.IssueRequest {
+		key, err := issue.NewServerKey(issue.KeyRSA2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := issue.ServerKeyedRequest(pol, issue.GrantFacts{Owner: "alice@example.org", CommonName: "alice"}, key, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+
+	pinned, err := broker.New(broker.Config{URL: url, RACert: raCert, RAKey: raKey, Anchors: []*x509.Certificate{backendCA.Certificate()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := pinned.Issue(context.Background(), request())
+	if err != nil || res.Status != issue.StatusIssued || res.Leaf == nil {
+		t.Fatalf("pinned to the right CA: status %v, err %v", res.Status, err)
+	}
+
+	wrong, err := broker.New(broker.Config{URL: url, RACert: raCert, RAKey: raKey, Anchors: []*x509.Certificate{otherCA.Certificate()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = wrong.Issue(context.Background(), request())
+	if err == nil || res.Status != issue.StatusFailedClean || res.Leaf != nil {
+		t.Fatalf("pinned to another CA: status %v, err %v; want a clean refusal", res.Status, err)
+	}
+}
