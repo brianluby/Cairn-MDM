@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
 	"github.com/nickpdawson/cairn-mdm/internal/profile"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
+	"github.com/nickpdawson/cairn-mdm/internal/renew"
 	"github.com/nickpdawson/cairn-mdm/internal/server"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 )
@@ -87,6 +89,9 @@ type pkiResult struct {
 	SCEPURL   string
 	Challenge string
 	Anchors   [][]byte // trust-anchor certs (DER)
+	// RenewalProfile builds the enrollment profile that renews a device's
+	// identity certificate. Nil in the modes where renewal is not built.
+	RenewalProfile func(renew.Target) ([]byte, error)
 }
 
 // resolver carries the verified-owner boundary shared by profile redemption and
@@ -282,12 +287,49 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	deps.CA = caDownloadHandler(anchors)
 	log.Info("external SCEP configured", "scep_url", cfg.CA.External.SCEPURL, "trust_anchors", len(anchors))
 	log.Info("enrollment endpoint ready", "grant_path", "/e/{token}", "open", cfg.Enrollment.AllowOpen)
+	renewalProfile := externalRenewalProfile(ctx, org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, topics, signer)
 	return &pkiResult{
-		Org:       org,
-		SCEPURL:   cfg.CA.External.SCEPURL,
-		Challenge: cfg.CA.External.Challenge,
-		Anchors:   anchors,
+		Org:            org,
+		SCEPURL:        cfg.CA.External.SCEPURL,
+		Challenge:      cfg.CA.External.Challenge,
+		Anchors:        anchors,
+		RenewalProfile: renewalProfile,
 	}, nil
+}
+
+// externalRenewalProfile returns the builder for the profile that renews a
+// device's identity certificate in external mode. A renewal is the enrollment
+// profile pushed over MDM: the device asks the external CA for a new
+// certificate exactly as it did when it enrolled.
+func externalRenewalProfile(ctx context.Context, org string, anchors [][]byte, scepURL, challenge string, topics enroll.TopicProvider, signer *profile.Signer) func(renew.Target) ([]byte, error) {
+	return func(t renew.Target) ([]byte, error) {
+		topic, err := topics.GetSetting(ctx, push.SettingTopic)
+		if err != nil || topic == "" {
+			return nil, errors.New("no APNs push certificate is loaded")
+		}
+		prof, err := profile.BuildEnrollment(profile.EnrollmentParams{
+			Organization:      org,
+			ProfileIdentifier: t.Identifier,
+			DisplayName:       t.DisplayName,
+			OrganizationName:  t.Organization,
+			CAAnchorsDER:      anchors,
+			SCEPURL:           scepURL,
+			SubjectCN:         t.CommonName,
+			OwnerRFC822:       t.OwnerEmail,
+			Challenge:         challenge,
+			MDMServerURL:      t.ServerURL,
+			MDMCheckInURL:     t.ServerURL,
+			Topic:             topic,
+		})
+		if err != nil {
+			return nil, err
+		}
+		body, err := profile.Marshal(prof)
+		if err != nil || signer == nil {
+			return body, err
+		}
+		return profile.Sign(body, *signer)
+	}
 }
 
 // caDownloadHandler serves the trust anchors as a PEM bundle at GET /ca, so a

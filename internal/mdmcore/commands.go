@@ -225,6 +225,19 @@ func (c *Commander) SendInstallProfileAs(ctx context.Context, uuid string, profi
 	return c.enqueue(ctx, []string{id}, cmd)
 }
 
+// SendProfileListAs asks one device which profiles it has installed, under a
+// CommandUUID the caller chose and has already recorded.
+func (c *Commander) SendProfileListAs(ctx context.Context, uuid, id string) error {
+	if uuid == "" {
+		return errors.New("mdmcore: a CommandUUID is required")
+	}
+	cmd, err := commandAs(uuid, map[string]any{"RequestType": "ProfileList"})
+	if err != nil {
+		return err
+	}
+	return c.enqueue(ctx, []string{id}, cmd)
+}
+
 // SendRemoveProfile removes the profile with the given PayloadIdentifier.
 func (c *Commander) SendRemoveProfile(ctx context.Context, identifier string, ids ...string) error {
 	cmd, err := RemoveProfileCommand(identifier)

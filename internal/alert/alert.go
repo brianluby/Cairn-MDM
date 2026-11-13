@@ -80,38 +80,84 @@ type lifecycleSource interface {
 	DeviceCertificates(ctx context.Context) ([]sqlite.DeviceCertificate, error)
 }
 
-// observedSource is the optional store capability behind the conditions for
+// renewalSource is the optional store capability behind the conditions for
 // certificates devices present at check-in. *sqlite.DB satisfies it.
-type observedSource interface {
-	ObservedDeviceCertificates(ctx context.Context) ([]sqlite.ObservedCertificate, error)
+type renewalSource interface {
+	RenewalCandidates(ctx context.Context) ([]sqlite.RenewalCandidate, error)
 }
 
-// identityConditions reports devices whose check-in certificate has expired or
-// expires within 30 days. An expired one locks the device out of management:
-// it can be told nothing, so it has to enroll again by hand. Thirty days leaves
-// time to reach a remote device while it still listens.
-func identityConditions(ctx context.Context, src observedSource, now time.Time) ([]Condition, error) {
-	certs, err := src.ObservedDeviceCertificates(ctx)
+// IdentityPolicy tells the checker how expired identity certificates are
+// treated, so its messages say what will happen to each device.
+type IdentityPolicy struct {
+	// Renewing is true when Cairn renews certificates by itself.
+	Renewing bool
+	// ExpiredGrace is how long past expiry a device may still check in.
+	ExpiredGrace time.Duration
+	// Blocked returns why a device cannot be renewed, or "".
+	Blocked func(sqlite.RenewalCandidate) string
+}
+
+// identityConditions reports devices whose check-in certificate has expired,
+// expires within 30 days, or could not be renewed. A device past expiry and
+// grace is refused at check-in: it can be told nothing, so it has to enroll
+// again by hand. Thirty days leaves time to reach a remote device while it
+// still listens.
+func identityConditions(ctx context.Context, src renewalSource, policy IdentityPolicy, now time.Time) ([]Condition, error) {
+	certs, err := src.RenewalCandidates(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var expiring, expired []string
+	var expiring, grace, refused, failed []string
 	for _, c := range certs {
+		day := c.NotAfter.Format("2006-01-02")
 		switch {
-		case !c.NotAfter.After(now):
-			expired = append(expired, c.DeviceName)
-		case c.NotAfter.Sub(now) < 30*24*time.Hour:
-			expiring = append(expiring, fmt.Sprintf("%s (%s)", c.DeviceName, c.NotAfter.Format("2006-01-02")))
+		case c.NotAfter.After(now):
+			if c.NotAfter.Sub(now) < 30*24*time.Hour {
+				expiring = append(expiring, fmt.Sprintf("%s (%s)", c.DeviceName, day))
+			}
+		case policy.ExpiredGrace > 0 && now.Before(c.NotAfter.Add(policy.ExpiredGrace)):
+			grace = append(grace, fmt.Sprintf("%s (until %s)", c.DeviceName, c.NotAfter.Add(policy.ExpiredGrace).Format("2006-01-02")))
+		default:
+			refused = append(refused, c.DeviceName)
+			continue
+		}
+		if !policy.Renewing {
+			continue
+		}
+		reason := ""
+		if c.Last.State != "renewed" && c.Last.Error != "" {
+			reason = c.Last.Error
+		} else if policy.Blocked != nil && c.NotAfter.Sub(now) < 60*24*time.Hour {
+			reason = policy.Blocked(c)
+		}
+		if reason != "" {
+			failed = append(failed, c.DeviceName+": "+reason)
 		}
 	}
 	var out []Condition
-	if len(expired) > 0 {
-		sort.Strings(expired)
-		out = append(out, Condition{Key: "identity.expired", Title: "Cairn: devices locked out by an expired certificate", Message: "These devices can no longer check in because their identity certificate expired: " + strings.Join(expired, ", ") + ". Each has to remove the management profile and enroll again with a new link.", Priority: "urgent"})
+	if len(refused) > 0 {
+		sort.Strings(refused)
+		out = append(out, Condition{Key: "identity.expired", Title: "Cairn: devices refused for an expired certificate", Message: "These devices can no longer check in because their identity certificate expired: " + strings.Join(refused, ", ") + ". Each has to remove the management profile and enroll again with a new link.", Priority: "urgent"})
+	}
+	if len(grace) > 0 {
+		sort.Strings(grace)
+		next := "Cairn renews each one when it next checks in."
+		if !policy.Renewing {
+			next = "Renewal is off, so enroll each one again before the date shown."
+		}
+		out = append(out, Condition{Key: "identity.grace", Title: "Cairn: devices with an expired certificate", Message: "These devices' identity certificates have expired. Until the date shown they can check in to be renewed and receive nothing else: " + strings.Join(grace, ", ") + ". " + next, Priority: "high"})
 	}
 	if len(expiring) > 0 {
 		sort.Strings(expiring)
-		out = append(out, Condition{Key: "identity.expiring", Title: "Cairn: device certificates expire within 30 days", Message: "Enroll these devices again before the date shown, or they lose management and cannot be reached: " + strings.Join(expiring, ", ") + ".", Priority: "high"})
+		msg := "Enroll these devices again before the date shown, or they lose management and cannot be reached: "
+		if policy.Renewing {
+			msg = "These devices have not been renewed yet and their certificates expire on the date shown: "
+		}
+		out = append(out, Condition{Key: "identity.expiring", Title: "Cairn: device certificates expire within 30 days", Message: msg + strings.Join(expiring, ", ") + ".", Priority: "high"})
+	}
+	if len(failed) > 0 {
+		sort.Strings(failed)
+		out = append(out, Condition{Key: "identity.renewal-failed", Title: "Cairn: device certificate renewal failed", Message: "Renewal did not finish for: " + strings.Join(failed, "; ") + " Open the device's page for the attempts.", Priority: "high"})
 	}
 	return out, nil
 }
@@ -194,7 +240,12 @@ type Checker struct {
 	now      func() time.Time
 	// remindAfter is how long an unresolved condition waits before a reminder.
 	remindAfter time.Duration
+	identity    IdentityPolicy
 }
+
+// SetIdentityPolicy tells the checker how expired identity certificates are
+// treated. Call it before Loop.
+func (c *Checker) SetIdentityPolicy(p IdentityPolicy) { c.identity = p }
 
 // HeartbeatKey is the alert_state row that records the last heartbeat.
 const HeartbeatKey = "heartbeat"
@@ -237,8 +288,8 @@ func (c *Checker) Evaluate(ctx context.Context) ([]Condition, error) {
 	if len(held) > 0 {
 		out = append(out, Condition{Key: "issuance.quarantined", Title: "Cairn: certificate issuances quarantined", Message: fmt.Sprintf("%d certificate issuance(s) are held after an ambiguous CA outcome. Review the Quarantine page.", len(held)), Priority: "high"})
 	}
-	if os, ok := c.store.(observedSource); ok {
-		conds, err := identityConditions(ctx, os, now)
+	if rs, ok := c.store.(renewalSource); ok {
+		conds, err := identityConditions(ctx, rs, c.identity, now)
 		if err != nil {
 			return nil, err
 		}

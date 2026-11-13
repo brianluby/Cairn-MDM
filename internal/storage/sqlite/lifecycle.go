@@ -171,10 +171,15 @@ func (db *DB) ObserveIdentityCertificate(ctx context.Context, cert *x509.Certifi
 	if !accepted {
 		col, bump = "last_refused", 1
 	}
-	_, err := db.sql.ExecContext(ctx, `INSERT INTO device_identity_certs(sha256, subject, issuer, serial, not_after, `+col+`, refusals)
-		SELECT ?,?,?,?,?,datetime('now'),? WHERE EXISTS (SELECT 1 FROM cert_auth WHERE sha256=?)
-		ON CONFLICT(sha256) DO UPDATE SET `+col+`=datetime('now'), refusals=refusals+?`,
-		h, cert.Subject.String(), cert.Issuer.CommonName, cert.SerialNumber.Text(16), cert.NotAfter.UTC().Format(time.RFC3339), bump, h, bump)
+	email := ""
+	if len(cert.EmailAddresses) > 0 {
+		email = cert.EmailAddresses[0]
+	}
+	_, err := db.sql.ExecContext(ctx, `INSERT INTO device_identity_certs(sha256, subject, issuer, serial, not_after, common_name, san_email, `+col+`, refusals)
+		SELECT ?,?,?,?,?,?,?,datetime('now'),? WHERE EXISTS (SELECT 1 FROM cert_auth WHERE sha256=?)
+		ON CONFLICT(sha256) DO UPDATE SET `+col+`=datetime('now'), refusals=refusals+?, common_name=excluded.common_name, san_email=excluded.san_email`,
+		h, cert.Subject.String(), cert.Issuer.CommonName, cert.SerialNumber.Text(16), cert.NotAfter.UTC().Format(time.RFC3339),
+		cert.Subject.CommonName, email, bump, h, bump)
 	return err
 }
 

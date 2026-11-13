@@ -350,6 +350,8 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	identity, _ := a.identityView(r.Context(), d.ID)
+	data["Identity"] = identity
 	if lc, ok := a.devices.(lifecycleSource); ok {
 		attempts, err := lc.DeviceRenewalAttempts(r.Context(), d.ID, 10)
 		if err != nil {

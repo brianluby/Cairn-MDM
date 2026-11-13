@@ -73,6 +73,9 @@ func recordCommandResult(ctx context.Context, executor sqlExecutor, deviceID, co
 		 WHERE command_uuid = ? AND device_id = ? AND status = 'sent'`, deployStatus, commandUUID, deviceID); err != nil {
 		return err
 	}
+	if err = renewalCommandResult(ctx, executor, deviceID, commandUUID, deployStatus, errDesc); err != nil {
+		return err
+	}
 	return vpnCommandResult(ctx, executor, deviceID, commandUUID, deployStatus)
 }
 

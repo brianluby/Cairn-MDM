@@ -79,7 +79,39 @@ type Config struct {
 	RADIUS     RADIUS     `toml:"radius"`
 	Issuance   Issuance   `toml:"issuance"`
 	VPN        VPN        `toml:"vpn"`
+	Renewal    Renewal    `toml:"renewal"`
 	Log        Log        `toml:"log"`
+}
+
+// Renewal controls what happens to the identity certificate a device checks in
+// with as it nears and passes its expiry.
+type Renewal struct {
+	// Enabled makes Cairn push each device its enrollment profile again before
+	// the certificate expires, so the device gets a new one without anyone
+	// touching it. Built for ca.mode external.
+	Enabled bool `toml:"enabled"`
+	// RenewBeforeDays is how long before expiry a renewal starts. Default 60.
+	RenewBeforeDays int `toml:"renew_before_days"`
+	// ExpiredGraceDays lets a device whose certificate expired no longer ago
+	// than this keep checking in, for renewal and nothing else. Default 0: an
+	// expired certificate is refused and the device has to enroll again.
+	ExpiredGraceDays int `toml:"expired_grace_days"`
+	// ServerHosts are further host names (host or host:port) devices check in
+	// through, besides the one in server.public_url. A renewed profile keeps
+	// the name the device already uses, and only names listed here are trusted
+	// for that.
+	ServerHosts []string `toml:"server_hosts"`
+	// ManualOnly starts renewals only from a device's page, never on the
+	// schedule. Use it to try renewal on one device before the rest.
+	ManualOnly bool `toml:"manual_only"`
+}
+
+// WithDefaults fills zero fields.
+func (r Renewal) WithDefaults() Renewal {
+	if r.RenewBeforeDays <= 0 {
+		r.RenewBeforeDays = 60
+	}
+	return r
 }
 
 // VPN turns on per-device OpenVPN profiles: admin-managed server records and
@@ -638,6 +670,20 @@ func (c Config) Validate() error {
 		}
 	default:
 		errs = append(errs, fmt.Errorf("vpn.issuer.backend must be embedded or scep, got %q", is.Backend))
+	}
+	if c.Renewal.RenewBeforeDays < 0 || c.Renewal.RenewBeforeDays > 365 {
+		errs = append(errs, errors.New("renewal.renew_before_days must be between 1 and 365"))
+	}
+	if c.Renewal.ExpiredGraceDays < 0 || c.Renewal.ExpiredGraceDays > 365 {
+		errs = append(errs, errors.New("renewal.expired_grace_days must be between 0 and 365"))
+	}
+	if c.Renewal.Enabled && c.CA.Mode != CAExternal {
+		errs = append(errs, fmt.Errorf("renewal.enabled needs ca.mode external; in mode %q devices are re-enrolled before expiry (see docs/certificate-lifecycle.md)", c.CA.Mode))
+	}
+	for _, h := range c.Renewal.ServerHosts {
+		if u, err := url.Parse("https://" + h); err != nil || u.Host != h || strings.ContainsAny(h, "/ ") {
+			errs = append(errs, fmt.Errorf("renewal.server_hosts entry %q must be a host name, optionally with a port", h))
+		}
 	}
 	if len(c.RADIUS.AcceptancePoints) > 0 && c.RADIUS.IngestToken == "" {
 		errs = append(errs, errors.New("radius.acceptance_points set but no radius.ingest_token_file/_env; rejections could not be ingested"))

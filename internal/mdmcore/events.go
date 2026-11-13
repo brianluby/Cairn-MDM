@@ -70,6 +70,10 @@ type EventService struct {
 	// completes a TokenUpdate — i.e. it just became pushable. The assignment
 	// reconciler hooks here to auto-push assigned profiles on enrollment.
 	onPushable func(id string)
+
+	// onProfileList, if set, receives a device's answer to a ProfileList
+	// command. Renewal reads the enrollment profile's identifier from it.
+	onProfileList func(ctx context.Context, id, commandUUID string, profiles []InstalledProfile)
 }
 
 // NewEventService wraps inner with projection + history side effects. proj and
@@ -153,6 +157,11 @@ func (s *EventService) CommandAndReportResults(r *mdm.Request, m *mdm.CommandRes
 				if perr := s.proj.DeviceInventory(r.Context(), r.ID, inv); perr != nil {
 					s.log.Warn("device projection (inventory) failed", "id", r.ID, "err", perr)
 				}
+			}
+		}
+		if s.onProfileList != nil && m.Status == "Acknowledged" {
+			if profiles, ok := profileListFromRaw(m.Raw); ok {
+				s.onProfileList(r.Context(), r.ID, m.CommandUUID, profiles)
 			}
 		}
 	}

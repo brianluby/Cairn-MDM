@@ -24,6 +24,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/quarantine"
+	"github.com/nickpdawson/cairn-mdm/internal/renew"
 	"github.com/nickpdawson/cairn-mdm/internal/server"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 	"github.com/nickpdawson/cairn-mdm/internal/targeting"
@@ -62,7 +63,9 @@ func runServe(ctx context.Context, args []string) error {
 	// the device-inventory projector — enrollments update the inventory as they
 	// happen (no polling).
 	nanoStore := db.NanoStorage(log)
-	core := mdmcore.New(nanoStore, mdmcore.NewLogAdapter(log), db, db, log)
+	renewalCfg := cfg.Renewal.WithDefaults()
+	expiredGrace := time.Duration(renewalCfg.ExpiredGraceDays) * 24 * time.Hour
+	core := mdmcore.New(nanoStore, mdmcore.NewLogAdapter(log), db, db, log, mdmcore.Options{ExpiredGrace: expiredGrace})
 	// Remember the certificate each device checks in with, so its expiry is
 	// known whichever CA issued it.
 	core.OnIdentity(func(cert *x509.Certificate, accepted bool) {
@@ -105,6 +108,51 @@ func runServe(ctx context.Context, args []string) error {
 	}()
 	defer func() { stopNotifications(); <-notificationDone }()
 	commander := mdmcore.NewCommander(nanoStore, pusher).WithRecorder(db, log)
+
+	// Identity certificate renewal: push each device its enrollment profile
+	// again before the certificate it checks in with expires.
+	var renewals *renew.Service
+	switch {
+	case !renewalCfg.Enabled:
+		log.Info("device certificate renewal is off", "expired_grace_days", renewalCfg.ExpiredGraceDays)
+	case pki.RenewalProfile == nil:
+		return fmt.Errorf("renewal.enabled is not available in ca.mode %s", cfg.CA.Mode)
+	default:
+		var anchors []*x509.Certificate
+		for _, der := range pki.Anchors {
+			c, err := x509.ParseCertificate(der)
+			if err != nil {
+				return fmt.Errorf("renewal: parse CA chain: %w", err)
+			}
+			anchors = append(anchors, c)
+		}
+		renewals, err = renew.New(db, commander, renew.Options{
+			RenewBefore:  time.Duration(renewalCfg.RenewBeforeDays) * 24 * time.Hour,
+			ExpiredGrace: expiredGrace,
+			ServerURL:    cfg.Server.PublicURL + cfg.Server.MDMPath,
+			Hosts:        renewalCfg.ServerHosts,
+			Anchors:      anchors,
+			Profile:      pki.RenewalProfile,
+			ManualOnly:   renewalCfg.ManualOnly,
+		}, log)
+		if err != nil {
+			return err
+		}
+		core.OnLifecycle(renewals)
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				renewals.Sweep(ctx)
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+		log.Info("device certificate renewal enabled", "renew_before_days", renewalCfg.RenewBeforeDays, "expired_grace_days", renewalCfg.ExpiredGraceDays, "extra_hosts", len(renewalCfg.ServerHosts), "manual_only", renewalCfg.ManualOnly)
+	}
 
 	// Login abuse controls (MDM-AUTH-001): session idle timeout + absolute cap
 	// come from the login policy; a bare [auth.login] table still yields working
@@ -195,6 +243,11 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	console.SetMFA(mfa)
+	if renewals != nil {
+		console.SetIdentityPolicy(expiredGrace, renewals, !renewalCfg.ManualOnly)
+	} else {
+		console.SetIdentityPolicy(expiredGrace, nil, false)
+	}
 	if cfg.VPN.Enabled {
 		vpnKey, err := keyfile.Open(cfg.Storage.Path+".vpn", "VPN", func() (bool, error) {
 			n, err := db.CountSealedVPNKeys(ctx)
@@ -284,7 +337,14 @@ func runServe(ctx context.Context, args []string) error {
 	} else {
 		log.Warn("alerts.webhook_url not set: expiry, quarantine and backup alerts stay on the dashboard only")
 	}
-	go alert.New(db, notifier, cfg.Alerts, log).Loop(ctx, time.Hour)
+	checker := alert.New(db, notifier, cfg.Alerts, log)
+	identityPolicy := alert.IdentityPolicy{ExpiredGrace: expiredGrace}
+	if renewals != nil {
+		identityPolicy.Renewing = !renewalCfg.ManualOnly
+		identityPolicy.Blocked = func(c sqlite.RenewalCandidate) string { return renewals.Status(c).Blocked }
+	}
+	checker.SetIdentityPolicy(identityPolicy)
+	go checker.Loop(ctx, time.Hour)
 
 	srv := server.New(cfg, log, db, deps)
 	httpSrv := &http.Server{

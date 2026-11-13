@@ -25,6 +25,14 @@ type EnrollmentParams struct {
 	Organization string // PayloadOrganization + reverse-DNS identifier root, e.g. "cairn.example.com"
 	DisplayName  string // top-level profile display name
 
+	// ProfileIdentifier overrides the top-level PayloadIdentifier. A device
+	// replaces an installed profile only with one that carries the same
+	// identifier, so renewing an enrollment made by another server has to
+	// reuse that server's.
+	ProfileIdentifier string
+	// OrganizationName overrides the PayloadOrganization shown on the device.
+	OrganizationName string
+
 	CAAnchorsDER [][]byte // CA certificate(s) (DER) to install as trust anchors
 
 	SCEPURL   string // SCEP endpoint, e.g. https://mdm.example.com/scep
@@ -105,13 +113,21 @@ func BuildEnrollment(p EnrollmentParams) (map[string]any, error) {
 
 	payloads = append(payloads, scep, mdm)
 
+	identifier := p.ProfileIdentifier
+	if identifier == "" {
+		identifier = id("enroll")
+	}
+	organization := p.OrganizationName
+	if organization == "" {
+		organization = p.Organization
+	}
 	return map[string]any{
 		"PayloadType":         "Configuration",
 		"PayloadVersion":      1,
-		"PayloadIdentifier":   id("enroll"),
+		"PayloadIdentifier":   identifier,
 		"PayloadUUID":         newUUID(),
 		"PayloadDisplayName":  display,
-		"PayloadOrganization": p.Organization,
+		"PayloadOrganization": organization,
 		"PayloadContent":      payloads,
 	}, nil
 }

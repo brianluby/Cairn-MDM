@@ -118,6 +118,9 @@ func (s *nanoStore) EnqueueNotifiedCommand(ctx context.Context, ids []string, cm
 // All linked-list reads and writes use one SQL snapshot/transaction. This also
 // serializes reports with enqueues from another console/CLI connection.
 func (s *nanoStore) RetrieveNextCommand(r *mdm.Request, skipNotNow bool) (*mdm.Command, error) {
+	if only, limited := mdmcore.CommandLimit(r.Context()); limited {
+		return s.retrieveOnly(r, only, skipNotNow)
+	}
 	tx, err := s.db.sql.BeginTx(r.Context(), nil)
 	if err != nil {
 		return nil, err
@@ -128,6 +131,40 @@ func (s *nanoStore) RetrieveNextCommand(r *mdm.Request, skipNotNow bool) (*mdm.C
 		return nil, err
 	}
 	return cmd, tx.Commit()
+}
+
+// retrieveOnly returns the one named command if it is still waiting for this
+// device, and nothing otherwise. A device limited to renewal is given its
+// renewal command even when other commands were queued ahead of it; those stay
+// queued for when it is back in good standing.
+func (s *nanoStore) retrieveOnly(r *mdm.Request, commandUUID string, skipNotNow bool) (*mdm.Command, error) {
+	if commandUUID == "" {
+		return nil, nil
+	}
+	var status string
+	err := s.db.sql.QueryRowContext(r.Context(), `SELECT status FROM command_history WHERE command_uuid=? AND device_id=?`, commandUUID, r.ID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status != "Queued" && status != "Sent" && (status != "NotNow" || skipNotNow) {
+		return nil, nil
+	}
+	var raw, requestType []byte
+	if err = s.db.sql.QueryRowContext(r.Context(), `SELECT v FROM nano_kv WHERE bucket='queue' AND k=?`, commandUUID+".raw").Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err = s.db.sql.QueryRowContext(r.Context(), `SELECT v FROM nano_kv WHERE bucket='queue' AND k=?`, commandUUID+".req_type").Scan(&requestType); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	cmd := &mdm.Command{CommandUUID: commandUUID, Raw: raw}
+	cmd.Command.RequestType = string(requestType)
+	return cmd, nil
 }
 func (s *nanoStore) StoreCommandReport(r *mdm.Request, report *mdm.CommandResults) error {
 	tx, err := s.db.sql.BeginTx(r.Context(), nil)

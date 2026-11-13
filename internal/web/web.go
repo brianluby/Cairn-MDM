@@ -249,14 +249,18 @@ type App struct {
 	vpnIssuer        VPNIssuer          // may be nil (no CA or directory for VPN certificates)
 	vpnIdentities    VPNIdentityStore   // may be nil with vpnIssuer
 	vpnIssuerMissing string             // why vpnIssuer is nil, for the console
-	cmd              Commander
-	rec              Reconciler   // may be nil (no auto-push)
-	oidc             OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
-	users            UserAdmin    // may be nil (user management disabled); set via SetUsers
-	cfg              Config
-	trusted          []*net.IPNet // parsed cfg.TrustedProxies; nil = trust no proxy
-	tmpl             *template.Template
-	log              *slog.Logger
+
+	identityGrace     time.Duration // how long an expired identity certificate may still check in
+	renewals          Renewals      // may be nil (renewal off)
+	renewalsAutomatic bool
+	cmd               Commander
+	rec               Reconciler   // may be nil (no auto-push)
+	oidc              OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
+	users             UserAdmin    // may be nil (user management disabled); set via SetUsers
+	cfg               Config
+	trusted           []*net.IPNet // parsed cfg.TrustedProxies; nil = trust no proxy
+	tmpl              *template.Template
+	log               *slog.Logger
 }
 
 // New builds the console. rec may be nil to disable assignment auto-push.
@@ -328,6 +332,7 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("GET /admin/activity", a.requireRole(auth.RoleOperator, a.handleActivity))
 	mux.Handle("GET /admin/devices", a.requireRole(auth.RoleOperator, a.handleDevices))
 	mux.Handle("GET /admin/devices/{id}", a.requireRole(auth.RoleOperator, a.handleDeviceDetail))
+	mux.Handle("POST /admin/devices/{id}/renew", a.audited(a.requireRole(auth.RoleAdmin, a.handleDeviceRenew)))
 	mux.Handle("POST /admin/devices/{id}/refresh", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceRefresh)))
 	mux.Handle("POST /admin/devices/{id}/install", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceInstall)))
 	mux.Handle("POST /admin/devices/{id}/remove", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceRemove)))
