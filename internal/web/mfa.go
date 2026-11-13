@@ -14,6 +14,15 @@ func (a *App) renderMFA(w http.ResponseWriter, r *http.Request, data map[string]
 	w.Header().Set("Referrer-Policy", "strict-origin")
 	data["Title"] = "Account security"
 	data["Available"] = a.mfa != nil
+	if s := sessionFrom(r); a.mfa != nil && s != nil {
+		st := a.mfa.Status(r.Context(), s.Token)
+		data["Registered"] = st.Registered
+		// Keep the QR on screen after a mistyped code or a reload.
+		if data["Setup"] == nil && st.Pending != nil && data["Codes"] == nil {
+			data["Setup"] = *st.Pending
+			data["QR"] = qrDataURI(st.Pending.URI)
+		}
+	}
 	status := http.StatusOK
 	if data["Error"] != nil {
 		status = http.StatusBadRequest
@@ -90,7 +99,28 @@ func (a *App) handleMFAAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		data["Error"] = "Request not accepted. Check the account, approval or authenticator code and its expiry. After five failed attempts, wait 15 minutes. Existing MFA requires a recovery code or administrator reset."
+		who := sessionFrom(r).Identity.Username
+		registered := a.mfa.Status(r.Context(), token).Registered
+		var msg string
+		switch r.PathValue("action") {
+		case "begin":
+			msg = "Approval code not accepted. A code works once, for 15 minutes, and only for the account it was created for. You are signed in as " + who + "."
+			if registered {
+				msg = "This account already has an authenticator. To replace it, use a recovery code or ask an administrator to reset it."
+			}
+		case "confirm":
+			msg = "That code did not match. Enter the current 6-digit code from the Cairn entry you just added to your authenticator app. If setup has expired, ask for a new approval code."
+		case "verify":
+			msg = "That code did not match. Enter the current 6-digit code for " + who + "."
+			if !registered {
+				msg = "This account has no authenticator yet, so there is nothing to verify. Register one below."
+			}
+		case "recover":
+			msg = "Recovery code not accepted."
+		default:
+			msg = "Approval not created. Verify your own code first, then check the account name."
+		}
+		data["Error"] = msg + " After five failed attempts, wait 15 minutes."
 	}
 	a.renderMFA(w, r, data)
 }

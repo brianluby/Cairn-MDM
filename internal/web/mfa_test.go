@@ -63,6 +63,20 @@ func TestMFABrowserRegistrationAndAuthorization(t *testing.T) {
 	if len(match) != 2 {
 		t.Fatal("setup key not rendered", rr.Body.String())
 	}
+	// The page shows one step at a time. Before a factor exists there is no
+	// Verify form to mistake for the setup confirmation, and a code sent to
+	// /verify anyway gets a reason and leaves the QR on screen.
+	if body := rr.Body.String(); strings.Contains(body, "Verify your second factor") || !strings.Contains(body, "Finish setup") {
+		t.Fatal("setup step shows the wrong forms")
+	}
+	wrong := post("verify", url.Values{"csrf": {session.CSRF}, "code": {"000000"}})
+	if body := wrong.Body.String(); wrong.Code != 400 || !strings.Contains(body, "no authenticator yet") || !strings.Contains(body, match[1]) {
+		t.Fatalf("verify before registration: %d, reason or pending setup missing", wrong.Code)
+	}
+	reused := post("begin", url.Values{"csrf": {session.CSRF}, "invitation": {invite}})
+	if body := reused.Body.String(); reused.Code != 400 || !strings.Contains(body, "signed in as admin") || !strings.Contains(body, match[1]) {
+		t.Fatalf("reused approval code: %d, reason or pending setup missing", reused.Code)
+	}
 	secret, _ := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(match[1])
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], uint64(time.Now().Unix()/30))

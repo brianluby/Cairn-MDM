@@ -29,6 +29,12 @@ security, enter the approval code and add the displayed QR or setup key to
 your authenticator. Confirm a generated code within 10 minutes. Save the ten
 recovery codes shown once after confirmation.
 
+Account security shows one step at a time: the approval code, then the QR
+code with its confirmation box, then the recovery codes. The form for
+verifying an existing authenticator appears only once one is registered. An
+approval code works only while signed in as the account it was created for;
+`admin` (local) and an AD account named `administrator` are different accounts.
+
 The first confirmed factor permanently closes initial bootstrap. Reissuing
 initial approval before confirmation invalidates earlier pending setup. There
 is no anonymous web registration or password-only factor replacement.

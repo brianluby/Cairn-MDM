@@ -308,18 +308,65 @@ func (m *MFAStore) Begin(ctx context.Context, token, invite string) (out MFASetu
 		if e != nil {
 			return e
 		}
-		out.Secret = base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)
-		q := url.Values{"secret": {out.Secret}, "issuer": {"Cairn"}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
-		var username, provider string
-		if e = tx.QueryRowContext(ctx, `SELECT username,provider FROM app_sessions WHERE token=?`, hashToken(token)).Scan(&username, &provider); e != nil {
+		if out, e = setupFor(ctx, tx, token, raw); e != nil {
 			return e
 		}
-		out.URI = "otpauth://totp/" + url.PathEscape("Cairn:"+provider+":"+username) + "?" + q.Encode()
 		return auditMFA(ctx, tx, p, p, "mfa.setup-start")
 	})
 	if err != nil {
 		out = MFASetup{}
 	}
+	return
+}
+
+// setupFor builds what the authenticator app needs for a pending secret.
+func setupFor(ctx context.Context, tx *sql.Tx, token string, raw []byte) (MFASetup, error) {
+	out := MFASetup{Secret: base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)}
+	q := url.Values{"secret": {out.Secret}, "issuer": {"Cairn"}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
+	var username, provider string
+	if e := tx.QueryRowContext(ctx, `SELECT username,provider FROM app_sessions WHERE token=?`, hashToken(token)).Scan(&username, &provider); e != nil {
+		return MFASetup{}, e
+	}
+	out.URI = "otpauth://totp/" + url.PathEscape("Cairn:"+provider+":"+username) + "?" + q.Encode()
+	return out, nil
+}
+
+// MFAStatus is where the signed-in account stands, so the page can show the
+// one step that applies instead of every form at once.
+type MFAStatus struct {
+	Registered bool      // a confirmed authenticator exists
+	Pending    *MFASetup // setup started in this session and not yet confirmed
+}
+
+// Status reports the session's registration state. A pending setup is returned
+// only to the session that started it, as Begin already showed it there.
+func (m *MFAStore) Status(ctx context.Context, token string) (st MFAStatus) {
+	if m.checked(ctx, token) != nil {
+		return
+	}
+	_ = m.transaction(ctx, func(tx *sql.Tx) error {
+		p, e := m.session(ctx, tx, token, false)
+		if e != nil {
+			return e
+		}
+		var n int
+		if e = tx.QueryRowContext(ctx, `SELECT count(*) FROM mfa_factors WHERE principal=?`, p).Scan(&n); e != nil {
+			return e
+		}
+		st.Registered = n == 1
+		var enc []byte
+		if tx.QueryRowContext(ctx, `SELECT secret FROM mfa_setups WHERE principal=? AND session_hash=? AND expires_at>?`, p, hashToken(token), m.now().Unix()).Scan(&enc) != nil {
+			return nil
+		}
+		raw, e := m.decrypt(p, enc)
+		if e != nil {
+			return nil
+		}
+		if setup, e := setupFor(ctx, tx, token, raw); e == nil {
+			st.Pending = &setup
+		}
+		return nil
+	})
 	return
 }
 

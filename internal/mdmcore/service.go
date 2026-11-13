@@ -6,8 +6,11 @@
 package mdmcore
 
 import (
+	"crypto/x509"
+	"encoding/base64"
 	"log/slog"
 	"net/http"
+	"time"
 
 	nlog "github.com/micromdm/nanolib/log"
 	"github.com/micromdm/nanomdm/cryptoutil"
@@ -16,6 +19,7 @@ import (
 	"github.com/micromdm/nanomdm/service/certauth"
 	"github.com/micromdm/nanomdm/service/nanomdm"
 	"github.com/micromdm/nanomdm/storage"
+	"github.com/smallstep/pkcs7"
 )
 
 // Core holds the assembled MDM service and its HTTP handler.
@@ -50,12 +54,32 @@ func New(store storage.AllStorage, logger nlog.Logger, proj DeviceProjector, rec
 	svc = certauth.New(svc, store, certauth.WithLogger(logger.With("service", "certauth")))
 
 	h := httpmdm.CheckinAndCommandHandler(svc, logger.With("handler", "mdm"))
-	h = httpmdm.CertExtractMdmSignatureMiddleware(
-		h,
-		httpmdm.MdmSignatureVerifierFunc(cryptoutil.VerifyMdmSignature),
-	)
+	h = httpmdm.CertExtractMdmSignatureMiddleware(h, signatureVerifier(slog))
 
 	return &Core{store: store, handler: h, events: events}
+}
+
+// signatureVerifier checks the Mdm-Signature on a check-in and says why when it
+// refuses one. The usual reason is a device identity certificate that has
+// expired: the device can no longer check in, so it cannot renew either, and
+// without this line the only trace is an HTTP 400.
+func signatureVerifier(log *slog.Logger) httpmdm.MdmSignatureVerifierFunc {
+	return func(header string, body []byte) (*x509.Certificate, error) {
+		cert, err := cryptoutil.VerifyMdmSignature(header, body)
+		if err == nil || log == nil {
+			return cert, err
+		}
+		attrs := []any{"err", err}
+		if sig, e := base64.StdEncoding.DecodeString(header); e == nil {
+			if p7, e := pkcs7.Parse(sig); e == nil && len(p7.Certificates) > 0 {
+				c := p7.Certificates[0]
+				attrs = append(attrs, "certificate", c.Subject.CommonName, "serial", c.SerialNumber.Text(16),
+					"expired", time.Now().After(c.NotAfter), "not_after", c.NotAfter.UTC().Format(time.RFC3339))
+			}
+		}
+		log.Warn("device check-in refused: signature not accepted; an expired identity certificate means the device must enroll again", attrs...)
+		return cert, err
+	}
 }
 
 // OnPushable registers a hook called whenever a device completes a TokenUpdate
