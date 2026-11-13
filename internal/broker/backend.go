@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	kitlog "github.com/go-kit/kit/log"
 	scepclient "github.com/micromdm/scep/v2/client"
@@ -264,7 +265,7 @@ func (b *scepBackend) Issue(ctx context.Context, req issue.IssueRequest) (issue.
 	// Dispatch. From here a lost/garbled reply is AMBIGUOUS (the CA may have signed).
 	respBytes, err := b.client.PKIOperation(ctx, rawReq)
 	if err != nil {
-		return issue.IssueResult{Status: issue.StatusAmbiguous}, fmt.Errorf("broker: PKIOperation: %w", err)
+		return issue.IssueResult{Status: issue.StatusAmbiguous}, fmt.Errorf("broker: PKIOperation: %s", printable(err.Error()))
 	}
 	respMsg, err := scep.ParsePKIMessage(respBytes, scep.WithCACerts(recips))
 	if err != nil {
@@ -293,6 +294,20 @@ func (b *scepBackend) Issue(ctx context.Context, req issue.IssueRequest) (issue.
 	default:
 		return issue.IssueResult{Status: issue.StatusAmbiguous}, fmt.Errorf("broker: unknown pkiStatus %q", respMsg.PKIStatus)
 	}
+}
+
+// printable keeps the readable start of a transport error. Some SCEP servers
+// answer a refusal with HTTP 400 and a binary PKI message as the body, which the
+// client library appends to its error text.
+func printable(msg string) string {
+	var b strings.Builder
+	for _, r := range msg {
+		if r < 0x20 || r > 0x7e || b.Len() >= 300 {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // Reconcile is not yet implemented (SCEP CertPoll). A quarantined attempt is resolved
