@@ -80,6 +80,42 @@ type lifecycleSource interface {
 	DeviceCertificates(ctx context.Context) ([]sqlite.DeviceCertificate, error)
 }
 
+// observedSource is the optional store capability behind the conditions for
+// certificates devices present at check-in. *sqlite.DB satisfies it.
+type observedSource interface {
+	ObservedDeviceCertificates(ctx context.Context) ([]sqlite.ObservedCertificate, error)
+}
+
+// identityConditions reports devices whose check-in certificate has expired or
+// expires within 30 days. An expired one locks the device out of management:
+// it can be told nothing, so it has to enroll again by hand. Thirty days leaves
+// time to reach a remote device while it still listens.
+func identityConditions(ctx context.Context, src observedSource, now time.Time) ([]Condition, error) {
+	certs, err := src.ObservedDeviceCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var expiring, expired []string
+	for _, c := range certs {
+		switch {
+		case !c.NotAfter.After(now):
+			expired = append(expired, c.DeviceName)
+		case c.NotAfter.Sub(now) < 30*24*time.Hour:
+			expiring = append(expiring, fmt.Sprintf("%s (%s)", c.DeviceName, c.NotAfter.Format("2006-01-02")))
+		}
+	}
+	var out []Condition
+	if len(expired) > 0 {
+		sort.Strings(expired)
+		out = append(out, Condition{Key: "identity.expired", Title: "Cairn: devices locked out by an expired certificate", Message: "These devices can no longer check in because their identity certificate expired: " + strings.Join(expired, ", ") + ". Each has to remove the management profile and enroll again with a new link.", Priority: "urgent"})
+	}
+	if len(expiring) > 0 {
+		sort.Strings(expiring)
+		out = append(out, Condition{Key: "identity.expiring", Title: "Cairn: device certificates expire within 30 days", Message: "Enroll these devices again before the date shown, or they lose management and cannot be reached: " + strings.Join(expiring, ", ") + ".", Priority: "high"})
+	}
+	return out, nil
+}
+
 // vpnSource is the optional store capability behind the VPN certificate
 // conditions. *sqlite.DB satisfies it.
 type vpnSource interface {
@@ -200,6 +236,13 @@ func (c *Checker) Evaluate(ctx context.Context) ([]Condition, error) {
 	}
 	if len(held) > 0 {
 		out = append(out, Condition{Key: "issuance.quarantined", Title: "Cairn: certificate issuances quarantined", Message: fmt.Sprintf("%d certificate issuance(s) are held after an ambiguous CA outcome. Review the Quarantine page.", len(held)), Priority: "high"})
+	}
+	if os, ok := c.store.(observedSource); ok {
+		conds, err := identityConditions(ctx, os, now)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, conds...)
 	}
 	if vs, ok := c.store.(vpnSource); ok {
 		conds, err := vpnConditions(ctx, vs, now)

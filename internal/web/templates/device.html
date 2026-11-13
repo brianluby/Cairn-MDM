@@ -60,6 +60,13 @@
     {{end}}
 
     <h2>Identity certificate</h2>
+    {{with .Presented}}
+    <div class="card{{if $.PresentedExpired}} callout error{{end}}">
+      <p style="margin:12px 16px">{{if $.PresentedExpired}}<span class="dot off"></span> <strong>Expired {{.NotAfter.Format "2006-01-02"}}.</strong> Cairn refuses this device's check-ins, so no command or profile reaches it. Remove the management profile on the device and enroll it again with a new link.
+        {{else}}<span class="dot on"></span> The certificate this device checks in with expires <strong>{{.NotAfter.Format "2006-01-02"}}</strong> ({{$.PresentedDays}} days). Enroll the device again before then; after that date it cannot be reached.{{end}}</p>
+      <p class="sub" style="margin:0 16px 12px">Serial <span class="mono">{{.Serial}}</span>, issued by {{.Issuer}}.{{if .LastAccepted}} Last accepted check-in {{.LastAccepted}} UTC.{{end}}{{if .LastRefused}} Last refused {{.LastRefused}} UTC ({{.Refusals}} refused).{{end}}</p>
+    </div>
+    {{end}}
     <div class="card">
       {{if .Certificates}}
       <table>

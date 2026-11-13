@@ -140,7 +140,7 @@ func alertAction(key string) string {
 		return "/admin/apns"
 	case strings.HasPrefix(key, "backup."):
 		return "/admin/settings"
-	case strings.HasPrefix(key, "device-cert."), key == "renewal.refused":
+	case strings.HasPrefix(key, "device-cert."), strings.HasPrefix(key, "identity."), key == "renewal.refused":
 		return "/admin/devices"
 	case key == "issuance.quarantined":
 		return "/admin/quarantine"

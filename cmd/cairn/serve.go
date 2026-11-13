@@ -63,6 +63,13 @@ func runServe(ctx context.Context, args []string) error {
 	// happen (no polling).
 	nanoStore := db.NanoStorage(log)
 	core := mdmcore.New(nanoStore, mdmcore.NewLogAdapter(log), db, db, log)
+	// Remember the certificate each device checks in with, so its expiry is
+	// known whichever CA issued it.
+	core.OnIdentity(func(cert *x509.Certificate, accepted bool) {
+		if err := db.ObserveIdentityCertificate(ctx, cert, accepted); err != nil {
+			log.Warn("record device identity certificate", "err", err)
+		}
+	})
 	log.Info("mdm service ready", "path", cfg.Server.MDMPath)
 
 	deps := server.Deps{MDM: core.Handler()}

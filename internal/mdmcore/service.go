@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	nlog "github.com/micromdm/nanolib/log"
@@ -27,7 +28,16 @@ type Core struct {
 	store   storage.AllStorage
 	handler http.Handler
 	events  *EventService // nil when no projector/recorder configured
+	// identity is told about the certificate on every signed check-in.
+	identity atomic.Pointer[IdentityObserver]
 }
+
+// IdentityObserver receives the identity certificate presented on a check-in
+// and whether its signature was accepted.
+type IdentityObserver func(cert *x509.Certificate, accepted bool)
+
+// OnIdentity registers the observer for check-in certificates.
+func (c *Core) OnIdentity(fn IdentityObserver) { c.identity.Store(&fn) }
 
 // New assembles the NanoMDM service chain:
 //
@@ -54,30 +64,39 @@ func New(store storage.AllStorage, logger nlog.Logger, proj DeviceProjector, rec
 	svc = certauth.New(svc, store, certauth.WithLogger(logger.With("service", "certauth")))
 
 	h := httpmdm.CheckinAndCommandHandler(svc, logger.With("handler", "mdm"))
-	h = httpmdm.CertExtractMdmSignatureMiddleware(h, signatureVerifier(slog))
-
-	return &Core{store: store, handler: h, events: events}
+	c := &Core{store: store, events: events}
+	observe := func(cert *x509.Certificate, accepted bool) {
+		if fn := c.identity.Load(); fn != nil && cert != nil {
+			(*fn)(cert, accepted)
+		}
+	}
+	c.handler = httpmdm.CertExtractMdmSignatureMiddleware(h, signatureVerifier(slog, observe))
+	return c
 }
 
 // signatureVerifier checks the Mdm-Signature on a check-in and says why when it
 // refuses one. The usual reason is a device identity certificate that has
 // expired: the device can no longer check in, so it cannot renew either, and
 // without this line the only trace is an HTTP 400.
-func signatureVerifier(log *slog.Logger) httpmdm.MdmSignatureVerifierFunc {
+func signatureVerifier(log *slog.Logger, observe IdentityObserver) httpmdm.MdmSignatureVerifierFunc {
 	return func(header string, body []byte) (*x509.Certificate, error) {
 		cert, err := cryptoutil.VerifyMdmSignature(header, body)
-		if err == nil || log == nil {
-			return cert, err
+		if err == nil {
+			observe(cert, true)
+			return cert, nil
 		}
 		attrs := []any{"err", err}
 		if sig, e := base64.StdEncoding.DecodeString(header); e == nil {
 			if p7, e := pkcs7.Parse(sig); e == nil && len(p7.Certificates) > 0 {
 				c := p7.Certificates[0]
+				observe(c, false)
 				attrs = append(attrs, "certificate", c.Subject.CommonName, "serial", c.SerialNumber.Text(16),
 					"expired", time.Now().After(c.NotAfter), "not_after", c.NotAfter.UTC().Format(time.RFC3339))
 			}
 		}
-		log.Warn("device check-in refused: signature not accepted; an expired identity certificate means the device must enroll again", attrs...)
+		if log != nil {
+			log.Warn("device check-in refused: signature not accepted; an expired identity certificate means the device must enroll again", attrs...)
+		}
 		return cert, err
 	}
 }

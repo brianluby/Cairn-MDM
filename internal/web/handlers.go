@@ -335,6 +335,21 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 		"Flash":            r.URL.Query().Get("flash"),
 		"DirectoryRefresh": a.targeting != nil,
 	}
+	if oc, ok := a.devices.(interface {
+		ObservedDeviceCertificates(context.Context) ([]sqlite.ObservedCertificate, error)
+	}); ok {
+		observed, err := oc.ObservedDeviceCertificates(r.Context())
+		if err != nil {
+			a.log.Error("observed device certificates", "id", d.ID, "err", err)
+		}
+		for _, c := range observed {
+			if c.DeviceID == d.ID {
+				data["Presented"] = c
+				data["PresentedExpired"] = !c.NotAfter.After(time.Now())
+				data["PresentedDays"] = int(time.Until(c.NotAfter).Hours() / 24)
+			}
+		}
+	}
 	if lc, ok := a.devices.(lifecycleSource); ok {
 		attempts, err := lc.DeviceRenewalAttempts(r.Context(), d.ID, 10)
 		if err != nil {

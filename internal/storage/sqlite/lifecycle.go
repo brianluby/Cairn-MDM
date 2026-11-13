@@ -143,3 +143,69 @@ func (db *DB) DeviceCertificates(ctx context.Context) ([]DeviceCertificate, erro
 	}
 	return out, nil
 }
+
+// ObservedCertificate is the identity certificate a device last presented at
+// check-in, from any CA.
+type ObservedCertificate struct {
+	DeviceID     string
+	DeviceName   string
+	Serial       string
+	Issuer       string
+	NotAfter     time.Time
+	LastAccepted string
+	LastRefused  string
+	Refusals     int
+}
+
+// ObserveIdentityCertificate records the certificate presented on a check-in
+// and whether its signature was accepted. Certificates not associated with an
+// enrollment are ignored: the check-in endpoint is reachable without
+// authentication and must not be a way to add rows.
+func (db *DB) ObserveIdentityCertificate(ctx context.Context, cert *x509.Certificate, accepted bool) error {
+	if cert == nil {
+		return nil
+	}
+	sum := sha256.Sum256(cert.Raw)
+	h := hex.EncodeToString(sum[:])
+	col, bump := "last_accepted", 0
+	if !accepted {
+		col, bump = "last_refused", 1
+	}
+	_, err := db.sql.ExecContext(ctx, `INSERT INTO device_identity_certs(sha256, subject, issuer, serial, not_after, `+col+`, refusals)
+		SELECT ?,?,?,?,?,datetime('now'),? WHERE EXISTS (SELECT 1 FROM cert_auth WHERE sha256=?)
+		ON CONFLICT(sha256) DO UPDATE SET `+col+`=datetime('now'), refusals=refusals+?`,
+		h, cert.Subject.String(), cert.Issuer.CommonName, cert.SerialNumber.Text(16), cert.NotAfter.UTC().Format(time.RFC3339), bump, h, bump)
+	return err
+}
+
+// ObservedDeviceCertificates returns, for each enrolled device that has
+// presented a certificate, the one it presented most recently.
+func (db *DB) ObservedDeviceCertificates(ctx context.Context) ([]ObservedCertificate, error) {
+	rows, err := db.sql.QueryContext(ctx, `SELECT d.id, COALESCE(NULLIF(d.name,''), NULLIF(d.serial,''), d.id),
+			c.serial, c.issuer, c.not_after, COALESCE(c.last_accepted,''), COALESCE(c.last_refused,''), c.refusals
+		FROM device_identity_certs c
+		JOIN cert_auth ca ON ca.sha256 = c.sha256
+		JOIN devices d ON d.id = ca.enrollment_id
+		WHERE d.checked_out_at IS NULL
+		ORDER BY d.id, MAX(COALESCE(c.last_accepted,''), COALESCE(c.last_refused,'')) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ObservedCertificate
+	seen := map[string]bool{}
+	for rows.Next() {
+		var o ObservedCertificate
+		var notAfter string
+		if err := rows.Scan(&o.DeviceID, &o.DeviceName, &o.Serial, &o.Issuer, &notAfter, &o.LastAccepted, &o.LastRefused, &o.Refusals); err != nil {
+			return nil, err
+		}
+		if seen[o.DeviceID] {
+			continue
+		}
+		seen[o.DeviceID] = true
+		o.NotAfter, _ = time.Parse(time.RFC3339, notAfter)
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}

@@ -25,6 +25,13 @@ it.
   is issued.
 - The console and the alert checker list device certificates that expire within
   14 days or have expired while still associated with an enrolled device.
+- Whichever CA issued it, Cairn records the certificate each device presents
+  at check-in. The device page shows its expiry, and alerts fire 30 days before
+  it and after it. A device whose certificate has expired is refused at
+  check-in; the refusal is logged with the certificate name and counted on the
+  device page. Such a device cannot be told anything, so it has to remove the
+  management profile and enroll again. Apple devices do not renew this
+  certificate themselves.
 - Revocation exists (per-serial, keyCompromise/superseded, served through the
   CRL) and is exercised by the quarantine release flow.
 
