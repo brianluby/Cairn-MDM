@@ -88,7 +88,15 @@ func signatureVerifier(log *slog.Logger, observe IdentityObserver) httpmdm.MdmSi
 		attrs := []any{"err", err}
 		if sig, e := base64.StdEncoding.DecodeString(header); e == nil {
 			if p7, e := pkcs7.Parse(sig); e == nil && len(p7.Certificates) > 0 {
+				// The signature carries the device certificate and often its CA
+				// chain, in no fixed order. The device's is the one that is not a CA.
 				c := p7.Certificates[0]
+				for _, candidate := range p7.Certificates {
+					if !candidate.IsCA {
+						c = candidate
+						break
+					}
+				}
 				observe(c, false)
 				attrs = append(attrs, "certificate", c.Subject.CommonName, "serial", c.SerialNumber.Text(16),
 					"expired", time.Now().After(c.NotAfter), "not_after", c.NotAfter.UTC().Format(time.RFC3339))
