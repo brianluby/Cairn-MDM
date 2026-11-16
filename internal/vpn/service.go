@@ -278,11 +278,26 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 // device's settings, so the user could not store the password and would be
 // asked at every connection; Download hands that profile out for installing
 // by hand.
+//
+// The one exception is a password record set to let the device keep the
+// password: its profile carries an empty password key, which is reported to
+// make a device ask once and store the answer even for a pushed profile.
 func (s *Service) sendIKEv2(ctx context.Context, deviceID string, server Server, owner directory.DirectoryIdentity, actor string) (sqlite.VPNIdentity, error) {
-	if !server.IKEv2.UsesCertificate() {
+	if server.IKEv2.UsesCertificate() {
+		return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
+	}
+	if !server.IKEv2.KeepPassword {
 		return sqlite.VPNIdentity{}, ErrDownloadOnly
 	}
-	return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
+	profile, err := RenderIKEv2(s.opts.Organization, server, IKEv2Identity{DeviceID: deviceID, Username: owner.AccountName})
+	if err != nil {
+		return sqlite.VPNIdentity{}, err
+	}
+	if err = s.cmd.SendInstallProfileAs(ctx, mdmcore.NewCommandUUID(), profile, deviceID); err != nil {
+		return sqlite.VPNIdentity{}, fmt.Errorf("vpn: the profile could not be queued: %w", err)
+	}
+	s.log.Info("vpn: IKEv2 password profile queued with an empty password key", "device", deviceID, "server", server.Slug, "owner", owner.UPN, "actor", actor)
+	return sqlite.VPNIdentity{ServerID: server.ID, DeviceID: deviceID, Owner: owner, Actor: actor}, nil
 }
 
 // Download renders a password sign-in IKEv2 profile for an account, to be

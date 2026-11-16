@@ -49,9 +49,10 @@ type IKEv2 struct {
 	// LockOnDemand stops the user switching On Demand off in Settings.
 	LockOnDemand bool
 	// KeepPassword writes an empty password key into a password sign-in
-	// profile. Apple devices then ask for the password once and store it,
-	// where without the key they ask at every connection and cannot connect
-	// on demand. The profile still holds no password.
+	// profile and lets that profile be pushed by MDM. An empty key is reported
+	// to make an Apple device ask for the password once and store it, where
+	// without it a pushed profile asks at every connection. Not yet seen on a
+	// device. The profile still holds no password.
 	KeepPassword bool
 	// InstallCA puts the record's CA chain in every profile. Leave it off when
 	// devices already trust the CA.

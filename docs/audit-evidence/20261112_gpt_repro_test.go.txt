@@ -1,0 +1,63 @@
+package vpn_test
+
+import (
+ "context"
+ "io"
+ "log/slog"
+ "testing"
+ "time"
+
+ "github.com/nickpdawson/cairn-mdm/internal/issue"
+ "github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
+ "github.com/nickpdawson/cairn-mdm/internal/vpn"
+)
+
+type earlyAck struct { vpn.Commander; f *fixture; t *testing.T }
+func (c earlyAck) SendInstallProfileUUID(ctx context.Context, p []byte, id string) (string,error) {
+ uuid,err := c.Commander.SendInstallProfileUUID(ctx,p,id)
+ if err == nil { c.f.device(c.t,id,"Acknowledged") }
+ return uuid,err
+}
+
+func TestGPTAuditEarlyAck(t *testing.T) {
+ f:=setup(t); ctx:=context.Background()
+ svc,err:=vpn.NewService(f.servers,f.db,f.dir,f.backend,earlyAck{f.cmd,f,t},vpn.Options{Organization:"org.example",Policy:issue.Policy{LeafValidity:365*24*time.Hour}},slog.New(slog.NewTextHandler(io.Discard,nil)))
+ if err!=nil {t.Fatal(err)}
+ v,err:=svc.Issue(ctx,"PHONE1",f.server,"alice","nick"); if err!=nil {t.Fatal(err)}
+ if v.DeployStatus!="sent" || !f.keyAtRest(t) {t.Fatal("counterexample no longer reproduces")}
+ t.Log("Acknowledged device profile remains sent and retains private key")
+}
+
+func TestGPTAuditUnknownSerialHold(t *testing.T) {
+ f:=setup(t);ctx:=context.Background();svc:=f.service(t,heldBackend{f.backend})
+ _,_ = svc.Issue(ctx,"PHONE1",f.server,"alice","nick")
+ held,err:=f.db.QuarantinedVPNIdentities(ctx);if err!=nil || len(held)!=1 {t.Fatal(err)}
+ err=svc.Revoke(ctx,held[0].ID,"nick")
+ if err==nil {t.Fatal("counterexample no longer reproduces")}
+ t.Logf("Close hold fails: %v",err)
+}
+
+type auditOtherCA struct { issue.CABackend }
+func (b auditOtherCA) Capabilities() issue.Capability { c:=b.CABackend.Capabilities();c.Name="external-scep";c.CanRevoke=false;return c }
+
+func TestGPTAuditIssuerSwitch(t *testing.T) {
+ f:=setup(t);ctx:=context.Background()
+ old:=f.service(t,auditOtherCA{f.backend})
+ v,err:=old.Issue(ctx,"PHONE1",f.server,"alice","nick");if err!=nil {t.Fatal(err)}
+ if err=old.Revoke(ctx,v.ID,"nick");err!=nil {t.Fatal(err)}
+ f.service(t,f.backend).Sweep(ctx)
+ v,err=f.db.GetVPNIdentity(ctx,v.ID);if err!=nil {t.Fatal(err)}
+ if v.Backend!="external-scep" || !v.RevokedAt.Valid {t.Fatal("counterexample no longer reproduces")}
+ t.Log("External-scep row marked CA-revoked by current embedded backend without issuer check")
+}
+
+func TestGPTAuditCrashAfterIssuance(t *testing.T) {
+ f:=setup(t);ctx:=context.Background()
+ id,err:=f.db.BeginVPNIdentity(ctx,sqlite.VPNIdentity{ServerID:f.server,DeviceID:"PHONE1",Owner:f.dir.owner,Actor:"nick",Backend:"embedded"});if err!=nil {t.Fatal(err)}
+ if err=f.db.CompleteVPNIdentity(ctx,id,"1234",[]byte("public certificate placeholder"),time.Now().Add(time.Hour));err!=nil {t.Fatal(err)}
+ if _,err=f.db.SQL().Exec("UPDATE vpn_identities SET updated_at='2020-01-01 00:00:00' WHERE id=?",id);err!=nil {t.Fatal(err)}
+ f.service(t,f.backend).Sweep(ctx)
+ v,err:=f.db.GetVPNIdentity(ctx,id);if err!=nil {t.Fatal(err)}
+ if v.State!=sqlite.VPNIssued || v.RevokedAt.Valid || v.DeployStatus!="" {t.Fatal("counterexample no longer reproduces")}
+ t.Log("Old ISSUED row with no deployment remains outside cleanup and revocation")
+}

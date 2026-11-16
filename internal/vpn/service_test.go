@@ -684,6 +684,22 @@ func TestIKEv2PasswordProfileIsDownloadedNotPushed(t *testing.T) {
 		t.Fatal("a password profile created a certificate row")
 	}
 
+	// On trial: a record set to let the device keep the password is pushed,
+	// with an empty password key and still no secret.
+	record.Slug, record.IKEv2.KeepPassword = "office-keep", true
+	keepID, err := f.servers.Create(ctx, record, "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Issue(ctx, "PHONE1", keepID, "alice", "nick"); err != nil {
+		t.Fatalf("push of a keep-password profile: %v", err)
+	}
+	cmd := f.device(t, "PHONE1", "Acknowledged")
+	if cmd == nil || cmd.Command.RequestType != "InstallProfile" || f.keyAtRest(t) {
+		t.Fatalf("queued command = %+v", cmd)
+	}
+	record.IKEv2.KeepPassword = false
+
 	// A certificate record is sent from a device page, never downloaded, and
 	// needs the SCEP endpoint this service was built without.
 	record.Slug, record.IKEv2.SignIn = "office-eap-tls", vpn.IKEv2EAPTLS

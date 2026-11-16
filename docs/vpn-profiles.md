@@ -198,7 +198,7 @@ associations, and how devices sign in:
 
 | Sign-in | What the profile carries | State |
 |---|---|---|
-| Account name and password (EAP-MSCHAPv2) | The account name. No password: the user types it on the device the first time, and the device keeps it | Built; no device test yet |
+| Account name and password (EAP-MSCHAPv2) | The account name and no password. Downloaded and installed by hand; the user stores the password in Settings | A pushed copy connected from an iPhone; the download is tested in-process only |
 | Certificate over EAP (EAP-TLS) | A SCEP request, so the device makes its own key | Built and tested in-process over HTTP against Cairn's own CA; no device test, no run against an external CA |
 | Certificate (IKE certificate authentication) | The same | The same |
 
@@ -209,12 +209,18 @@ With On Demand the profile connects on Wi-Fi and cellular and stays off the VPN
 on any other network. Wi-Fi networks listed as trusted disconnect it. The user
 can switch On Demand off in Settings unless the record locks it.
 
-With password sign-in the device asks for the password at every connection
-unless the record has "Let the device keep the password" ticked. That writes
-an empty password field into the profile, which makes the device ask once and
-store what the user types; On Demand needs it. The profile never holds the
-password itself, and a rendered profile with a value in that field is
-refused.
+A password sign-in profile is not pushed by MDM. A VPN that MDM installs is
+read-only in the device's settings, so the user cannot store the password and
+is asked at every connection, and On Demand cannot run. Download the profile
+for an account from the server's page (it needs a fresh MFA code), give the
+file to that person, and have them store their password under Settings > VPN
+> (i) after installing it. The file holds the account name and the server
+settings and no secret, and is signed when profile signing is configured.
+
+On trial: a password record can be set to push its profile with an empty
+password field, which is reported to make a device ask once and keep the
+password even for a pushed profile. It has not been confirmed on a device.
+A rendered profile with any value in that field is refused.
 
 ### Certificate sign-in
 
