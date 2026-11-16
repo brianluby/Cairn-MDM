@@ -209,6 +209,25 @@ With On Demand the profile connects on Wi-Fi and cellular and stays off the VPN
 on any other network. Wi-Fi networks listed as trusted disconnect it. The user
 can switch On Demand off in Settings unless the record locks it.
 
+Every IKEv2 profile sends all traffic through the tunnel while the VPN is up.
+What the tunnel cannot carry is dropped and never leaves by the local network:
+IPv6 on a server that hands out IPv4 only, for one. The device also does not
+answer other machines on the same Wi-Fi. The profile sets these keys at the
+top of the VPN payload, beside the On Demand keys:
+
+| Key | Value | Why |
+|---|---|---|
+| `IncludeAllNetworks` | 1 | every flow enters the tunnel or is dropped |
+| `ExcludeLocalNetworks` | 0 | 1 would put the device back in reach of the local subnet; Cairn refuses a profile that has it |
+| `ExcludeCellularServices` | 1 | carrier calling and voicemail break inside a tunnel |
+| `ExcludeDeviceCommunication` | 1 | AirDrop and Continuity use their own link and keep working |
+| `ExcludeAPNs` | 0 | push notifications ride the tunnel |
+
+The user's own VPN switch is the way past a sign-in page on a hotel network,
+so leave On Demand unlocked on such a record. A record meant to carry a few
+networks and leave the rest alone has "Let traffic the tunnel does not carry
+use the local network" ticked, and its profiles carry none of these keys.
+
 A password sign-in profile is not pushed by MDM. A VPN that MDM installs is
 read-only in the device's settings, so the user cannot store the password and
 is asked at every connection, and On Demand cannot run. Download the profile

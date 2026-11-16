@@ -99,6 +99,10 @@
         <p><label><input type="checkbox" name="lock_on_demand"{{if .Form.LockOnDemand}} checked{{end}}> Stop the user switching On Demand off</label>
           <span class="sub">Leave this off unless every network the device meets lets the VPN through; a hotel sign-in page will not.</span></p>
 
+        <h2>Traffic</h2>
+        <p><label><input type="checkbox" name="split_tunnel"{{if .Form.SplitTunnel}} checked{{end}}> Let traffic the tunnel does not carry use the local network</label>
+          <span class="sub">Off, every connection goes through the VPN while it is up and anything the tunnel cannot carry is dropped, IPv6 on an IPv4-only server included. The device does not answer others on the same Wi-Fi. Carrier calling, AirDrop and Continuity stay outside the tunnel and keep working. Turn this on only for a server that is meant to carry some networks and leave the rest alone.</span></p>
+
         {{else}}
         <p><label>Addresses, one per line: host port udp or tcp<br>
           <textarea name="remotes" rows="3" cols="60" spellcheck="false" required placeholder="vpn.example.org 443 udp">{{.Form.Remotes}}</textarea></label>

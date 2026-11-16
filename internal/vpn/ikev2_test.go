@@ -272,3 +272,43 @@ func TestIKEv2KeepPassword(t *testing.T) {
 		t.Fatalf("keep-password on a certificate record: %v", err)
 	}
 }
+
+// Every IKEv2 profile sends all traffic into the tunnel unless the record is
+// set to split it, and the keys sit beside the On Demand keys.
+func TestIKEv2SendsAllTrafficThroughTheTunnel(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ike, byType := ikev2Of(t, out)
+	vpn := byType["com.apple.vpn.managed"][0]
+	for key, want := range map[string]uint64{"IncludeAllNetworks": 1, "ExcludeLocalNetworks": 0,
+		"ExcludeCellularServices": 1, "ExcludeDeviceCommunication": 1, "ExcludeAPNs": 0} {
+		if vpn[key] != want {
+			t.Errorf("%s = %v, want %d", key, vpn[key], want)
+		}
+		if _, has := ike[key]; has {
+			t.Errorf("%s is inside the IKEv2 dictionary", key)
+		}
+	}
+	local := strings.Replace(string(out), "<key>ExcludeLocalNetworks</key>\n\t\t\t<integer>0</integer>", "<key>ExcludeLocalNetworks</key>\n\t\t\t<integer>1</integer>", 1)
+	if local == string(out) {
+		t.Fatal("test did not change the profile")
+	}
+	if err := CheckIKEv2([]byte(local)); err == nil || !strings.Contains(err.Error(), "ExcludeLocalNetworks") {
+		t.Errorf("a profile that excludes local networks passed: %v", err)
+	}
+
+	s.IKEv2.SplitTunnel = true
+	if out, err = RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	_, byType = ikev2Of(t, out)
+	for _, key := range []string{"IncludeAllNetworks", "ExcludeLocalNetworks", "ExcludeCellularServices", "ExcludeDeviceCommunication", "ExcludeAPNs"} {
+		if _, has := byType["com.apple.vpn.managed"][0][key]; has {
+			t.Errorf("a split-tunnel profile carries %s", key)
+		}
+	}
+}

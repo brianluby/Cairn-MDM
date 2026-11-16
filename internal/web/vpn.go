@@ -164,6 +164,7 @@ type vpnServerForm struct {
 	LockOnDemand       bool
 	InstallCA          bool
 	KeepPassword       bool
+	SplitTunnel        bool
 }
 
 // IKEv2 reports whether the form is for a native IKEv2 server.
@@ -182,7 +183,7 @@ func formFromServer(s vpn.Server, showKey bool) vpnServerForm {
 		f.ServerCertIssuerCN, f.ServerCertCN, f.SignIn = k.ServerCertIssuerCN, k.ServerCertCN, k.SignIn
 		f.Encryption, f.Integrity, f.DHGroup, f.PFS = k.Encryption, k.Integrity, strconv.Itoa(k.DHGroup), k.PFS
 		f.TrustedSSIDs, f.LockOnDemand, f.InstallCA = strings.Join(k.TrustedSSIDs, "\n"), k.LockOnDemand, k.InstallCA
-		f.KeepPassword = k.KeepPassword
+		f.KeepPassword, f.SplitTunnel = k.KeepPassword, k.SplitTunnel
 		return f
 	}
 	if showKey {
@@ -223,7 +224,7 @@ func formFromRequest(r *http.Request) vpnServerForm {
 		Encryption: v("encryption"), Integrity: v("integrity"), DHGroup: v("dh_group"),
 		PFS: r.PostFormValue("pfs") == "on", TrustedSSIDs: r.PostFormValue("trusted_ssids"),
 		LockOnDemand: r.PostFormValue("lock_on_demand") == "on", InstallCA: r.PostFormValue("install_ca") == "on",
-		KeepPassword: r.PostFormValue("keep_password") == "on",
+		KeepPassword: r.PostFormValue("keep_password") == "on", SplitTunnel: r.PostFormValue("split_tunnel") == "on",
 	}
 }
 
@@ -237,7 +238,7 @@ func (f vpnServerForm) ikev2Server() (vpn.Server, error) {
 		RemoteAddress: f.RemoteAddress, RemoteIdentifier: f.RemoteIdentifier,
 		ServerCertIssuerCN: f.ServerCertIssuerCN, ServerCertCN: f.ServerCertCN, SignIn: f.SignIn,
 		Encryption: f.Encryption, Integrity: f.Integrity, DHGroup: group, PFS: f.PFS, LockOnDemand: f.LockOnDemand, InstallCA: f.InstallCA,
-		KeepPassword: f.KeepPassword && f.SignIn == vpn.IKEv2Password,
+		KeepPassword: f.KeepPassword && f.SignIn == vpn.IKEv2Password, SplitTunnel: f.SplitTunnel,
 	}
 	// A network name may begin or end with a space, so lines are not trimmed.
 	for _, line := range strings.Split(strings.ReplaceAll(f.TrustedSSIDs, "\r", ""), "\n") {

@@ -57,6 +57,10 @@ type IKEv2 struct {
 	// InstallCA puts the record's CA chain in every profile. Leave it off when
 	// devices already trust the CA.
 	InstallCA bool
+	// SplitTunnel lets traffic the tunnel does not carry leave by the local
+	// network. Off, which is the default, the profile sends every flow into
+	// the tunnel and the device drops what the tunnel cannot carry.
+	SplitTunnel bool
 }
 
 var (
@@ -305,6 +309,18 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 		vpn["OnDemandRules"] = rules
 		vpn["OnDemandUserOverrideDisabled"] = boolInt(k.LockOnDemand)
 	}
+	if !k.SplitTunnel {
+		// Beside the On Demand keys, not inside the IKEv2 dictionary.
+		vpn["IncludeAllNetworks"] = 1
+		// Never 1: that would put the device back on the local subnet, in
+		// reach of everyone else on a hotel network.
+		vpn["ExcludeLocalNetworks"] = 0
+		// Carrier calling breaks inside the tunnel; AirDrop and Continuity
+		// use their own link, not the local subnet.
+		vpn["ExcludeCellularServices"] = 1
+		vpn["ExcludeDeviceCommunication"] = 1
+		vpn["ExcludeAPNs"] = 0
+	}
 
 	payloads := []any{vpn}
 	if k.UsesCertificate() {
@@ -466,9 +482,20 @@ func CheckIKEv2(profile []byte) error {
 	if _, has := ike["SharedSecret"]; has {
 		return errors.New("an IKEv2 profile must not carry a shared secret")
 	}
-	for _, key := range []string{"OnDemandEnabled", "OnDemandRules", "OnDemandUserOverrideDisabled"} {
+	for _, key := range []string{"OnDemandEnabled", "OnDemandRules", "OnDemandUserOverrideDisabled",
+		"IncludeAllNetworks", "ExcludeLocalNetworks", "ExcludeCellularServices", "ExcludeDeviceCommunication", "ExcludeAPNs"} {
 		if _, has := ike[key]; has {
 			return fmt.Errorf("%s belongs at the top of the VPN payload, not inside IKEv2", key)
+		}
+	}
+	if v, has := vpn["ExcludeLocalNetworks"]; has && fmt.Sprint(v) != "0" {
+		return errors.New("ExcludeLocalNetworks must stay 0: 1 leaves the device reachable from the local network")
+	}
+	if fmt.Sprint(vpn["IncludeAllNetworks"]) == "1" {
+		for _, key := range []string{"ExcludeCellularServices", "ExcludeDeviceCommunication"} {
+			if fmt.Sprint(vpn[key]) != "1" {
+				return fmt.Errorf("%s must be 1 when all traffic goes through the tunnel", key)
+			}
 		}
 	}
 	onDemand := fmt.Sprint(vpn["OnDemandEnabled"]) == "1"
