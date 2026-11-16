@@ -199,7 +199,7 @@ associations, and how devices sign in:
 | Sign-in | What the profile carries | State |
 |---|---|---|
 | Account name and password (EAP-MSCHAPv2) | The account name. No password: the user types it on the device the first time, and the device keeps it | Built; no device test yet |
-| Certificate over EAP (EAP-TLS) | A SCEP request, so the device makes its own key | Record and profile built; Cairn cannot yet issue the certificate, so sending is refused |
+| Certificate over EAP (EAP-TLS) | A SCEP request, so the device makes its own key | Built and tested in-process over HTTP against Cairn's own CA; no device test, no run against an external CA |
 | Certificate (IKE certificate authentication) | The same | The same |
 
 Cairn never puts a password, a shared secret or a private key in an IKEv2
@@ -211,6 +211,38 @@ can switch On Demand off in Settings unless the record locks it. With password
 sign-in, On Demand starts working once the user has connected by hand and the
 device holds the password.
 
+### Certificate sign-in
+
+The device makes the key and it never leaves the device. Sending the profile
+records an offer and puts a one-time challenge in the profile's SCEP payload;
+nothing is asked of the CA yet. When the profile installs, the device sends
+its request to `<public_url>/scep/vpn`. Cairn then:
+
+1. Finds the offer by the challenge. Only a hash of the challenge is stored.
+2. Refuses unless the device is still enrolled, the owner is still enabled in
+   the directory, and the request asks for the offer's account name and
+   nothing else.
+3. Binds the offer to that public key. The same key may repeat its request
+   until the profile is reported installed; any other key is refused.
+4. Builds the certificate from the offer, has the configured CA sign it (its
+   own, or an external one through the RA certificate), and checks what came
+   back the same way as for an OpenVPN certificate.
+
+An offer nobody answers is withdrawn after seven days, or as soon as the
+device's enrollment ends, and its queued profile is replaced.
+
+The endpoint is reachable by anyone who can reach Cairn; the challenge is what
+authorizes a request. Someone who reads the challenge out of the profile on the
+device before the device uses it could get the certificate for a key of their
+own. They would be the device's own user getting a certificate in their own
+name, and the device's request would then fail.
+
+With an external SCEP CA, the device's request is passed on with Cairn's
+challenge still in it. The CA must issue on the RA's signature and ignore a
+challenge it does not know. Check this once with
+`cairn vpn check-issuer -device-request -cn <test> -email <address>` and revoke
+the test certificate.
+
 The CA chain is optional in an IKEv2 record. Devices normally trust the CA
 already, from their enrollment profile, and the profile then carries no
 certificates. Give the chain to have the issuer name checked against it, and
@@ -219,9 +251,10 @@ not one the devices trust yet.
 
 ## Not built yet
 
-- Issuing a certificate for a key the device makes, which IKEv2 certificate
-  sign-in needs: a SCEP endpoint on Cairn that accepts one request per
-  one-time challenge and passes it to the configured CA.
+- A device test of IKEv2 profiles, and a run of device-keyed issuance against
+  an external CA.
+- Renewal of a device-keyed VPN certificate before it expires; send the
+  profile again.
 - A run of the SCEP issuer against a real CA.
 - One connection that tries several addresses in turn.
 - More than one value for an option such as `route` or `dhcp-option`; the

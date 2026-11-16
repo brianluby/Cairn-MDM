@@ -249,6 +249,9 @@ func (s *nanoStore) ClearQueue(r *mdm.Request) error {
 	if _, err = withdrawVPNPayloads(r.Context(), tx, "failed", "Command queue cleared", `device_id=?`, r.ID); err != nil {
 		return err
 	}
+	if _, err = closeVPNOffers(r.Context(), tx, "Command queue cleared", `device_id=?`, r.ID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -306,6 +309,9 @@ func (s *nanoStore) Disable(r *mdm.Request) error {
 			return err
 		}
 		if _, err = withdrawVPNPayloads(r.Context(), tx, "failed", "Enrollment disabled", `device_id=?`, id); err != nil {
+			return err
+		}
+		if _, err = closeVPNOffers(r.Context(), tx, "Enrollment disabled", `device_id=?`, id); err != nil {
 			return err
 		}
 	}

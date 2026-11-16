@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	scepserver "github.com/micromdm/scep/v2/server"
+
 	"github.com/nickpdawson/cairn-mdm/internal/alert"
 	"github.com/nickpdawson/cairn-mdm/internal/assign"
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
@@ -266,6 +268,10 @@ func runServe(ctx context.Context, args []string) error {
 		var vpnCA issue.CABackend
 		var issuedHere func(*x509.Certificate) bool
 		var missing string
+		// vpnSCEP builds the endpoint devices use for VPN certificates on keys
+		// they make. Its recipient is whichever identity the CA side has: the
+		// RA certificate for an external CA, the CA itself for Cairn's own.
+		var vpnSCEP func(scepserver.CSRSignerContext) (http.Handler, error)
 		switch {
 		case directoryProvider == nil:
 			missing = "a verified LDAP directory (auth.ldap with directory_id) is required to name certificate owners."
@@ -275,21 +281,29 @@ func runServe(ctx context.Context, args []string) error {
 			}
 			// The SCEP CA sets the lifetime; accept it up to the configured ceiling.
 			policy.MaxLeafValidity = time.Duration(vpnCfg.Issuer.MaxLeafValidityDays) * 24 * time.Hour
+			vpnSCEP = func(signer scepserver.CSRSignerContext) (http.Handler, error) {
+				return vpnDeviceSCEPHandler(vpnCfg.Issuer, signer)
+			}
 		case pki.Authority == nil:
 			missing = "no certificate authority is configured for VPN certificates. Cairn's own CA is off in ca.mode " + string(cfg.CA.Mode) + "; set [vpn.issuer] backend = \"scep\" to use an external one."
 		default:
 			vpnCA = pki.Authority.EmbeddedBackend()
 			caCert := pki.Authority.Certificate()
 			issuedHere = func(leaf *x509.Certificate) bool { return leaf.CheckSignatureFrom(caCert) == nil }
+			vpnSCEP = pki.Authority.SCEPHandlerWith
 		}
 		if missing != "" {
 			console.SetVPNIssuer(nil, db, missing)
 			log.Warn("VPN server records enabled; issuing is off", "reason", missing)
 		} else {
 			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, vpnCA, commander,
-				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType, IssuedHere: issuedHere}, log)
+				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType, IssuedHere: issuedHere,
+					DeviceSCEPURL: cfg.Server.PublicURL + "/scep/vpn"}, log)
 			if err != nil {
 				return err
+			}
+			if deps.VPNSCEP, err = vpnSCEP(vpnService); err != nil {
+				return fmt.Errorf("vpn: device SCEP endpoint: %w", err)
 			}
 			console.SetVPNIssuer(vpnService, db, "")
 			go func() {

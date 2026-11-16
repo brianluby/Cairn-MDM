@@ -127,6 +127,7 @@
           <tr>
             <td>{{.Server.Name}}<div class="sub mono">{{.Server.Slug}}</div></td>
             <td>
+              {{if .Offered}}<div><span class="dot wait"></span> Profile sent for {{.Offered}}; waiting for the device to ask for its certificate</div>{{end}}
               {{with .Latest}}
                 {{if eq .State "ISSUED"}}
                   {{if eq .DeployStatus "installed"}}<span class="dot on"></span> Installed for {{.Owner.AccountName}}
@@ -139,7 +140,7 @@
                 {{else if eq .State "SUPERSEDED"}}<span class="dot off"></span> Replaced
                 {{else}}<span class="dot wait"></span> Requesting a certificate{{end}}
               {{else}}{{if and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password")}}<span class="sub">Password sign-in: no certificate. A sent profile shows in the command history.</span>
-              {{else}}<span class="sub">No VPN profile sent.</span>{{end}}{{end}}
+              {{else if not .Offered}}<span class="sub">No VPN profile sent.</span>{{end}}{{end}}
             </td>
             {{if $.User.Role.AtLeast "admin"}}
             <td>
@@ -149,7 +150,7 @@
                 {{if not $.Owner}}<label>Account <input type="text" name="account" required size="16" placeholder="jsmith" autocomplete="off"></label>{{end}}
                 <button class="btn" type="submit">{{if .Latest}}Send new profile{{else}}Send profile{{end}}</button>
               </form>
-              {{if and .Server.IsIKEv2 (not .Latest)}}
+              {{if and .Server.IsIKEv2 (not .Latest) (not .Server.IKEv2.UsesCertificate)}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/remove" style="display:inline"
                     onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">

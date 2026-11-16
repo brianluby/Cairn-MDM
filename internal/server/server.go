@@ -27,6 +27,7 @@ type Readiness interface {
 type Deps struct {
 	MDM         http.Handler // NanoMDM check-in/command handler (mounted at mdm_path)
 	SCEP        http.Handler // embedded-CA SCEP handler (mounted at /scep)
+	VPNSCEP     http.Handler // SCEP for VPN certificates on device-made keys (mounted at /scep/vpn)
 	Enroll      http.Handler // bare enrollment handler (mounted at GET /enroll; default-denied)
 	EnrollGrant http.Handler // grant-based enrollment (mounted at GET /e/{token})
 	CA          http.Handler // CA trust-anchor download (mounted at GET /ca)
@@ -128,6 +129,17 @@ func (s *Server) routes() {
 		// as well so a trailing slash still routes.
 		s.mux.Handle("/scep", s.deps.SCEP)
 		s.mux.Handle("/scep/", s.deps.SCEP)
+	}
+
+	if s.deps.VPNSCEP != nil {
+		// The SCEP handler's router matches "/scep" only, so the request is
+		// handed to it under that path.
+		inner := s.deps.VPNSCEP
+		s.mux.HandleFunc("/scep/vpn", func(w http.ResponseWriter, r *http.Request) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path, r2.URL.RawPath = "/scep", ""
+			inner.ServeHTTP(w, r2)
+		})
 	}
 
 	if s.deps.Enroll != nil {

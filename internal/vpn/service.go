@@ -31,6 +31,11 @@ type IdentityStore interface {
 	QuarantineStaleVPNIssuing(ctx context.Context, before time.Time) (int, error)
 	VPNIdentitiesAwaitingRevocation(ctx context.Context) ([]sqlite.VPNIdentity, error)
 	WithdrawStaleVPNPayloads(ctx context.Context, before time.Time) (int, error)
+	CreateVPNOffer(ctx context.Context, o sqlite.VPNOffer, expires time.Time) (int64, error)
+	VPNOfferByChallenge(ctx context.Context, challengeSHA256 string) (sqlite.VPNOffer, error)
+	ClaimVPNOffer(ctx context.Context, offerID int64, spkiSHA256, backend string, now time.Time) (int64, error)
+	CloseVPNOffer(ctx context.Context, id int64, why string) error
+	ExpireVPNOffers(ctx context.Context, now time.Time) (int, error)
 	GetDeviceOwner(ctx context.Context, deviceID string) (sqlite.DeviceOwner, error)
 	GetDevice(ctx context.Context, id string) (sqlite.Device, error)
 }
@@ -55,6 +60,9 @@ type Options struct {
 	// UncollectedAfter is how long a queued profile, and the key in it, waits for
 	// a device before it is withdrawn. Zero means seven days.
 	UncollectedAfter time.Duration
+	// DeviceSCEPURL is where devices reach Cairn's SCEP endpoint for VPN
+	// certificates on keys they make. Empty leaves certificate sign-in off.
+	DeviceSCEPURL string
 	// IssuedHere reports whether the configured CA issued a certificate. Set it
 	// when the CA's identity is known locally (Cairn's own CA), so a certificate
 	// from an earlier issuer is never sent to this one for revocation.
@@ -95,7 +103,7 @@ var (
 	ErrDeviceGone      = errors.New("the device is not enrolled or cannot receive commands")
 	ErrAwaitingDevice  = errors.New("a profile is already waiting for this device and installs when it next connects; revoke that certificate first to send a new one")
 	ErrPlatform        = errors.New("OpenVPN profiles are built for iPhone and iPad; this device is a Mac")
-	ErrDeviceKeyed     = errors.New("this server signs devices in with a certificate, and Cairn cannot yet issue one for a key the device makes; use password sign-in until it can")
+	ErrDeviceKeyed     = errors.New("this server signs devices in with a certificate, and Cairn's SCEP endpoint for VPN certificates is not set up")
 	ErrHeld            = errors.New("the certificate authority's answer could not be trusted; the request is held for review and no profile was sent")
 )
 
@@ -259,11 +267,12 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 
 // sendIKEv2 queues an IKEv2 profile. With password sign-in there is no
 // certificate and nothing to record beyond the command: the profile holds the
-// account name, the server settings and the CA chain.
+// account name and the server settings. With certificate sign-in the profile
+// carries an offer the device answers with its own key.
 func (s *Service) sendIKEv2(ctx context.Context, deviceID string, server Server, owner directory.DirectoryIdentity, actor string) (sqlite.VPNIdentity, error) {
 	var none sqlite.VPNIdentity
 	if server.IKEv2.UsesCertificate() {
-		return none, ErrDeviceKeyed
+		return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
 	}
 	profile, err := RenderIKEv2(s.opts.Organization, server, IKEv2Identity{DeviceID: deviceID, Username: owner.AccountName})
 	if err != nil {
@@ -375,6 +384,11 @@ func (s *Service) Sweep(ctx context.Context) {
 		s.log.Error("vpn: withdraw stale profiles", "err", err)
 	} else if n > 0 {
 		s.log.Warn("vpn: withdrew profiles no device collected", "count", n)
+	}
+	if n, err := s.store.ExpireVPNOffers(ctx, s.now()); err != nil {
+		s.log.Error("vpn: close unanswered offers", "err", err)
+	} else if n > 0 {
+		s.log.Warn("vpn: withdrew profiles whose device never requested a certificate", "count", n)
 	}
 	retired, err := s.store.VPNIdentitiesAwaitingRevocation(ctx)
 	if err != nil {

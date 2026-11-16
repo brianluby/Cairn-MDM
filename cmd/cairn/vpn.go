@@ -2,14 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	kitlog "github.com/go-kit/kit/log"
+	scepserver "github.com/micromdm/scep/v2/server"
+	"github.com/smallstep/scep/x509util"
 
 	"github.com/nickpdawson/cairn-mdm/internal/broker"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
@@ -48,9 +55,43 @@ func vpnSCEPIssuer(is config.VPNIssuer) (issue.CABackend, error) {
 	return be, nil
 }
 
+// vpnDeviceSCEPHandler builds the device-facing SCEP endpoint for an external
+// VPN CA. Devices encrypt their requests to the RA certificate; the issuing CA
+// is returned beside it so a device sees who signs what it gets back.
+func vpnDeviceSCEPHandler(is config.VPNIssuer, signer scepserver.CSRSignerContext) (http.Handler, error) {
+	raCert, raKey, err := loadRAIdentity(is.RACertFile, is.RAKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("vpn.issuer: %w", err)
+	}
+	chainPEM, err := os.ReadFile(is.CAChainFile)
+	if err != nil {
+		return nil, fmt.Errorf("vpn.issuer: read ca_chain_file: %w", err)
+	}
+	var opts []scepserver.ServiceOption
+	for rest := chainPEM; ; {
+		var block *pem.Block
+		if block, rest = pem.Decode(rest); block == nil {
+			break
+		}
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("vpn.issuer: ca_chain_file: %w", err)
+		}
+		if raCert.CheckSignatureFrom(c) == nil {
+			opts = append(opts, scepserver.WithAddlCA(c))
+			break
+		}
+	}
+	svc, err := scepserver.NewService(raCert, raKey, signer, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("vpn.issuer: device SCEP service: %w", err)
+	}
+	return scepserver.MakeHTTPHandler(scepserver.MakeServerEndpoints(svc), svc, kitlog.NewNopLogger()), nil
+}
+
 func runVPN(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "check-issuer" {
-		return errors.New("usage: cairn vpn check-issuer -cn <account> -email <address> [-config cairn.toml] [-out cert.pem]")
+		return errors.New("usage: cairn vpn check-issuer -cn <account> -email <address> [-device-request] [-config cairn.toml] [-out cert.pem]")
 	}
 	return runVPNCheckIssuer(ctx, args[1:])
 }
@@ -67,6 +108,7 @@ func runVPNCheckIssuer(ctx context.Context, args []string) error {
 	cn := fs.String("cn", "", "account name to request, as the certificate common name; use a test name")
 	email := fs.String("email", "", "address to request as the email SAN (the account's UPN)")
 	out := fs.String("out", "", "also write the returned certificate to this file (PEM)")
+	deviceRequest := fs.Bool("device-request", false, "send the request the way a device's SCEP client does, with a challenge password in it; run this before using certificate sign-in for IKEv2")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -98,6 +140,21 @@ func runVPNCheckIssuer(ctx context.Context, args []string) error {
 	req, err := issue.ServerKeyedRequest(pol, issue.GrantFacts{Owner: *email, CommonName: *cn}, key, now)
 	if err != nil {
 		return err
+	}
+	if *deviceRequest {
+		// A device puts Cairn's one-time challenge in its request and Cairn
+		// passes the request on unchanged. The CA must issue on the RA's
+		// signature and ignore a challenge it does not know.
+		der, cerr := x509util.CreateCertificateRequest(rand.Reader, &x509util.CertificateRequest{
+			CertificateRequest: x509.CertificateRequest{Subject: pkix.Name{CommonName: *cn}, EmailAddresses: []string{*email}},
+			ChallengePassword:  "cairn-check-issuer-not-a-ca-challenge",
+		}, key)
+		if cerr != nil {
+			return cerr
+		}
+		if req.DeviceCSR, cerr = x509.ParseCertificateRequest(der); cerr != nil {
+			return cerr
+		}
 	}
 	res, err := be.Issue(ctx, req)
 	if res.Leaf == nil {

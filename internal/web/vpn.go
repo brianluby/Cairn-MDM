@@ -42,6 +42,7 @@ type VPNIdentityStore interface {
 	CurrentVPNIdentities(ctx context.Context) ([]sqlite.VPNIdentity, error)
 	QuarantinedVPNIdentities(ctx context.Context) ([]sqlite.VPNIdentity, error)
 	VPNIdentitiesAwaitingRevocation(ctx context.Context) ([]sqlite.VPNIdentity, error)
+	OpenVPNOffers(ctx context.Context, deviceID string) ([]sqlite.VPNOffer, error)
 }
 
 // SetVPN installs the VPN server catalogue. Nil leaves the VPN pages off.
@@ -354,6 +355,9 @@ func (v vpnIdentityRow) ExpiresOn() string {
 type vpnDeviceRow struct {
 	Server vpn.Server
 	Latest *vpnIdentityRow // most recent attempt, whatever its outcome
+	// Offered is the account a profile was sent for when the device has not
+	// yet asked for its certificate.
+	Offered string
 }
 
 func (a *App) deviceVPNRows(ctx context.Context, deviceID string) []vpnDeviceRow {
@@ -369,9 +373,18 @@ func (a *App) deviceVPNRows(ctx context.Context, deviceID string) []vpnDeviceRow
 	if err != nil {
 		a.log.Error("device vpn identities", "id", deviceID, "err", err)
 	}
+	offers, err := a.vpnIdentities.OpenVPNOffers(ctx, deviceID)
+	if err != nil {
+		a.log.Error("device vpn offers", "id", deviceID, "err", err)
+	}
 	rows := make([]vpnDeviceRow, 0, len(servers))
 	for _, s := range servers {
 		row := vpnDeviceRow{Server: s}
+		for _, o := range offers {
+			if o.ServerID == s.ID {
+				row.Offered = o.Owner.AccountName
+			}
+		}
 		for i := range identities { // newest first
 			if identities[i].ServerID == s.ID {
 				row.Latest = &vpnIdentityRow{VPNIdentity: identities[i], ServerName: s.Name}
@@ -424,6 +437,11 @@ func (a *App) handleVPNIssue(w http.ResponseWriter, r *http.Request) {
 	msg := "VPN profile for " + v.Owner.AccountName + " queued. It installs when the device next connects."
 	if v.ID == 0 {
 		msg += " The command history below shows when it is installed."
+	}
+	if a.vpn != nil {
+		if s, serr := a.vpn.Get(r.Context(), serverID); serr == nil && s.IsIKEv2() && s.IKEv2.UsesCertificate() {
+			msg = "VPN profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
+		}
 	}
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)
 }
