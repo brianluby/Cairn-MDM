@@ -10,6 +10,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -471,8 +472,27 @@ type CAExternalCfg struct {
 	CRLURL        string `toml:"crl_url"`
 	ChallengeEnv  string `toml:"challenge_env"`
 	ChallengeFile string `toml:"challenge_file"`
+	// Lookup replaces the static challenge with one-time challenges the CA
+	// checks with Cairn before it issues.
+	Lookup CAChallengeLookupCfg `toml:"challenge_lookup"`
 	// resolved:
 	Challenge string `toml:"-"`
+}
+
+// CAChallengeLookupCfg turns on one-time SCEP challenges for an external CA
+// that can ask another system whether a challenge is good (OpenXPKI with a
+// connector, for one). The CA calls GET <cairn>/scep-challenge/<certificate
+// name>/<request key identifier>/<presented challenge> with the secret as a
+// bearer token.
+type CAChallengeLookupCfg struct {
+	Enabled    bool   `toml:"enabled"`
+	SecretFile string `toml:"secret_file"`
+	SecretEnv  string `toml:"secret_env"`
+	// AllowedSources limits lookups to these addresses or networks, judged by
+	// the connection's own address.
+	AllowedSources []string `toml:"allowed_sources"`
+	// resolved:
+	Secret string `toml:"-"`
 }
 
 // CABrokerCfg describes the backend SCEP CA that Cairn brokers to (broker mode).
@@ -590,6 +610,13 @@ func resolveSecrets(cfg *Config) error {
 		return err
 	}
 	cfg.CA.External.Challenge = ch
+	if cfg.CA.External.Lookup.Enabled {
+		secret, err := readSecret("ca.external.challenge_lookup.secret", "", cfg.CA.External.Lookup.SecretFile, cfg.CA.External.Lookup.SecretEnv)
+		if err != nil {
+			return err
+		}
+		cfg.CA.External.Lookup.Secret = secret
+	}
 
 	// LDAP bind password.
 	if cfg.Auth.LDAP.Enabled {
@@ -644,6 +671,18 @@ func readSecret(name, inline, file, env string) (string, error) {
 		return strings.TrimSpace(string(b)), nil
 	}
 	return inline, nil
+}
+
+// ParseSource reads an address or a network in CIDR form.
+func ParseSource(s string) (netip.Prefix, error) {
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p.Masked(), nil
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.PrefixFrom(a, a.BitLen()), nil
 }
 
 // Validate checks that the resolved config is internally consistent.
@@ -750,6 +789,16 @@ func (c Config) Validate() error {
 		}
 		if c.CA.External.CAChainFile == "" {
 			errs = append(errs, errors.New("ca.external.ca_chain_file is required when ca.mode=external (trust anchor for the enrollment profile)"))
+		}
+		if l := c.CA.External.Lookup; l.Enabled {
+			if len(l.Secret) < 32 {
+				errs = append(errs, errors.New("ca.external.challenge_lookup needs secret_file or secret_env holding at least 32 characters"))
+			}
+			for _, src := range l.AllowedSources {
+				if _, err := ParseSource(src); err != nil {
+					errs = append(errs, fmt.Errorf("ca.external.challenge_lookup.allowed_sources: %q is not an address or network", src))
+				}
+			}
 		}
 	case CABroker:
 		if c.CA.Broker.SCEPURL == "" {

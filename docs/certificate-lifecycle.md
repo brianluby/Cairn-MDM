@@ -126,26 +126,76 @@ What renewal does not do:
 - The CA has to allow a second certificate for the same name while the first
   is still valid.
 
-Known limit. In external mode the CA issues to anyone who presents its
-enrollment challenge, and that challenge is in every enrollment profile. Cairn
-does not see the request, so it cannot tell the CA or itself that a new
-certificate was asked for by the same device. During a renewal, and for 30
-days after one starts, Cairn accepts the first new certificate for that device
-that comes from the CA and carries the device's existing name. Someone who
-holds the challenge, knows a device's ID and certificate name, and acts in
-that window can have their own certificate accepted in the device's place; the
-real device is then refused. The same person can already enroll under an
-existing device ID without any renewal, because NanoMDM associates whatever
-certificate an Authenticate arrives with, so renewal does not open a new door,
-but it is a second way through the same one. Closing it needs Cairn in the
-request path (broker mode), where each renewal can carry its own one-time
-challenge.
+Known limit with a static challenge. In external mode the CA issues to anyone
+who presents its enrollment challenge, and by default that challenge is the
+same in every enrollment profile. Cairn does not see the request, so it cannot
+tell the CA or itself that a new certificate was asked for by the same device.
+During a renewal, and for 30 days after one starts, Cairn accepts the first
+new certificate for that device that comes from the CA and carries the
+device's existing name. Someone who holds the challenge, knows a device's ID
+and certificate name, and acts in that window can have their own certificate
+accepted in the device's place; the real device is then refused. One-time
+challenges, below, close this.
 
-Not tested yet: a renewal on a real device. In particular, whether a profile
-installed by hand and signed by another server's certificate accepts a
-replacement signed by Cairn's, and whether the device answers with
-TokenUpdate (handled above) or a fresh Authenticate (handled as a new
-enrollment by NanoMDM).
+### One-time challenges checked by the CA
+
+Some CAs can ask another system whether a request's challenge is good.
+OpenXPKI does it with a connector on the SCEP endpoint; NDES has its own form.
+With `[ca.external.challenge_lookup]` on, Cairn stops using the static
+challenge:
+
+- Every enrollment profile and every renewal profile carries a challenge of
+  its own. Cairn stores only its SHA-256.
+- The CA calls `GET <cairn>/scep-challenge/<certificate name>/<request key
+  identifier>/<presented challenge>` with a shared secret as a bearer token.
+  Cairn answers 200 with the challenge when the request may proceed and 404
+  for everything else.
+- A challenge is good once, for one certificate name and one key. A renewal
+  challenge fits only the device's existing name. An enrollment challenge
+  fits the exact name when the grant fixed the serial number, and otherwise
+  any name ending in this server's device suffix. It expires after a day
+  (enrollment) or seven days (renewal).
+- A renewal accepts a new certificate only when its key is the one that used
+  that device's renewal challenge. A certificate in the device's name for any
+  other key is refused.
+
+```toml
+[ca.external.challenge_lookup]
+enabled = true
+secret_file = "/etc/cairn/scep-lookup-secret"   # 32 characters or more
+allowed_sources = ["10.0.5.20"]                 # the CA, when it connects directly
+```
+
+OpenXPKI, in the SCEP endpoint's policy file (check the connector path and
+context names against your version before relying on them):
+
+```yaml
+challenge:
+    value@: connector:scep.<endpoint>.connectors.cairn
+    args:
+      - "[% context.cert_subject_parts.CN.0 %]"
+      - "[% context.csr_subject_key_identifier %]"
+      - "[% context.req_attributes.challengePassword %]"
+
+connectors:
+    cairn:
+        class: Connector::Proxy::HTTP
+        LOCATION: https://cairn.example.org/scep-challenge
+        undef_on_404: 1
+        chomp_result: 1
+        header:
+            Authorization: "Bearer <the secret>"
+```
+
+The CA compares what Cairn returns with what the device presented, so a 404
+is a refusal. Switch Cairn and the CA over together: between the two changes
+enrollments and renewals fail, and nothing else is affected.
+
+What this does not cover: the lookup endpoint is reachable wherever Cairn is,
+and the secret is all that guards it, so keep the secret out of the CA's
+logs and limit the source address where you can. The key identifier comes from
+the CA, so the check is as good as the CA's reading of the request. State:
+built and tested in-process; not yet run against a CA.
 
 ## Interim procedure: re-enroll before expiry (embedded CA and broker modes)
 

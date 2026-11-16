@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -217,5 +218,39 @@ func TestCertificateFromAClosedAttemptIsStillAccepted(t *testing.T) {
 	}
 	if rows[1].State != "renewed" || rows[0].State != "failed" || !strings.Contains(rows[0].Error, "earlier renewal completed") {
 		t.Fatalf("first attempt %q, second %q (%s)", rows[1].State, rows[0].State, rows[0].Error)
+	}
+}
+
+// With a key check, a certificate from the CA in the device's name is not
+// enough: it has to be for the key the check knows.
+func TestKeyCheckDecidesWhichNewCertificateIsTheRenewal(t *testing.T) {
+	var allowed *x509.Certificate
+	s, db, _ := testService(t, Options{KeyCheck: func(_ context.Context, deviceID string, cert *x509.Certificate, since time.Time) error {
+		if deviceID != "dev" || since.After(time.Now()) {
+			return errors.New("unexpected arguments")
+		}
+		if allowed == nil || !cert.Equal(allowed) {
+			return errors.New("its key did not use this device's renewal challenge")
+		}
+		return nil
+	}})
+	addDevice(t, db, "dev", "", time.Now().Add(24*time.Hour))
+	ctx := context.Background()
+	if err := s.Renew(ctx, "dev", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	first, _, _ := db.LastRenewal(ctx, "dev")
+	s.ProfileList(ctx, "dev", first.CommandUUID, []mdmcore.InstalledProfile{{Identifier: "enroll", PayloadTypes: []string{"com.apple.mdm"}}})
+
+	// Someone else got a certificate with this device's name.
+	s.Presented(ctx, "dev", leaf(t, "dev", testCA.cert, testCA.key))
+	got, _, _ := db.LastRenewal(ctx, "dev")
+	if got.State == "renewed" || !strings.Contains(got.Error, "renewal challenge") {
+		t.Fatalf("a certificate for another key ended the renewal: %+v", got)
+	}
+	allowed = leaf(t, "dev", testCA.cert, testCA.key)
+	s.Presented(ctx, "dev", allowed)
+	if got, _, _ = db.LastRenewal(ctx, "dev"); got.State != "renewed" {
+		t.Fatalf("the device's own certificate was not accepted: %+v", got)
 	}
 }

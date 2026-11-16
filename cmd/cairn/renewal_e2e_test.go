@@ -132,7 +132,7 @@ func TestExpiredDeviceIsRenewedAndNothingElse(t *testing.T) {
 		ServerURL:    "https://cairn.example.org/mdm",
 		Hosts:        []string{"mdm.legacy.example"},
 		Anchors:      []*x509.Certificate{ca.cert},
-		Profile:      externalRenewalProfile("cairn.cairn.example.org", [][]byte{ca.cert.Raw}, "https://ca.example.org/scep/mdm", "challenge", nil),
+		Profile:      externalRenewalProfile("cairn.cairn.example.org", [][]byte{ca.cert.Raw}, "https://ca.example.org/scep/mdm", "challenge", nil, nil),
 		ManualOnly:   true,
 	}, log)
 	if err != nil {
@@ -378,5 +378,27 @@ func TestExpiredCertificateIsRefusedWithoutGrace(t *testing.T) {
 	current = ca.issue(t, "MAC.devices.example", now.Add(-100*24*time.Hour), now.Add(-24*time.Hour))
 	if code := send(); code != 400 {
 		t.Fatalf("expired certificate with no grace = %d, want 400", code)
+	}
+}
+
+// The renewal profile asks for a one-time challenge for the device and its
+// certificate name when the CA looks challenges up.
+func TestRenewalProfileCarriesAMintedChallenge(t *testing.T) {
+	var device, name string
+	build := externalRenewalProfile("org.example", nil, "https://ca.example.org/scep/mdm", "static-challenge",
+		func(_ context.Context, deviceID, commonName string) (string, error) {
+			device, name = deviceID, commonName
+			return "one-time-challenge", nil
+		}, nil)
+	body, err := build(renew.Target{DeviceID: "DEVICE1", Identifier: "org.example.enroll", CommonName: "C02ABC.devices.example.org",
+		ServerURL: "https://mdm.example.org/mdm", Topic: "com.apple.mgmt.External.abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "one-time-challenge") || strings.Contains(string(body), "static-challenge") {
+		t.Fatal("renewal profile does not carry the minted challenge")
+	}
+	if device != "DEVICE1" || name != "C02ABC.devices.example.org" {
+		t.Fatalf("minted for device=%q name=%q", device, name)
 	}
 }

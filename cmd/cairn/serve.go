@@ -135,6 +135,7 @@ func runServe(ctx context.Context, args []string) error {
 			Hosts:        renewalCfg.ServerHosts,
 			Anchors:      anchors,
 			Profile:      pki.RenewalProfile,
+			KeyCheck:     renewalKeyCheck(pki.Challenges),
 			ManualOnly:   renewalCfg.ManualOnly,
 		}, log)
 		if err != nil {
@@ -173,6 +174,9 @@ func runServe(ctx context.Context, args []string) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				if pki.Challenges != nil {
+					pki.Challenges.Prune(ctx)
+				}
 				if n, err := sessions.DeleteExpired(ctx); err != nil {
 					log.Warn("session cleanup failed", "err", err)
 				} else if n > 0 {

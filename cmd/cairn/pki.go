@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 	"github.com/nickpdawson/cairn-mdm/internal/broker"
 	"github.com/nickpdawson/cairn-mdm/internal/ca"
+	"github.com/nickpdawson/cairn-mdm/internal/challenge"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
 	"github.com/nickpdawson/cairn-mdm/internal/directory"
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
@@ -89,6 +91,9 @@ type pkiResult struct {
 	SCEPURL   string
 	Challenge string
 	Anchors   [][]byte // trust-anchor certs (DER)
+	// Challenges issues one-time SCEP challenges when the external CA looks
+	// them up with Cairn. Nil otherwise.
+	Challenges *challenge.Service
 	// RenewalProfile builds the enrollment profile that renews a device's
 	// identity certificate. Nil in the modes where renewal is not built.
 	RenewalProfile func(renew.Target) ([]byte, error)
@@ -275,11 +280,33 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	if err != nil {
 		return nil, err
 	}
+	// With a lookup the CA asks Cairn about every request, so each profile
+	// gets a challenge of its own and the static one is not used.
+	var challenges *challenge.Service
+	var mintEnroll func(context.Context, string, string, string) (string, error)
+	var mintRenew func(context.Context, string, string) (string, error)
+	if l := cfg.CA.External.Lookup; l.Enabled {
+		var sources []netip.Prefix
+		for _, src := range l.AllowedSources {
+			p, err := config.ParseSource(src)
+			if err != nil {
+				return nil, fmt.Errorf("ca.external.challenge_lookup.allowed_sources: %w", err)
+			}
+			sources = append(sources, p)
+		}
+		if challenges, err = challenge.New(store, challenge.Options{Secret: l.Secret, AllowedSources: sources}, log); err != nil {
+			return nil, err
+		}
+		deps.SCEPChallenge = challenges.Handler()
+		mintEnroll, mintRenew = challenges.ForEnrollment, challenges.ForRenewal
+		log.Info("one-time SCEP challenges enabled; the CA must look each one up", "lookup_path", "/scep-challenge/{name}/{keyid}/{challenge}", "allowed_sources", len(sources))
+	}
 	mountEnroll(enroll.Config{
 		Organization:  org,
 		CAAnchorsDER:  anchors,
 		SCEPURL:       cfg.CA.External.SCEPURL,
 		Challenge:     cfg.CA.External.Challenge,
+		MintChallenge: mintEnroll,
 		MDMServerURL:  cfg.Server.PublicURL + cfg.Server.MDMPath,
 		SubjectPrefix: "devices." + host,
 	})
@@ -287,8 +314,9 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	deps.CA = caDownloadHandler(anchors)
 	log.Info("external SCEP configured", "scep_url", cfg.CA.External.SCEPURL, "trust_anchors", len(anchors))
 	log.Info("enrollment endpoint ready", "grant_path", "/e/{token}", "open", cfg.Enrollment.AllowOpen)
-	renewalProfile := externalRenewalProfile(org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, signer)
+	renewalProfile := externalRenewalProfile(org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, mintRenew, signer)
 	return &pkiResult{
+		Challenges:     challenges,
 		Org:            org,
 		SCEPURL:        cfg.CA.External.SCEPURL,
 		Challenge:      cfg.CA.External.Challenge,
@@ -297,12 +325,28 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	}, nil
 }
 
+// renewalKeyCheck is the renewal service's key check when the CA looks
+// challenges up with Cairn, and nil when it does not.
+func renewalKeyCheck(c *challenge.Service) func(context.Context, string, *x509.Certificate, time.Time) error {
+	if c == nil {
+		return nil
+	}
+	return c.RenewedKey
+}
+
 // externalRenewalProfile returns the builder for the profile that renews a
 // device's identity certificate in external mode. A renewal is the enrollment
 // profile pushed over MDM: the device asks the external CA for a new
 // certificate exactly as it did when it enrolled.
-func externalRenewalProfile(org string, anchors [][]byte, scepURL, challenge string, signer *profile.Signer) func(renew.Target) ([]byte, error) {
+func externalRenewalProfile(org string, anchors [][]byte, scepURL, static string, mint func(context.Context, string, string) (string, error), signer *profile.Signer) func(renew.Target) ([]byte, error) {
 	return func(t renew.Target) ([]byte, error) {
+		challenge := static
+		if mint != nil {
+			var err error
+			if challenge, err = mint(context.Background(), t.DeviceID, t.CommonName); err != nil {
+				return nil, fmt.Errorf("one-time challenge: %w", err)
+			}
+		}
 		// The device's own topic, not the server default: a server can hold
 		// several push certificates, and a device refuses an enrollment
 		// profile whose topic differs from the one it enrolled under.

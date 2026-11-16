@@ -25,14 +25,17 @@ type Readiness interface {
 // Deps are the optional subsystem handlers the server mounts. A nil handler is
 // simply not mounted.
 type Deps struct {
-	MDM         http.Handler // NanoMDM check-in/command handler (mounted at mdm_path)
-	SCEP        http.Handler // embedded-CA SCEP handler (mounted at /scep)
-	VPNSCEP     http.Handler // SCEP for VPN certificates on device-made keys (mounted at /scep/vpn)
-	Enroll      http.Handler // bare enrollment handler (mounted at GET /enroll; default-denied)
-	EnrollGrant http.Handler // grant-based enrollment (mounted at GET /e/{token})
-	CA          http.Handler // CA trust-anchor download (mounted at GET /ca)
-	CRL         http.Handler // certificate revocation list (mounted at GET /crl; public)
-	UI          UIRegistrar  // admin console; registers its own routes
+	MDM     http.Handler // NanoMDM check-in/command handler (mounted at mdm_path)
+	SCEP    http.Handler // embedded-CA SCEP handler (mounted at /scep)
+	VPNSCEP http.Handler // SCEP for VPN certificates on device-made keys (mounted at /scep/vpn)
+	// SCEPChallenge answers an external CA asking whether a request's one-time
+	// challenge is good (mounted at GET /scep-challenge/{name}/{keyid}/{challenge}).
+	SCEPChallenge http.Handler
+	Enroll        http.Handler // bare enrollment handler (mounted at GET /enroll; default-denied)
+	EnrollGrant   http.Handler // grant-based enrollment (mounted at GET /e/{token})
+	CA            http.Handler // CA trust-anchor download (mounted at GET /ca)
+	CRL           http.Handler // certificate revocation list (mounted at GET /crl; public)
+	UI            UIRegistrar  // admin console; registers its own routes
 }
 
 // UIRegistrar registers admin-console routes on the server mux. Implementing
@@ -129,6 +132,10 @@ func (s *Server) routes() {
 		// as well so a trailing slash still routes.
 		s.mux.Handle("/scep", s.deps.SCEP)
 		s.mux.Handle("/scep/", s.deps.SCEP)
+	}
+
+	if s.deps.SCEPChallenge != nil {
+		s.mux.Handle("GET /scep-challenge/{name}/{keyid}/{challenge}", s.deps.SCEPChallenge)
 	}
 
 	if s.deps.VPNSCEP != nil {

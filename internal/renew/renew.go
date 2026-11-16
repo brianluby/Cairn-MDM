@@ -77,6 +77,7 @@ type Commander interface {
 
 // Target describes the enrollment profile to build for one device.
 type Target struct {
+	DeviceID     string
 	Identifier   string // PayloadIdentifier of the profile being replaced
 	DisplayName  string
 	Organization string
@@ -104,6 +105,11 @@ type Options struct {
 	Anchors []*x509.Certificate
 	// Profile builds the enrollment profile.
 	Profile func(Target) ([]byte, error)
+	// KeyCheck, when set, has to pass for a renewed certificate: it reports
+	// an error unless the certificate's key is the one the CA issued against
+	// this device's renewal challenge since the given time. Without it a
+	// renewal accepts any new certificate from the CA in the device's name.
+	KeyCheck func(ctx context.Context, deviceID string, cert *x509.Certificate, since time.Time) error
 	// ManualOnly keeps the schedule from starting renewals; an administrator
 	// starts each one.
 	ManualOnly bool
@@ -317,6 +323,7 @@ func (s *Service) ProfileList(ctx context.Context, deviceID, commandUUID string,
 	}
 	installed := enrollment[0]
 	body, err := s.opts.Profile(Target{
+		DeviceID:     deviceID,
 		Identifier:   installed.Identifier,
 		DisplayName:  installed.DisplayName,
 		Organization: installed.Organization,
@@ -435,6 +442,10 @@ func (s *Service) acceptable(ctx context.Context, r sqlite.Renewal, cert *x509.C
 	}
 	if want == "" || cert.Subject.CommonName != want {
 		return fmt.Errorf("its name %q differs from the current certificate's %q", cert.Subject.CommonName, want)
+	}
+	if s.opts.KeyCheck != nil {
+		started := s.opts.Now().Add(-s.since(r.StartedAt)).Add(-time.Minute)
+		return s.opts.KeyCheck(ctx, r.DeviceID, cert, started)
 	}
 	return nil
 }

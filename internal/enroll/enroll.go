@@ -49,6 +49,12 @@ type Config struct {
 	// the grant and reconstructs the certificate from server policy.
 	PerGrantChallenge bool
 
+	// MintChallenge, when set, supplies a one-time challenge for each profile
+	// in place of the static Challenge. commonName is the certificate name the
+	// device will ask for when the grant fixes its serial number, and empty
+	// otherwise; cnSuffix is SubjectPrefix.
+	MintChallenge func(ctx context.Context, commonName, cnSuffix, owner string) (string, error)
+
 	// AllowOpen serves the bare /enroll route unauthenticated (homelab
 	// opt-in). Default false → bare /enroll is 404; use grant links.
 	AllowOpen bool
@@ -157,6 +163,17 @@ func (h *Handler) serveProfile(w http.ResponseWriter, r *http.Request, red Redem
 	challenge := h.cfg.Challenge
 	if h.cfg.PerGrantChallenge {
 		challenge = token // the Broker resolves this token to the grant at SCEP time
+	}
+	if h.cfg.MintChallenge != nil {
+		known := ""
+		if red.ExpectedSerial != "" {
+			known = strings.Replace(subjectCN, "%SerialNumber%", red.ExpectedSerial, 1)
+		}
+		if challenge, err = h.cfg.MintChallenge(r.Context(), known, h.cfg.SubjectPrefix, red.Owner); err != nil {
+			h.log.Error("mint enrollment challenge", "err", err)
+			http.Error(w, "failed to build profile", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	prof, err := profile.BuildEnrollment(profile.EnrollmentParams{
