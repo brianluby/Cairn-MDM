@@ -150,6 +150,12 @@
                 {{if not $.Owner}}<label>Account <input type="text" name="account" required size="16" placeholder="jsmith" autocomplete="off"></label>{{end}}
                 <button class="btn" type="submit">{{if .Latest}}Send new profile{{else}}Send profile{{end}}</button>
               </form>
+              {{if .Offered}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/withdraw" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">Withdraw profile</button>
+              </form>
+              {{end}}
               {{if and .Server.IsIKEv2 (not .Latest) (not .Server.IKEv2.UsesCertificate)}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/remove" style="display:inline"
                     onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">

@@ -36,6 +36,9 @@ type IdentityStore interface {
 	ClaimVPNOffer(ctx context.Context, offerID int64, spkiSHA256, backend string, now time.Time) (int64, error)
 	CloseVPNOffer(ctx context.Context, id int64, why string) error
 	ExpireVPNOffers(ctx context.Context, now time.Time) (int, error)
+	WithdrawVPNOffer(ctx context.Context, deviceID string, serverID int64, actor string) (bool, error)
+	VPNCommandOpen(ctx context.Context, deviceID, commandUUID string) (bool, error)
+	WithdrawVPNCommand(ctx context.Context, deviceID, commandUUID, why string) error
 	GetDeviceOwner(ctx context.Context, deviceID string) (sqlite.DeviceOwner, error)
 	GetDevice(ctx context.Context, id string) (sqlite.Device, error)
 }
@@ -300,6 +303,16 @@ func (s *Service) Remove(ctx context.Context, deviceID string, serverID int64, a
 	}
 	s.log.Info("vpn: profile removal queued", "device", deviceID, "server", server.Slug, "actor", actor)
 	return nil
+}
+
+// Withdraw closes the device's unanswered offer for a server, so the challenge
+// in a profile sent to the wrong device or for the wrong account stops working.
+func (s *Service) Withdraw(ctx context.Context, deviceID string, serverID int64, actor string) (bool, error) {
+	found, err := s.store.WithdrawVPNOffer(ctx, deviceID, serverID, actor)
+	if err == nil && found {
+		s.log.Info("vpn: offer withdrawn", "device", deviceID, "server", serverID, "actor", actor)
+	}
+	return found, err
 }
 
 // record logs a failure to store an outcome. The row then stays as it was and

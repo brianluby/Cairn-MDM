@@ -221,15 +221,23 @@ its request to `<public_url>/scep/vpn`. Cairn then:
 1. Finds the offer by the challenge. Only a hash of the challenge is stored.
 2. Refuses unless the device is still enrolled, the owner is still enabled in
    the directory, and the request asks for the offer's account name and
-   nothing else.
+   nothing else: one common name, at most the owner's address, and no
+   extension beyond a key usage. An external CA is sent the device's request
+   as it is, so a request that says more never reaches it.
 3. Binds the offer to that public key. The same key may repeat its request
    until the profile is reported installed; any other key is refused.
 4. Builds the certificate from the offer, has the configured CA sign it (its
    own, or an external one through the RA certificate), and checks what came
    back the same way as for an OpenVPN certificate.
 
-An offer nobody answers is withdrawn after seven days, or as soon as the
-device's enrollment ends, and its queued profile is replaced.
+An offer nobody answers is withdrawn after seven days, when the device
+reports that the profile failed, or as soon as the device's enrollment ends;
+its queued profile is replaced. "Withdraw profile" on the device page ends one
+sooner, for a profile sent to the wrong device or for the wrong account.
+
+If the device gave up, left management, or its owner was disabled while the CA
+was working, the certificate is not handed over. It is recorded as issued with
+no holder and listed for revocation.
 
 The endpoint is reachable by anyone who can reach Cairn; the challenge is what
 authorizes a request. Someone who reads the challenge out of the profile on the

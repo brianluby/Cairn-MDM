@@ -3,6 +3,7 @@ package vpn_test
 import (
 	"bytes"
 	"context"
+	"encoding/asn1"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -91,6 +92,39 @@ func offeredChallenge(t *testing.T, cmd *mdm.Command) string {
 	return ""
 }
 
+// queuedChallenge returns the challenge in the command body now stored for the
+// UUID, or "" once the profile has been replaced. The profile sits base64
+// encoded inside the command, so a text search of the body finds nothing.
+func queuedChallenge(t *testing.T, f *fixture, commandUUID string) string {
+	t.Helper()
+	var raw []byte
+	if err := f.db.SQL().QueryRow(`SELECT v FROM nano_kv WHERE bucket='queue' AND k=?`, commandUUID+".raw").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Command struct {
+			RequestType string
+			Payload     []byte
+		}
+	}
+	if err := plist.Unmarshal(raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Command.RequestType != "InstallProfile" {
+		return ""
+	}
+	var top map[string]any
+	if err := plist.Unmarshal(c.Command.Payload, &top); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range top["PayloadContent"].([]any) {
+		if m := p.(map[string]any); m["PayloadType"] == "com.apple.security.scep" {
+			return m["PayloadContent"].(map[string]any)["Challenge"].(string)
+		}
+	}
+	return ""
+}
+
 func deviceRequest(t *testing.T, cn, challenge string) *scep.CSRReqMessage {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -160,13 +194,15 @@ func TestDeviceMadeKeyGetsACertificateOnce(t *testing.T) {
 	}
 
 	// The device reports the profile installed; the challenge leaves the queue.
+	pending := f.device(t, "PHONE1", "")
+	if queuedChallenge(t, f, pending.CommandUUID) != challenge {
+		t.Fatal("test cannot see the challenge in the queued profile")
+	}
 	cmd := f.device(t, "PHONE1", "Acknowledged")
 	if rows, _ = f.db.DeviceVPNIdentities(ctx, "PHONE1"); rows[0].DeployStatus != "installed" {
 		t.Fatalf("deploy status after ack = %q", rows[0].DeployStatus)
 	}
-	var raw []byte
-	f.db.SQL().QueryRow(`SELECT v FROM nano_kv WHERE bucket='queue' AND k=?`, cmd.CommandUUID+".raw").Scan(&raw)
-	if bytes.Contains(raw, []byte(challenge)) || !bytes.Contains(raw, []byte("ProfileList")) {
+	if queuedChallenge(t, f, cmd.CommandUUID) != "" {
 		t.Fatal("the queued profile, with its challenge, was not replaced after the device answered")
 	}
 	if _, err = svc.SignCSRContext(ctx, requestWithKey(t, key, "alice", challenge)); err == nil {
@@ -229,23 +265,49 @@ func TestDeviceRequestCannotAddNames(t *testing.T) {
 	}
 	challenge := offeredChallenge(t, f.device(t, "PHONE1", ""))
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	for _, extra := range []x509.CertificateRequest{
-		{EmailAddresses: []string{"administrator@example.org"}},
-		{DNSNames: []string{"vpn.example.org"}},
+	alice := pkix.Name{CommonName: "alice"}
+	// An AD user principal name as a SAN otherName, which Go's parsed request
+	// fields do not show.
+	upn, _ := asn1.Marshal(struct {
+		OID   asn1.ObjectIdentifier
+		Value string `asn1:"explicit,tag:0,utf8"`
+	}{asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 20, 2, 3}, "administrator@example.org"})
+	otherName, _ := asn1.Marshal([]asn1.RawValue{{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: upn[2:]}})
+	ca, _ := asn1.Marshal(struct {
+		IsCA bool
+	}{true})
+	for name, extra := range map[string]x509.CertificateRequest{
+		"another address": {Subject: alice, EmailAddresses: []string{"administrator@example.org"}},
+		"a DNS name":      {Subject: alice, DNSNames: []string{"vpn.example.org"}},
+		// Go reads the last common name, OpenSSL-based software the first.
+		"two common names": {Subject: pkix.Name{ExtraNames: []pkix.AttributeTypeAndValue{
+			{Type: asn1.ObjectIdentifier{2, 5, 4, 3}, Value: "administrator"}, {Type: asn1.ObjectIdentifier{2, 5, 4, 3}, Value: "alice"}}}},
+		"an organizational unit": {Subject: pkix.Name{CommonName: "alice", OrganizationalUnit: []string{"Domain Admins"}}},
+		"a principal name":       {Subject: alice, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 17}, Value: otherName}}},
+		"CA rights":              {Subject: alice, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 19}, Critical: true, Value: ca}}},
 	} {
-		extra.Subject = pkix.Name{CommonName: "alice"}
 		der, err := x509.CreateCertificateRequest(rand.Reader, &extra, key)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", name, err)
 		}
-		csr, _ := x509.ParseCertificateRequest(der)
+		csr, err := x509.ParseCertificateRequest(der)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 		if _, err = svc.SignCSRContext(ctx, &scep.CSRReqMessage{CSR: csr, ChallengePassword: challenge}); err == nil {
-			t.Fatalf("request with %v %v was certified", extra.EmailAddresses, extra.DNSNames)
+			t.Fatalf("a request with %s was certified", name)
 		}
 	}
-	// The refusals did not spend the offer: the right request still works.
-	if _, err := svc.SignCSRContext(ctx, requestWithKey(t, key, "alice", challenge)); err != nil {
-		t.Fatalf("offer was spent by a refused request: %v", err)
+	if rows, _ := f.db.DeviceVPNIdentities(ctx, "PHONE1"); len(rows) != 0 {
+		t.Fatal("a refused request reached the certificate authority")
+	}
+	// What a device sends: the name, the owner's address, a key usage.
+	usage, _ := asn1.Marshal(asn1.BitString{Bytes: []byte{0xa0}, BitLength: 3})
+	der, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: alice, EmailAddresses: []string{"alice@example.org"},
+		ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 15}, Critical: true, Value: usage}}}, key)
+	csr, _ := x509.ParseCertificateRequest(der)
+	if _, err := svc.SignCSRContext(ctx, &scep.CSRReqMessage{CSR: csr, ChallengePassword: challenge}); err != nil {
+		t.Fatalf("a device-shaped request was refused: %v", err)
 	}
 }
 
@@ -260,14 +322,147 @@ func TestUnansweredOfferIsWithdrawn(t *testing.T) {
 	if _, err := f.db.SQL().Exec(`UPDATE vpn_offers SET expires_at='2000-01-01T00:00:00Z'`); err != nil {
 		t.Fatal(err)
 	}
+	if queuedChallenge(t, f, cmd.CommandUUID) != challenge {
+		t.Fatal("test cannot see the challenge in the queued profile")
+	}
 	svc.Sweep(ctx)
-	var raw []byte
-	f.db.SQL().QueryRow(`SELECT v FROM nano_kv WHERE bucket='queue' AND k=?`, cmd.CommandUUID+".raw").Scan(&raw)
-	if bytes.Contains(raw, []byte(challenge)) {
+	if queuedChallenge(t, f, cmd.CommandUUID) != "" {
 		t.Fatal("an expired offer's profile is still queued with its challenge")
 	}
 	// A new offer can then be made.
 	if _, err := svc.Issue(ctx, "PHONE1", serverID, "alice", "nick"); err != nil {
 		t.Fatalf("new offer after the old one expired: %v", err)
+	}
+}
+
+// A device that reports the profile failed will not ask for its certificate,
+// so the challenge stops working and a new profile can be sent.
+func TestDeviceErrorClosesTheOffer(t *testing.T) {
+	ctx := context.Background()
+	f, svc, serverID := deviceKeyFixture(t)
+	if _, err := svc.Issue(ctx, "PHONE1", serverID, "alice", "nick"); err != nil {
+		t.Fatal(err)
+	}
+	challenge := offeredChallenge(t, f.device(t, "PHONE1", ""))
+	cmd := f.device(t, "PHONE1", "Error")
+	if queuedChallenge(t, f, cmd.CommandUUID) != "" {
+		t.Fatal("the failed profile is still stored with its challenge")
+	}
+	if _, err := svc.SignCSRContext(ctx, deviceRequest(t, "alice", challenge)); err == nil {
+		t.Fatal("the challenge works after the device reported the profile failed")
+	}
+	if _, err := svc.Issue(ctx, "PHONE1", serverID, "alice", "nick"); err != nil {
+		t.Fatalf("new profile after a failed one: %v", err)
+	}
+}
+
+func TestAdministratorWithdrawsAnOffer(t *testing.T) {
+	ctx := context.Background()
+	f, svc, serverID := deviceKeyFixture(t)
+	if _, err := svc.Issue(ctx, "PHONE1", serverID, "alice", "nick"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := f.device(t, "PHONE1", "")
+	challenge := offeredChallenge(t, cmd)
+	if found, err := svc.Withdraw(ctx, "PHONE1", serverID, "nick"); err != nil || !found {
+		t.Fatalf("Withdraw = %v, %v", found, err)
+	}
+	if queuedChallenge(t, f, cmd.CommandUUID) != "" {
+		t.Fatal("the withdrawn profile is still stored with its challenge")
+	}
+	if _, err := svc.SignCSRContext(ctx, deviceRequest(t, "alice", challenge)); err == nil {
+		t.Fatal("a withdrawn challenge still works")
+	}
+	if found, _ := svc.Withdraw(ctx, "PHONE1", serverID, "nick"); found {
+		t.Fatal("a second withdrawal found something")
+	}
+	if _, err := svc.Issue(ctx, "PHONE1", serverID, "alice", "nick"); err != nil {
+		t.Fatalf("new profile after a withdrawal: %v", err)
+	}
+}
+
+// duringIssue runs a hook while the CA is working, to stand in for a slow CA.
+type duringIssue struct {
+	issue.CABackend
+	hook func()
+}
+
+func (b duringIssue) Issue(ctx context.Context, req issue.IssueRequest) (issue.IssueResult, error) {
+	b.hook()
+	return b.CABackend.Issue(ctx, req)
+}
+
+func deviceKeyService(t *testing.T, f *fixture, backend issue.CABackend) *vpn.Service {
+	t.Helper()
+	svc, err := vpn.NewService(f.servers, f.db, f.dir, backend, f.cmd,
+		vpn.Options{Organization: "org.example", Policy: issue.Policy{LeafValidity: 365 * 24 * time.Hour, Backdate: 5 * time.Minute},
+			DeviceSCEPURL: "https://mdm.example.org/scep/vpn"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func TestCertificateReadyTooLateIsNotHandedOver(t *testing.T) {
+	ctx := context.Background()
+	for name, change := range map[string]func(f *fixture){
+		"device gave up on the profile": func(f *fixture) { f.device(t, "PHONE1", "Error") },
+		"owner disabled":                func(f *fixture) { f.dir.disabled = true },
+		"device re-enrolled": func(f *fixture) {
+			r := mdm.NewRequestWithContext(ctx, nil)
+			r.EnrollID = &mdm.EnrollID{ID: "PHONE1"}
+			if err := f.db.NanoStorage(nil).Disable(r); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, first, serverID := deviceKeyFixture(t)
+			if _, err := first.Issue(ctx, "PHONE1", serverID, "alice", "nick"); err != nil {
+				t.Fatal(err)
+			}
+			cmd := f.device(t, "PHONE1", "")
+			challenge := offeredChallenge(t, cmd)
+			svc := deviceKeyService(t, f, duringIssue{CABackend: f.backend, hook: func() { change(f) }})
+			if _, err := svc.SignCSRContext(ctx, deviceRequest(t, "alice", challenge)); err == nil {
+				t.Fatal("the certificate was handed over")
+			}
+			rows, _ := f.db.DeviceVPNIdentities(ctx, "PHONE1")
+			if len(rows) != 1 || rows[0].State != sqlite.VPNIssued || rows[0].DeployStatus != "failed" || rows[0].CertSerial == "" {
+				t.Fatalf("identity = %+v; want issued, not delivered, with its serial for revocation", rows)
+			}
+			if queuedChallenge(t, f, cmd.CommandUUID) != "" {
+				t.Fatal("the profile is still stored with its challenge")
+			}
+		})
+	}
+}
+
+func TestUntrustedCAAnswerForADeviceKeyIsHeld(t *testing.T) {
+	ctx := context.Background()
+	f, first, serverID := deviceKeyFixture(t)
+	if _, err := first.Issue(ctx, "PHONE1", serverID, "alice", "nick"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := f.device(t, "PHONE1", "")
+	challenge := offeredChallenge(t, cmd)
+	svc := deviceKeyService(t, f, heldBackend{f.backend})
+	req := deviceRequest(t, "alice", challenge)
+	if _, err := svc.SignCSRContext(ctx, req); err == nil {
+		t.Fatal("a certificate came back from a CA whose answer was lost")
+	}
+	rows, _ := f.db.DeviceVPNIdentities(ctx, "PHONE1")
+	if len(rows) != 1 || rows[0].State != sqlite.VPNQuarantined {
+		t.Fatalf("identity = %+v, want held", rows)
+	}
+	if queuedChallenge(t, f, cmd.CommandUUID) != "" {
+		t.Fatal("the profile is still stored with its spent challenge")
+	}
+	// The same key asking again gets nothing and starts nothing.
+	if _, err := first.SignCSRContext(ctx, req); err == nil {
+		t.Fatal("a held request was answered on retry")
+	}
+	if rows, _ = f.db.DeviceVPNIdentities(ctx, "PHONE1"); len(rows) != 1 {
+		t.Fatalf("identity rows after the retry = %d", len(rows))
 	}
 }

@@ -3,6 +3,7 @@ package issue
 import (
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ var (
 	oidKeyUsage         = asn1.ObjectIdentifier{2, 5, 29, 15}
 	oidEKU              = asn1.ObjectIdentifier{2, 5, 29, 37}
 	oidSubjectKeyId     = asn1.ObjectIdentifier{2, 5, 29, 14}
+	oidCommonName       = asn1.ObjectIdentifier{2, 5, 4, 3}
 )
 
 // verifyLeafMatchesIntent asserts the returned certificate carries EXACTLY the
@@ -28,6 +30,17 @@ var (
 func verifyLeafMatchesIntent(leaf, tmpl *x509.Certificate, wantSPKISHA256 string, pol Policy, now time.Time) error {
 	if leaf.Subject.CommonName != tmpl.Subject.CommonName {
 		return fmt.Errorf("CN %q != intent %q", leaf.Subject.CommonName, tmpl.Subject.CommonName)
+	}
+	// Go reports the last common name of a subject; other software reads the
+	// first. A subject with two would name different people to each.
+	names := 0
+	for _, atv := range leaf.Subject.Names {
+		if atv.Type.Equal(oidCommonName) {
+			names++
+		}
+	}
+	if names != 1 {
+		return fmt.Errorf("subject carries %d common names, want 1", names)
 	}
 	// The certified public key MUST be the one that proved possession.
 	spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
@@ -105,8 +118,12 @@ func verifyLeafMatchesIntent(leaf, tmpl *x509.Certificate, wantSPKISHA256 string
 // rfc822Name values, erroring if ANY GeneralName is not an rfc822Name ([1]). A
 // missing SAN extension is valid (a user-less device certificate) and yields nil.
 func leafSANRfc822Only(leaf *x509.Certificate) ([]string, error) {
+	return sanRfc822Only(leaf.Extensions)
+}
+
+func sanRfc822Only(extensions []pkix.Extension) ([]string, error) {
 	var raw []byte
-	for _, e := range leaf.Extensions {
+	for _, e := range extensions {
 		if e.Id.Equal(oidSAN) {
 			raw = e.Value
 			break
@@ -140,6 +157,41 @@ func leafSANRfc822Only(leaf *x509.Certificate) ([]string, error) {
 		emails = append(emails, string(gn.Bytes))
 	}
 	return emails, nil
+}
+
+// CheckDeviceRequest reports whether a certificate request asks for exactly
+// one subject common name, no address other than email, and nothing else that
+// could shape a certificate. It is for a backend that reads the request: an
+// external CA is sent the device's own request, so a request that says more
+// than Cairn intends must never reach it. The parsed fields of
+// x509.CertificateRequest are not enough for this: they keep one of several
+// common names and drop subject alternative names of types Go has no field for.
+func CheckDeviceRequest(csr *x509.CertificateRequest, commonName, email string) error {
+	var subject pkix.RDNSequence
+	if rest, err := asn1.Unmarshal(csr.RawSubject, &subject); err != nil || len(rest) != 0 {
+		return errors.New("subject is unreadable")
+	}
+	if len(subject) != 1 || len(subject[0]) != 1 || !subject[0][0].Type.Equal(oidCommonName) {
+		return errors.New("subject must be one common name and nothing else")
+	}
+	if got, _ := subject[0][0].Value.(string); got != commonName {
+		return fmt.Errorf("subject names %q, want %q", got, commonName)
+	}
+	for _, e := range csr.Extensions {
+		if !e.Id.Equal(oidSAN) && !e.Id.Equal(oidKeyUsage) {
+			return fmt.Errorf("request asks for extension %s", e.Id)
+		}
+	}
+	emails, err := sanRfc822Only(csr.Extensions)
+	if err != nil {
+		return fmt.Errorf("subject alternative name: %w", err)
+	}
+	for _, e := range emails {
+		if e != email {
+			return fmt.Errorf("request asks for address %q, want %q", e, email)
+		}
+	}
+	return nil
 }
 
 // equalStringSet reports multiset (order-independent) equality.

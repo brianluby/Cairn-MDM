@@ -135,18 +135,11 @@ func (s *Service) signDeviceKey(ctx context.Context, m *scep.CSRReqMessage) (lea
 		return nil, "server record no longer takes certificates", errOfferRefused
 	}
 	owner := offer.Owner
-	// The profile told the device which name to ask for. A request for another
-	// name is refused before a CA that reads the request could act on it.
-	if m.CSR.Subject.CommonName != owner.AccountName {
-		return nil, fmt.Sprintf("request names %q, offer is for %q", m.CSR.Subject.CommonName, owner.AccountName), errOfferRefused
-	}
-	if len(m.CSR.DNSNames)+len(m.CSR.IPAddresses)+len(m.CSR.URIs) != 0 {
-		return nil, "request asks for names the offer does not cover", errOfferRefused
-	}
-	for _, email := range m.CSR.EmailAddresses {
-		if email != owner.UPN {
-			return nil, fmt.Sprintf("request asks for address %q, offer is for %q", email, owner.UPN), errOfferRefused
-		}
+	// The profile told the device what to ask for. An external CA is sent this
+	// request as it is, so one that says anything else is refused here, before
+	// the offer is spent and before any CA sees it.
+	if err = issue.CheckDeviceRequest(m.CSR, owner.AccountName, owner.UPN); err != nil {
+		return nil, "request does not match the offer", err
 	}
 	if fresh, rerr := s.dir.RevalidateOwner(ctx, owner); rerr != nil || fresh == nil || *fresh != owner {
 		return nil, "owner is disabled, missing or changed in the directory", errOfferRefused
@@ -168,11 +161,19 @@ func (s *Service) signDeviceKey(ctx context.Context, m *scep.CSRReqMessage) (lea
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
 	defer cancel()
 
+	// The challenge is spent. When no certificate comes of it, the queued
+	// profile that still holds it is replaced.
+	abandon := func(why string) {
+		if werr := s.store.WithdrawVPNCommand(ctx, offer.DeviceID, offer.CommandUUID, "No VPN certificate: "+why); werr != nil {
+			s.log.Error("vpn: queued profile not withdrawn", "identity", id, "err", werr)
+		}
+	}
 	res, err := s.backend.Issue(ctx, req)
 	clean := res.Status == issue.StatusFailedClean || s.backend.Capabilities().AtomicIssue
 	switch {
 	case err != nil && clean:
 		s.record(id, s.store.FailVPNIdentity(ctx, id, "CA refused: "+err.Error()))
+		abandon("the certificate authority refused the request")
 		return nil, "CA refused", err
 	case err != nil || res.Status != issue.StatusIssued:
 		why := "CA outcome unknown"
@@ -180,17 +181,36 @@ func (s *Service) signDeviceKey(ctx context.Context, m *scep.CSRReqMessage) (lea
 			why += ": " + err.Error()
 		}
 		s.record(id, s.store.QuarantineVPNIdentity(ctx, id, why, res.Serial, nil))
+		abandon("the request is held for review")
 		return nil, why, ErrHeld
 	case res.Leaf == nil || res.Serial == "":
 		s.record(id, s.store.QuarantineVPNIdentity(ctx, id, "CA reported success without a certificate", res.Serial, nil))
+		abandon("the request is held for review")
 		return nil, "CA reported success without a certificate", ErrHeld
 	}
 	if verr := issue.VerifyLeaf(res.Leaf, req, s.opts.Policy, s.now()); verr != nil {
 		s.record(id, s.store.QuarantineVPNIdentity(ctx, id, "certificate differs from the request: "+verr.Error(), res.Serial, res.Leaf.Raw))
+		abandon("the request is held for review")
 		return nil, "certificate differs from the request", ErrHeld
 	}
 	if err = s.store.CompleteVPNIdentity(ctx, id, res.Serial, res.Leaf.Raw, res.Leaf.NotAfter); err != nil {
+		s.log.Error("vpn: certificate issued but not recorded; revoke it at the CA", "identity", id, "serial", res.Serial, "err", err)
 		return nil, "outcome not recorded", err
+	}
+	// The CA can take long enough for things to change. A device that gave up
+	// on the profile, left management, or whose owner was disabled meanwhile
+	// does not get the certificate; it is recorded as issued with no holder.
+	undeliverable := ""
+	if open, oerr := s.store.VPNCommandOpen(ctx, offer.DeviceID, offer.CommandUUID); oerr != nil || !open {
+		undeliverable = "the device stopped waiting for the profile before the certificate was ready"
+	} else if dev, derr := s.store.GetDevice(ctx, offer.DeviceID); derr != nil || dev.CheckedOutAt.Valid || !dev.TokenUpdatedAt.Valid {
+		undeliverable = "the device left management before the certificate was ready"
+	} else if fresh, rerr := s.dir.RevalidateOwner(ctx, owner); rerr != nil || fresh == nil || *fresh != owner {
+		undeliverable = "the owner was disabled or changed before the certificate was ready"
+	}
+	if undeliverable != "" {
+		s.record(id, s.store.MarkVPNDeployFailed(ctx, id, "Certificate not delivered: "+undeliverable))
+		return nil, undeliverable, errOfferRefused
 	}
 	s.log.Info("vpn: certificate issued for a device-made key", "identity", id, "device", offer.DeviceID, "server", server.Slug, "owner", owner.UPN, "serial", res.Serial)
 	return res.Leaf, "", nil

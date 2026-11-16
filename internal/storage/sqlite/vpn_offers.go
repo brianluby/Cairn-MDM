@@ -222,3 +222,61 @@ func (db *DB) OpenVPNOffers(ctx context.Context, deviceID string) ([]VPNOffer, e
 	}
 	return out, rows.Err()
 }
+
+// vpnOfferCommandResult closes an offer the device never answered when its
+// InstallProfile command reaches a final status: the device will not ask for
+// the certificate any more, so the challenge must stop working at once.
+func vpnOfferCommandResult(ctx context.Context, ex sqlExecutor, deviceID, commandUUID, deployStatus string) error {
+	why := "The device reported the profile installed without asking for its certificate"
+	if deployStatus != "installed" {
+		why = "The device could not install the profile"
+	}
+	_, err := closeVPNOffers(ctx, ex, why, `command_uuid=? AND device_id=?`, commandUUID, deviceID)
+	return err
+}
+
+// WithdrawVPNOffer closes a device's open offer for a server on an
+// administrator's word, for a profile sent to the wrong device or account. It
+// reports whether there was one.
+func (db *DB) WithdrawVPNOffer(ctx context.Context, deviceID string, serverID int64, actor string) (bool, error) {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	n, err := closeVPNOffers(ctx, tx, "Withdrawn by "+actor, `device_id=? AND server_id=?`, deviceID, serverID)
+	if err != nil || n == 0 {
+		return false, err
+	}
+	if err = vpnIdentityAudit(ctx, tx, actor, "vpn.offer.withdraw", fmt.Sprintf("device=%s server=%d", deviceID, serverID)); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// VPNCommandOpen reports whether the device has yet to give a final answer to
+// the command.
+func (db *DB) VPNCommandOpen(ctx context.Context, deviceID, commandUUID string) (bool, error) {
+	var n int
+	err := db.sql.QueryRowContext(ctx, `SELECT count(*) FROM command_history WHERE command_uuid=? AND device_id=? AND status IN ('Queued','Sent','NotNow')`,
+		commandUUID, deviceID).Scan(&n)
+	return n > 0, err
+}
+
+// WithdrawVPNCommand replaces a queued VPN profile whose certificate request
+// ended without a certificate, and says why in the command history.
+func (db *DB) WithdrawVPNCommand(ctx context.Context, deviceID, commandUUID, why string) error {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE command_history SET status='Cancelled', error=?, result_at=datetime('now')
+		WHERE command_uuid=? AND device_id=? AND status IN ('Queued','Sent','NotNow')`, why, commandUUID, deviceID); err != nil {
+		return err
+	}
+	if err = scrubVPNPayload(ctx, tx, commandUUID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

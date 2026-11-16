@@ -29,6 +29,7 @@ type VPNServers interface {
 type VPNIssuer interface {
 	Issue(ctx context.Context, deviceID string, serverID int64, account, actor string) (sqlite.VPNIdentity, error)
 	Remove(ctx context.Context, deviceID string, serverID int64, actor string) error
+	Withdraw(ctx context.Context, deviceID string, serverID int64, actor string) (bool, error)
 	Revoke(ctx context.Context, identityID int64, actor string) error
 	ConfirmRevokedAtCA(ctx context.Context, identityID int64, actor string) error
 	CanRevoke() bool
@@ -64,6 +65,7 @@ func (a *App) registerVPN(mux *http.ServeMux) {
 	mux.Handle("POST /admin/vpn/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerDelete)))
 	mux.Handle("POST /admin/devices/{id}/vpn/{server}/issue", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNIssue)))
 	mux.Handle("POST /admin/devices/{id}/vpn/{server}/remove", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNRemove)))
+	mux.Handle("POST /admin/devices/{id}/vpn/{server}/withdraw", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNWithdraw)))
 	mux.Handle("POST /admin/vpn/identities/{id}/revoke", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNRevoke)))
 	mux.Handle("POST /admin/vpn/identities/{id}/revoked-at-ca", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNRevokedAtCA)))
 }
@@ -463,6 +465,29 @@ func (a *App) handleVPNRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape("Removal queued. The certificate stays valid until it is revoked or expires."), http.StatusSeeOther)
+}
+
+// handleVPNWithdraw ends an offer the device has not answered.
+func (a *App) handleVPNWithdraw(w http.ResponseWriter, r *http.Request) {
+	if !a.vpnIssueGate(w, r) {
+		return
+	}
+	deviceID := r.PathValue("id")
+	back := "/admin/devices/" + url.PathEscape(deviceID)
+	serverID, err := strconv.ParseInt(r.PathValue("server"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	found, err := a.vpnIssuer.Withdraw(r.Context(), deviceID, serverID, sessionFrom(r).Identity.Username)
+	msg := "Profile withdrawn. The device can no longer ask for a certificate with it."
+	if err != nil {
+		a.log.Error("vpn offer withdrawal", "device", deviceID, "err", err)
+		msg = "Not withdrawn."
+	} else if !found {
+		msg = "Nothing to withdraw: the device has already asked for its certificate, or the profile was withdrawn."
+	}
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 func (a *App) vpnIdentityFromPath(w http.ResponseWriter, r *http.Request) (sqlite.VPNIdentity, bool) {
