@@ -19,3 +19,20 @@ func TestEnrollmentLinksNeedACAThatAsksCairn(t *testing.T) {
 		t.Fatal("links are off in broker mode")
 	}
 }
+
+// A restore needs every secret file the config names, or the restored server
+// does not start.
+func TestBackupCarriesTheLookupSecretAndIngestToken(t *testing.T) {
+	var cfg config.Config
+	cfg.CA.External.Lookup.SecretFile = "/etc/cairn/scep-lookup-secret"
+	cfg.RADIUS.IngestTokenFile = "/etc/cairn/radius-ingest-token"
+	got := map[string]bool{}
+	for _, f := range referencedFiles(cfg) {
+		got[f] = true
+	}
+	for _, want := range []string{cfg.CA.External.Lookup.SecretFile, cfg.RADIUS.IngestTokenFile} {
+		if !got[want] {
+			t.Errorf("backup leaves out %s", want)
+		}
+	}
+}

@@ -187,6 +187,7 @@ func referencedFiles(cfg config.Config) []string {
 		cfg.Profile.Signing.CertFile, cfg.Profile.Signing.KeyFile,
 		cfg.CA.Import.CertFile, cfg.CA.Import.KeyFile, cfg.CA.Import.RootCertFile,
 		cfg.CA.External.CAChainFile, cfg.CA.External.ChallengeFile,
+		cfg.CA.External.Lookup.SecretFile, cfg.RADIUS.IngestTokenFile,
 		cfg.CA.Broker.RACertFile, cfg.CA.Broker.RAKeyFile, cfg.CA.Broker.CAChainFile, cfg.CA.Broker.ChallengeFile,
 		cfg.VPN.Issuer.RACertFile, cfg.VPN.Issuer.RAKeyFile, cfg.VPN.Issuer.CAChainFile,
 		cfg.Auth.LDAP.BindPasswordFile, cfg.Auth.OIDC.ClientSecretFile, cfg.Alerts.WebhookURLFile,
