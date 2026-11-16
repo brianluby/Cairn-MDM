@@ -1,6 +1,6 @@
 # Device certificate lifecycle: current behavior and the renewal decision
 
-Updated November 13, 2026. This document records what Cairn does about device
+Updated November 16, 2026. This document records what Cairn does about device
 identity certificates: how expiry is applied, how renewal works when an
 external CA issues them, and why renewal is still absent for the embedded CA
 and broker modes, with the interim procedure and the decisions needed there.
@@ -148,11 +148,20 @@ and certificate name, and acts in that window can have their own certificate
 accepted in the device's place; the real device is then refused. One-time
 challenges, below, close this.
 
-Tested on hardware: two Macs and an iPhone renewed this way. A Mac accepts
-the replacement for a profile that was installed by hand and signed by another
-server's certificate. Both platforms answer with a fresh Authenticate and then
-TokenUpdate. The profile has to repeat the push topic the device enrolled
-under, or the device refuses it.
+Tested on hardware, November 16, 2026, with OpenXPKI as the CA: two Macs,
+three iPhones and an iPad renewed this way, most of them 90 days past expiry
+and inside the grace period. A Mac accepts the replacement for a profile that
+was installed by hand and signed by another server's certificate. Both
+platforms answer with a fresh Authenticate and then TokenUpdate, within about
+ten seconds of the push. The profile has to repeat the push topic the device
+enrolled under, or the device refuses it. A Mac renewed with
+`check_out_when_removed` and `bootstrap_token` set showed both in its installed
+profile afterwards.
+
+A device past the grace period is refused at every check-in and cannot be told
+anything. One iPhone was 210 days expired: raising `expired_grace_days` above
+that, restarting, and lowering it again after the device renewed brought it
+back without touching the device.
 
 ### One-time challenges checked by the CA
 
@@ -211,8 +220,16 @@ enrollments and renewals fail, and nothing else is affected.
 What this does not cover: the lookup endpoint is reachable wherever Cairn is,
 and the secret is all that guards it, so keep the secret out of the CA's
 logs and limit the source address where you can. The key identifier comes from
-the CA, so the check is as good as the CA's reading of the request. State:
-built and tested in-process; not yet run against a CA.
+the CA, so the check is as good as the CA's reading of the request.
+
+A spent challenge keeps answering for the same name and key until it expires,
+because a CA may evaluate one pending request more than once. A device's
+challenges are closed when its renewal finishes or fails and when the device
+checks out.
+
+State: run against OpenXPKI 3.34 on November 16, 2026. Renewals on a Mac, two
+iPhones and an iPad went through the lookup. A new enrollment through a link
+with a one-time challenge has not been done on a device yet.
 
 ## Interim procedure: re-enroll before expiry (embedded CA and broker modes)
 

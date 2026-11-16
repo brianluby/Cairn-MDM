@@ -41,7 +41,8 @@ Cairn is security-critical infrastructure — it can push configuration and
 commands to managed devices. The main boundaries it defends:
 
 - **Admin console.** Authenticated (local argon2id, LDAP/AD, or OIDC) with
-  explicit role assignment — there is no code path where "authenticated" implies
+  authenticator-app MFA required again for privileged actions (enrollment
+  links, VPN profiles) and explicit role assignment — there is no code path where "authenticated" implies
   "admin". Sessions are DB-backed with hashed tokens in a `__Host-` cookie;
   mutating routes require a CSRF token and same-origin; logins are throttled and
   rate-limited; all mutations are audited.
@@ -53,7 +54,12 @@ commands to managed devices. The main boundaries it defends:
   grant. In **external** CA mode, issuance is delegated to your CA and
   authenticated by that CA's SCEP challenge — the grant does not itself gate the
   CA. Operators using external mode must protect and rotate the SCEP challenge
-  and restrict the CA's SCEP endpoint. **Bound, one-time issuance (Cairn as the
+  and restrict the CA's SCEP endpoint. A CA that can ask another system about a
+  challenge (OpenXPKI with a connector, for one) can be set to check a one-time
+  challenge with Cairn for each request (`[ca.external.challenge_lookup]`); the
+  CA then issues only for the certificate name and key Cairn approved. Cairn
+  still does not see the request, so the device gets no verified owner in that
+  mode. **Bound, one-time issuance (Cairn as the
   authorizing authority for each enrollment) is a v1.0 security gate.** Until
   issuance is Cairn-controlled (embedded-issue or a SCEP broker in front of an
   external CA), a device identity certificate should **not** be relied on as a

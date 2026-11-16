@@ -6,6 +6,34 @@ Current completion work: [requirements and acceptance matrix](completion-prd.md)
 [quarantine resolution](quarantine-resolution.md), [certificate lifecycle](certificate-lifecycle.md) and [VPN profiles](vpn-profiles.md). The dated phase records below are
 historical evidence, not a current beta-release verdict.
 
+## November 2026: beta candidate (v0.2.0-beta.1)
+
+Built since v0.1.1, with the evidence for each item in the
+[acceptance matrix](completion-prd.md):
+
+- Enrollment authorization: owner-bound, single-use links created with fresh
+  MFA; issuance state machine with quarantine; embedded two-tier CA and a SCEP
+  broker in front of an external CA; revocation and CRL. Proven end to end in
+  an in-process HTTP test, not yet on hardware.
+- MFA (authenticator codes, recovery codes, administrator approvals), browser
+  first-run setup, LDAP/AD owner lookup, and profile rules by AD group or OU.
+- Durable command queue with notification retry; APNs request and renewal
+  workflow in the console.
+- Backup bundles, restore rehearsal, webhook alerts and heartbeat.
+- VPN profiles: OpenVPN with a certificate per device; native IKEv2 with
+  password sign-in by download and certificate sign-in on a device-made key.
+- Device identity certificates: one expiry rule for every platform, a grace
+  period for expired devices, and renewal with an external CA. One-time SCEP
+  challenges an external CA checks with Cairn.
+
+On real devices, November 16, 2026 (external CA: OpenXPKI): identity renewal on
+two Macs, three iPhones and an iPad; IKEv2 password and EAP-TLS profiles
+connected from an iPhone.
+
+Not done: EAP-TLS Wi-Fi on hardware, independent review of enrollment
+authorization and renewal, renewal for the embedded CA and broker, a new
+enrollment through a one-time challenge, and the release gate (RELEASE-1).
+
 ## Phase 0 — skeleton ✅
 Single Go binary scaffold: `serve`/`migrate`/`version` CLI, TOML config with
 env overrides and file/env-only secrets, pure-Go SQLite storage with an embedded
@@ -121,7 +149,10 @@ held stopped-but-intact for rollback (repoint NPM back + `docker start nanomdm`)
   retention) + off-host copy; PBS job for CT 226 pending (Proxmox-side).
 
 ## Remaining
-- **Open security gate — enrollment issuance trust (v1.0).** Grants gate profile
+- **Open security gate — enrollment issuance trust (v1.0).** *(Written August
+  2026. Since then the embedded-issue and broker paths and one-time challenges
+  for an external CA have been built; what remains is independent review and
+  hardware proof. See the November section above.)* Grants gate profile
   delivery, not certificate *issuance*; in external mode the CA authenticates on
   its own SCEP challenge, so a device cert's subject/SAN is not yet
   authority-attested. **Cairn must own enrollment authorization** — embedded

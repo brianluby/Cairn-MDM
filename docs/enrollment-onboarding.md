@@ -145,7 +145,13 @@ directory and APNs are faked; nothing here proves Apple-device behavior.
 
 Initial owner-bound grants require a configured LDAP directory ID and embedded
 or broker CA mode. Direct external SCEP cannot enforce Cairn's issuance checks:
-owner previews work there, but new grant creation is disabled. Old free-text-owner
+owner previews work there, but new grant creation is disabled, unless the CA
+checks one-time challenges with Cairn (`[ca.external.challenge_lookup]`, see
+[certificate lifecycle](certificate-lifecycle.md)). With that on, a link can be
+created and its profile carries a challenge good for one certificate name and
+one key. The device still gets no verified owner, because Cairn does not see
+the request: directory rules and a group chosen on the link are not applied,
+and the preview page says so. Add the device to groups from its page. Old free-text-owner
 grants do not acquire verified authorization through migration. Existing device
 check-ins and installed profiles are unchanged. This is an intentional boundary,
 not proof that external broker deployment has been qualified.

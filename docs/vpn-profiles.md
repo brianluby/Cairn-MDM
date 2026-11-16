@@ -1,10 +1,21 @@
 # VPN profiles
 
-Status: in development, November 2026. Server records, the profile renderer,
-issuance from Cairn's own CA and delivery are implemented and covered by
-automated tests. Issuance from an external SCEP CA is wired but has not run
-against a real CA. No profile rendered by Cairn has been installed on a real
-device yet, and macOS is not built.
+Status: beta, November 2026. Server records, the profile renderers, issuance
+from Cairn's own CA or an external SCEP CA, and delivery are implemented and
+covered by automated tests.
+
+On real devices so far (November 16, 2026, external SCEP CA, pfSense as the
+IKEv2 server, FreeRADIUS for EAP):
+
+- An IKEv2 password profile connected from an iPhone on Wi-Fi and on cellular.
+- An IKEv2 EAP-TLS profile, with a key the iPhone made and a certificate issued
+  through the external CA, connected from that iPhone. The same profile
+  installed on a Mac and an iPad.
+- The profile that sends all traffic through the tunnel installed on an iPhone;
+  calling and AirDrop with it have not been recorded yet.
+
+No OpenVPN profile from Cairn has a recorded connection from a device, and
+macOS delivery for OpenVPN is not built.
 
 ## What it does
 
@@ -287,13 +298,19 @@ certificates. Give the chain to have the issuer name checked against it, and
 tick "Install this chain with every profile" only when the VPN server's CA is
 not one the devices trust yet.
 
-## Not built yet
+## Not built or not proven yet
 
-- A device test of IKEv2 profiles, and a run of device-keyed issuance against
-  an external CA.
+- A recorded device connection with an OpenVPN profile.
+- Whether an empty password field lets a pushed IKEv2 password profile keep
+  the password (the trial setting).
+- Gateway refusals: a disabled account, a revoked certificate, and two devices
+  for one owner.
 - Renewal of a device-keyed VPN certificate before it expires; send the
   profile again.
-- A run of the SCEP issuer against a real CA.
+- A deployment record for a pushed password profile. It shows in the device's
+  command history only.
+- A setting for the server certificate revocation check in IKEv2 profiles. It
+  is off.
 - One connection that tries several addresses in turn.
 - More than one value for an option such as `route` or `dhcp-option`; the
   server form refuses a repeat and the importer keeps the first.
