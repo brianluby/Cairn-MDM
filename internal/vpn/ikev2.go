@@ -48,6 +48,11 @@ type IKEv2 struct {
 	TrustedSSIDs []string
 	// LockOnDemand stops the user switching On Demand off in Settings.
 	LockOnDemand bool
+	// KeepPassword writes an empty password key into a password sign-in
+	// profile. Apple devices then ask for the password once and store it,
+	// where without the key they ask at every connection and cannot connect
+	// on demand. The profile still holds no password.
+	KeepPassword bool
 	// InstallCA puts the record's CA chain in every profile. Leave it off when
 	// devices already trust the CA.
 	InstallCA bool
@@ -131,6 +136,9 @@ func (s Server) validateIKEv2() error {
 		if !issuerKnown {
 			return errors.New("server certificate issuer must be the common name of a certificate in the CA chain")
 		}
+	}
+	if k.KeepPassword && k.SignIn != IKEv2Password {
+		return errors.New("keeping the password only applies to password sign-in")
 	}
 	switch k.SignIn {
 	case IKEv2Password, IKEv2EAPTLS, IKEv2Certificate:
@@ -252,6 +260,10 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 		ike["AuthenticationMethod"] = "None"
 		ike["ExtendedAuthEnabled"] = 1
 		ike["AuthName"] = id.Username
+		if k.KeepPassword {
+			// Present and empty: the device asks once and keeps the answer.
+			ike["AuthPassword"] = ""
+		}
 	case IKEv2EAPTLS, IKEv2Certificate:
 		ike["AuthenticationMethod"] = "Certificate"
 		ike["ExtendedAuthEnabled"] = boolInt(k.SignIn == IKEv2EAPTLS)
@@ -440,8 +452,15 @@ func CheckIKEv2(profile []byte) error {
 			return fmt.Errorf("%s is missing", key)
 		}
 	}
-	if _, has := ike["AuthPassword"]; has {
+	// An empty password key is allowed: it tells the device to ask once and
+	// keep the answer. Any value in it is a password in the profile.
+	if pw, has := ike["AuthPassword"]; has && (str(pw) != "" || str(ike["AuthenticationMethod"]) != "None") {
 		return errors.New("an IKEv2 profile must not carry a password")
+	}
+	if pw, has := ike["AuthPassword"]; has {
+		if _, isString := pw.(string); !isString {
+			return errors.New("an IKEv2 profile must not carry a password")
+		}
 	}
 	if _, has := ike["SharedSecret"]; has {
 		return errors.New("an IKEv2 profile must not carry a shared secret")

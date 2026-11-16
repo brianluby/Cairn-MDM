@@ -245,3 +245,30 @@ func TestIKEv2CertificateNameWithSpaces(t *testing.T) {
 		t.Fatalf("names = %v / %v", ike["ServerCertificateCommonName"], ike["RemoteIdentifier"])
 	}
 }
+
+// Keeping the password puts an empty password key in the profile and nothing
+// else; a key with a value is still refused.
+func TestIKEv2KeepPassword(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	s.OnDemand, s.IKEv2.KeepPassword = true, true
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ike, _ := ikev2Of(t, out)
+	if pw, has := ike["AuthPassword"]; !has || pw != "" {
+		t.Fatalf("AuthPassword = %v (present %v), want an empty string", pw, has)
+	}
+	filled := strings.Replace(string(out), "<key>AuthPassword</key>\n\t\t\t\t<string></string>", "<key>AuthPassword</key>\n\t\t\t\t<string>hunter2</string>", 1)
+	if filled == string(out) {
+		t.Fatal("test did not change the profile")
+	}
+	if err := CheckIKEv2([]byte(filled)); err == nil {
+		t.Fatal("a profile with a password in it passed")
+	}
+	s.IKEv2.SignIn = IKEv2EAPTLS
+	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "password sign-in") {
+		t.Fatalf("keep-password on a certificate record: %v", err)
+	}
+}
