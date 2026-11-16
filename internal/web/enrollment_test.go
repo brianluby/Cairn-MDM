@@ -98,3 +98,49 @@ func TestGrantCreateRequiresCSRF(t *testing.T) {
 		t.Fatalf("no-CSRF create = %d, want 403", rr.Code)
 	}
 }
+
+// With a CA that issues on its own, the device gets no verified owner, so the
+// preview must not promise the owner's profiles.
+func TestPreviewForAnExternalCAShowsManagementOnly(t *testing.T) {
+	app, sessions, db := testApp(t)
+	app.cfg.OwnerEnrollment, app.cfg.OwnerUnverified = true, true
+	app.SetDirectory(&previewDirectory{})
+	mfa, err := auth.NewMFAStore(db.SQL(), sessions, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.SetMFA(mfa)
+	id, err := auth.NewLocalStore(db.SQL()).Authenticate(context.Background(), "nick", "hunter2hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := sessions.Create(context.Background(), *id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.SQL().Exec(`INSERT INTO mfa_factors(principal,secret) VALUES(?,?)`, "local:"+id.SubjectID, []byte("test")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.SQL().Exec(`UPDATE app_sessions SET mfa_verified_at=?`, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/admin/enrollment/preview",
+		strings.NewReader("csrf="+sess.CSRF+"&label=Test+iPad&owner=nick&platform=ios&expires_hours=24"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: sess.Token})
+	rr := httptest.NewRecorder()
+	mux(app).ServeHTTP(rr, req)
+	body := rr.Body.String()
+	if rr.Code != 200 {
+		t.Fatalf("preview %d %s", rr.Code, body)
+	}
+	if !strings.Contains(body, "None. The device enrolls with management only.") {
+		t.Fatal("the preview does not say the device gets no profiles")
+	}
+	if strings.Contains(body, "evaluated again after the device enrolls") || strings.Contains(body, "Profiles are pushed after") {
+		t.Fatal("the preview still describes profiles this link cannot deploy")
+	}
+	if !strings.Contains(body, "Create single-use link") {
+		t.Fatal("the link cannot be created")
+	}
+}

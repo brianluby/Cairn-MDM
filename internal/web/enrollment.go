@@ -220,6 +220,11 @@ func (a *App) handleEnrollmentPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "strict-origin")
+	if a.cfg.OwnerUnverified {
+		// Nothing the rules assign is deployed by this link, so a clash
+		// between those profiles is no reason to refuse it.
+		conflicts = nil
+	}
 	a.render(w, r, 200, "enrollment_preview.html", map[string]any{
 		"Title": "Confirm device owner", "Preview": p, "Token": token,
 		"IssuanceReady":   a.cfg.OwnerEnrollment && len(conflicts) == 0,
