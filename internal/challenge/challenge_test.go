@@ -154,6 +154,58 @@ func TestRenewedKeyIsTheOneThatUsedTheChallenge(t *testing.T) {
 	}
 }
 
+func TestSpentChallengeStopsAnsweringWhenItExpiresOrIsClosed(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	s, db, h := testService(t, Options{Now: func() time.Time { return now }})
+	started := now.Add(-time.Minute)
+	const name = "C02ABC.devices.mdm.example.org"
+	mine := testCert(t)
+	id, err := KeyID(mine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	use := func() (string, int) {
+		t.Helper()
+		challenge, err := s.ForRenewal(ctx, "DEVICE1", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code, _ := ask(h, secret, "", name, id, challenge); code != 200 {
+			t.Fatalf("first lookup = %d", code)
+		}
+		code, _ := ask(h, secret, "", name, id, challenge)
+		return challenge, code
+	}
+
+	expiring, code := use()
+	if code != 200 {
+		t.Fatal("the CA could not evaluate a pending request a second time")
+	}
+	now = now.Add(8 * 24 * time.Hour)
+	if code, _ = ask(h, secret, "", name, id, expiring); code != 404 {
+		t.Fatal("a spent challenge was accepted after it expired")
+	}
+
+	closing, _ := use()
+	unused, err := s.ForRenewal(ctx, "DEVICE1", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CloseSCEPChallenges(ctx, "DEVICE1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{closing, unused} {
+		if code, _ = ask(h, secret, "", name, id, c); code != 404 {
+			t.Fatal("a closed challenge was accepted")
+		}
+	}
+	// Closing does not erase which key the renewal's certificate went to.
+	if err = s.RenewedKey(ctx, "DEVICE1", mine, started); err != nil {
+		t.Fatalf("the record of the renewed key was lost: %v", err)
+	}
+}
+
 func testCert(t *testing.T) *x509.Certificate {
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

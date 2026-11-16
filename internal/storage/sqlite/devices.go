@@ -84,9 +84,11 @@ func (db *DB) DeviceTokenUpdated(ctx context.Context, id string) error {
 
 // DeviceCheckedOut marks an unenrollment.
 func (db *DB) DeviceCheckedOut(ctx context.Context, id string) error {
-	_, err := db.sql.ExecContext(ctx,
-		`UPDATE devices SET checked_out_at = datetime('now'), last_seen = datetime('now') WHERE id = ?`, id)
-	return err
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE devices SET checked_out_at = datetime('now'), last_seen = datetime('now') WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return db.CloseSCEPChallenges(ctx, id)
 }
 
 // DeviceCheckedIn refreshes last_seen on any command report.

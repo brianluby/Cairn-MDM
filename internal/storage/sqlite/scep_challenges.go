@@ -32,8 +32,8 @@ func (db *DB) CreateSCEPChallenge(ctx context.Context, c SCEPChallenge, expires 
 // UseSCEPChallenge answers the CA's question: may a request for commonName,
 // made with the key keyID, use this challenge? The first request that fits
 // spends the challenge for that name and key. The same name and key may ask
-// again, because a CA can evaluate one request more than once. why says what
-// was wrong when the answer is no.
+// again until the challenge expires or is closed, because a CA can evaluate
+// one request more than once. why says what was wrong when the answer is no.
 func (db *DB) UseSCEPChallenge(ctx context.Context, challengeSHA256, commonName, keyID string, now time.Time) (ok bool, why string, err error) {
 	if commonName == "" || keyID == "" {
 		return false, "the CA sent no certificate name or key identifier", nil
@@ -53,18 +53,19 @@ func (db *DB) UseSCEPChallenge(ctx context.Context, challengeSHA256, commonName,
 	if err != nil {
 		return false, "", err
 	}
-	switch state {
-	case "USED":
+	if state != "OPEN" && state != "USED" {
+		return false, "challenge is closed", nil
+	}
+	// A spent challenge expires like an unspent one: the CA may evaluate one
+	// request again while it is pending, not for as long as the row is kept.
+	if expires <= now.UTC().Format(time.RFC3339) {
+		return false, "challenge expired", nil
+	}
+	if state == "USED" {
 		if usedCN == commonName && usedKey == keyID {
 			return true, "", nil
 		}
 		return false, "challenge already used for another name or key", nil
-	case "OPEN":
-	default:
-		return false, "challenge is closed", nil
-	}
-	if expires <= now.UTC().Format(time.RFC3339) {
-		return false, "challenge expired", nil
 	}
 	switch {
 	case wantCN != "" && commonName != wantCN:
@@ -88,10 +89,26 @@ func (db *DB) RenewalKeyIssued(ctx context.Context, deviceID, keyID string, sinc
 	return n > 0, err
 }
 
-// CloseSCEPChallenges closes a device's unused renewal challenges, for a
+// CloseSCEPChallenges stops a device's renewal challenges from working, for a
 // renewal that ended or a device that left.
 func (db *DB) CloseSCEPChallenges(ctx context.Context, deviceID string) error {
-	_, err := db.sql.ExecContext(ctx, `UPDATE scep_challenges SET state='CLOSED' WHERE device_id=? AND state='OPEN'`, deviceID)
+	return closeSCEPChallenges(ctx, db.sql, `device_id = ?`, deviceID)
+}
+
+// closedAt is the expiry given to a spent challenge that is closed. The row
+// stays USED so it still shows which key a renewal's certificate was issued
+// to; an expiry in the past is what stops it answering the CA.
+const closedAt = "1970-01-01T00:00:00Z"
+
+// closeSCEPChallenges closes the challenges of the devices that where
+// selects. where is a condition on scep_challenges.device_id.
+func closeSCEPChallenges(ctx context.Context, ex interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, where string, args ...any) error {
+	if _, err := ex.ExecContext(ctx, `UPDATE scep_challenges SET state='CLOSED' WHERE state='OPEN' AND device_id<>'' AND `+where, args...); err != nil {
+		return err
+	}
+	_, err := ex.ExecContext(ctx, `UPDATE scep_challenges SET expires_at='`+closedAt+`' WHERE state='USED' AND device_id<>'' AND `+where, args...)
 	return err
 }
 

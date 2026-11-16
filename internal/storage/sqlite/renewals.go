@@ -182,6 +182,9 @@ func (db *DB) FailRenewal(ctx context.Context, deviceID, reason string) error {
 	if err != nil {
 		return err
 	}
+	if err = closeSCEPChallenges(ctx, db.sql, `device_id = ?`, deviceID); err != nil {
+		return err
+	}
 	if n, _ := res.RowsAffected(); n > 0 {
 		return db.auditRenewal(ctx, "", "identity.renew.fail", deviceID, reason)
 	}
@@ -283,9 +286,11 @@ func markRenewed(ctx context.Context, tx *sql.Tx, renewalID int64, deviceID, new
 	if n, _ := res.RowsAffected(); n != 1 {
 		return errors.New("no renewal is waiting for this device")
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE device_renewals SET state='failed', error='Closed: an earlier renewal completed.', updated_at=datetime('now')
-		WHERE device_id=? AND id>? AND state IN ('lookup','sent','installed')`, deviceID, renewalID)
-	return err
+	if _, err = tx.ExecContext(ctx, `UPDATE device_renewals SET state='failed', error='Closed: an earlier renewal completed.', updated_at=datetime('now')
+		WHERE device_id=? AND id>? AND state IN ('lookup','sent','installed')`, deviceID, renewalID); err != nil {
+		return err
+	}
+	return closeSCEPChallenges(ctx, tx, `device_id = ?`, deviceID)
 }
 
 // MarkRenewedByEnrollment closes an attempt when the device enrolled again by
