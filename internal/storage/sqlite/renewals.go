@@ -376,3 +376,28 @@ func renewalCommandResult(ctx context.Context, executor sqlExecutor, deviceID, c
 		WHERE device_id=? AND command_uuid=? AND state IN ('lookup','sent')`, errDesc, deviceID, commandUUID)
 	return err
 }
+
+// DevicesWithUnknownCertificate lists enrolled devices that can be sent
+// commands, have never presented an identity certificate that was recorded,
+// and have no command waiting for an answer.
+func (db *DB) DevicesWithUnknownCertificate(ctx context.Context) ([]string, error) {
+	rows, err := db.sql.QueryContext(ctx, `SELECT d.id FROM devices d
+		WHERE d.checked_out_at IS NULL AND d.token_updated_at IS NOT NULL
+		AND NOT EXISTS (SELECT 1 FROM nano_kv WHERE bucket='enrollments' AND k = d.id || '.disabled')
+		AND NOT EXISTS (SELECT 1 FROM cert_auth a JOIN device_identity_certs c ON c.sha256 = a.sha256 WHERE a.enrollment_id = d.id)
+		AND NOT EXISTS (SELECT 1 FROM command_history h WHERE h.device_id = d.id AND h.status IN ('Queued','Sent','NotNow'))
+		ORDER BY d.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

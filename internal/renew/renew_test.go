@@ -254,3 +254,52 @@ func TestKeyCheckDecidesWhichNewCertificateIsTheRenewal(t *testing.T) {
 		t.Fatalf("the device's own certificate was not accepted: %+v", got)
 	}
 }
+
+// A device whose certificate was never recorded is asked to check in, once.
+func TestSweepWakesDevicesWithNoCertificateOnRecord(t *testing.T) {
+	s, db, sent := testService(t, Options{})
+	ctx := context.Background()
+	addDevice(t, db, "known", "", time.Now().Add(300*24*time.Hour))
+	for _, id := range []string{"silent", "gone"} {
+		if err := db.DeviceEnrolled(ctx, mdmcore.DeviceRecord{ID: id, UDID: id, Name: id}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.DeviceTokenUpdated(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.SQL().ExecContext(ctx, `INSERT INTO nano_kv(bucket,k,v) VALUES('enrollments','gone.disabled','1')`); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := db.DevicesWithUnknownCertificate(ctx)
+	if err != nil || len(ids) != 1 || ids[0] != "silent" {
+		t.Fatalf("devices to wake = %v, %v; want only the silent one", ids, err)
+	}
+	s.Sweep(ctx)
+	if len(sent.lists) != 1 || sent.lists[0] != "silent" {
+		t.Fatalf("profile lists sent to %v", sent.lists)
+	}
+	// With that request still unanswered, the next sweep sends nothing more.
+	if _, err = db.SQL().ExecContext(ctx, `INSERT INTO command_history(command_uuid,device_id,request_type,status) VALUES('wake-1','silent','ProfileList','Queued')`); err != nil {
+		t.Fatal(err)
+	}
+	s.Sweep(ctx)
+	if len(sent.lists) != 1 {
+		t.Fatalf("a second request was sent: %v", sent.lists)
+	}
+}
+
+func TestManualOnlyDoesNotWakeDevices(t *testing.T) {
+	s, db, sent := testService(t, Options{ManualOnly: true})
+	ctx := context.Background()
+	if err := db.DeviceEnrolled(ctx, mdmcore.DeviceRecord{ID: "silent", UDID: "silent", Name: "silent"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeviceTokenUpdated(ctx, "silent"); err != nil {
+		t.Fatal(err)
+	}
+	s.Sweep(ctx)
+	if len(sent.lists) != 0 {
+		t.Fatalf("manual-only schedule sent %v", sent.lists)
+	}
+}

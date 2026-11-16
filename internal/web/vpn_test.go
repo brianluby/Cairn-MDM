@@ -244,6 +244,9 @@ func TestIKEv2ServerCreateAndEdit(t *testing.T) {
 	if page.Code != 200 || !strings.Contains(page.Body.String(), "Add IKEv2 server") || strings.Contains(page.Body.String(), "Static key") {
 		t.Fatalf("new IKEv2 form = %d", page.Code)
 	}
+	if strings.Contains(page.Body.String(), "known-cas") {
+		t.Fatal("issuer suggestions offered although the console knows no CA")
+	}
 	rr := postForm(m, cookie, "/admin/vpn/new", values().Encode())
 	if rr.Code != http.StatusSeeOther {
 		t.Fatalf("create = %d: %s", rr.Code, rr.Body.String())
@@ -279,5 +282,52 @@ func TestIKEv2ServerCreateAndEdit(t *testing.T) {
 	m.ServeHTTP(page, req)
 	if page.Code != 200 || !strings.Contains(page.Body.String(), "IKEv2") || !strings.Contains(page.Body.String(), "vpn.example.org") {
 		t.Fatalf("list page = %d", page.Code)
+	}
+}
+
+// The issuer field offers the CAs devices get at enrollment, issuing CA first
+// and prefilled, and still takes any other name.
+func TestIKEv2FormSuggestsKnownIssuers(t *testing.T) {
+	app, sessions, db := testApp(t)
+	servers, err := vpn.NewServers(db, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.SetVPN(servers)
+	rootKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	rootTmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Example Root CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	rootDER, _ := x509.CreateCertificate(rand.Reader, rootTmpl, rootTmpl, &rootKey.PublicKey, rootKey)
+	issuingKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	issuingTmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "Example Issuing CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	issuingDER, err := x509.CreateCertificate(rand.Reader, issuingTmpl, rootTmpl, &issuingKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.cfg.CAAnchorsDER = [][]byte{rootDER, issuingDER}
+	m := mux(app)
+	cookie, csrf := freshAdmin(t, app, sessions, db)
+
+	req := httptest.NewRequest("GET", "/admin/vpn/new?kind=ikev2", nil)
+	req.AddCookie(cookie)
+	page := httptest.NewRecorder()
+	m.ServeHTTP(page, req)
+	body := page.Body.String()
+	issuing, root := strings.Index(body, `<option value="Example Issuing CA">`), strings.Index(body, `<option value="Example Root CA">`)
+	if issuing < 0 || root < 0 || issuing > root {
+		t.Fatalf("suggestions missing or roots listed first (issuing at %d, root at %d)", issuing, root)
+	}
+	if !strings.Contains(body, `name="server_cert_issuer_cn" value="Example Issuing CA"`) {
+		t.Fatal("the issuing CA is not prefilled")
+	}
+	// A name that is not suggested is still accepted.
+	rr := postForm(m, cookie, "/admin/vpn/new", url.Values{
+		"csrf": {csrf}, "kind": {"ikev2"}, "name": {"Partner VPN"}, "remote_address": {"vpn.partner.example"},
+		"server_cert_issuer_cn": {"Partner Issuing CA G2"}, "sign_in": {"password"},
+		"encryption": {"AES-256-GCM"}, "integrity": {"SHA2-256"}, "dh_group": {"20"},
+	}.Encode())
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("create with a typed issuer = %d: %s", rr.Code, rr.Body.String())
 	}
 }

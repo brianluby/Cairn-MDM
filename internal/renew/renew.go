@@ -67,6 +67,7 @@ type Store interface {
 	SetCheckInHost(ctx context.Context, deviceID, host string) error
 	CertificateAssociated(ctx context.Context, deviceID, sha256Hex string) (bool, error)
 	IdentityCommonName(ctx context.Context, sha256Hex string) (string, error)
+	DevicesWithUnknownCertificate(ctx context.Context) ([]string, error)
 }
 
 // Commander queues the two commands a renewal uses.
@@ -209,6 +210,28 @@ func (s *Service) Sweep(ctx context.Context) {
 		if err := s.start(ctx, c, "schedule"); err != nil && !errors.Is(err, sqlite.ErrRenewalOpen) {
 			s.log.Warn("renewal: start", "device", c.DeviceName, "err", err)
 		}
+	}
+	s.wake(ctx)
+}
+
+// wake asks devices whose certificate Cairn has never seen to check in. A
+// device is only renewed once its certificate is on record, and one that has
+// had no reason to check in since would otherwise never be. The request is a
+// profile list: harmless, and a device with an expired certificate is given
+// its renewal in place of it. A device already holding an unanswered command
+// is left alone, so this sends one push per device, not one an hour.
+func (s *Service) wake(ctx context.Context) {
+	ids, err := s.store.DevicesWithUnknownCertificate(ctx)
+	if err != nil {
+		s.log.Warn("renewal: list devices with no certificate on record", "err", err)
+		return
+	}
+	for _, id := range ids {
+		if err := s.cmd.SendProfileListAs(ctx, mdmcore.NewCommandUUID(), id); err != nil {
+			s.log.Warn("renewal: ask device to check in", "device", id, "err", err)
+			continue
+		}
+		s.log.Info("renewal: asked a device with no certificate on record to check in", "device", id)
 	}
 }
 

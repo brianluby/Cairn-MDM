@@ -1,7 +1,9 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -546,8 +548,29 @@ func (a *App) renderVPNServer(w http.ResponseWriter, r *http.Request, status int
 	w.Header().Set("Cache-Control", "no-store")
 	a.render(w, r, status, "vpn_server.html", map[string]any{
 		"Title": "VPN", "Form": f, "Error": message, "Skipped": skipped, "New": f.ID == 0,
-		"Options": vpn.IKEv2Options(),
+		"Options": vpn.IKEv2Options(), "KnownCAs": a.knownCANames(),
 	})
+}
+
+// knownCANames lists the common names of the CA certificates Cairn installs
+// on devices at enrollment, issuing CAs before roots. They are what a server
+// certificate on the same PKI was issued by, and devices already trust them.
+func (a *App) knownCANames() []string {
+	var issuing, roots []string
+	seen := map[string]bool{}
+	for _, der := range a.cfg.CAAnchorsDER {
+		c, err := x509.ParseCertificate(der)
+		if err != nil || c.Subject.CommonName == "" || seen[c.Subject.CommonName] {
+			continue
+		}
+		seen[c.Subject.CommonName] = true
+		if bytes.Equal(c.RawSubject, c.RawIssuer) {
+			roots = append(roots, c.Subject.CommonName)
+		} else {
+			issuing = append(issuing, c.Subject.CommonName)
+		}
+	}
+	return append(issuing, roots...)
 }
 
 func (a *App) handleVPNServerNew(w http.ResponseWriter, r *http.Request) {
@@ -555,9 +578,12 @@ func (a *App) handleVPNServerNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("kind") == vpn.KindIKEv2 {
-		a.renderVPNServer(w, r, http.StatusOK, vpnServerForm{
-			Kind: vpn.KindIKEv2, SignIn: vpn.IKEv2Password, Encryption: "AES-256-GCM", Integrity: "SHA2-256", DHGroup: "20", PFS: true,
-		}, "", nil)
+		f := vpnServerForm{Kind: vpn.KindIKEv2, SignIn: vpn.IKEv2Password, Encryption: "AES-256-GCM", Integrity: "SHA2-256", DHGroup: "20", PFS: true}
+		// Most servers hold a certificate from the same PKI as the devices.
+		if known := a.knownCANames(); len(known) > 0 {
+			f.ServerCertIssuerCN = known[0]
+		}
+		a.renderVPNServer(w, r, http.StatusOK, f, "", nil)
 		return
 	}
 	a.renderVPNServer(w, r, http.StatusOK, vpnServerForm{KeyDirection: "1", TLSKeyMode: vpn.TLSKeyAuth}, "", nil)
