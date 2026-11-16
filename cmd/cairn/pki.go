@@ -287,7 +287,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	deps.CA = caDownloadHandler(anchors)
 	log.Info("external SCEP configured", "scep_url", cfg.CA.External.SCEPURL, "trust_anchors", len(anchors))
 	log.Info("enrollment endpoint ready", "grant_path", "/e/{token}", "open", cfg.Enrollment.AllowOpen)
-	renewalProfile := externalRenewalProfile(ctx, org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, topics, signer)
+	renewalProfile := externalRenewalProfile(org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, signer)
 	return &pkiResult{
 		Org:            org,
 		SCEPURL:        cfg.CA.External.SCEPURL,
@@ -301,11 +301,13 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 // device's identity certificate in external mode. A renewal is the enrollment
 // profile pushed over MDM: the device asks the external CA for a new
 // certificate exactly as it did when it enrolled.
-func externalRenewalProfile(ctx context.Context, org string, anchors [][]byte, scepURL, challenge string, topics enroll.TopicProvider, signer *profile.Signer) func(renew.Target) ([]byte, error) {
+func externalRenewalProfile(org string, anchors [][]byte, scepURL, challenge string, signer *profile.Signer) func(renew.Target) ([]byte, error) {
 	return func(t renew.Target) ([]byte, error) {
-		topic, err := topics.GetSetting(ctx, push.SettingTopic)
-		if err != nil || topic == "" {
-			return nil, errors.New("no APNs push certificate is loaded")
+		// The device's own topic, not the server default: a server can hold
+		// several push certificates, and a device refuses an enrollment
+		// profile whose topic differs from the one it enrolled under.
+		if t.Topic == "" {
+			return nil, errors.New("the device has no push topic on record")
 		}
 		prof, err := profile.BuildEnrollment(profile.EnrollmentParams{
 			Organization:      org,
@@ -319,7 +321,7 @@ func externalRenewalProfile(ctx context.Context, org string, anchors [][]byte, s
 			Challenge:         challenge,
 			MDMServerURL:      t.ServerURL,
 			MDMCheckInURL:     t.ServerURL,
-			Topic:             topic,
+			Topic:             t.Topic,
 		})
 		if err != nil {
 			return nil, err

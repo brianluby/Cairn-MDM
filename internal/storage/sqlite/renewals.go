@@ -40,6 +40,7 @@ type RenewalCandidate struct {
 	SHA256      string
 	CommonName  string
 	SANEmail    string
+	Topic       string // APNs topic the device enrolled under
 	NotAfter    time.Time
 	Last        Renewal // zero when the device has never been renewed
 }
@@ -70,7 +71,8 @@ func (db *DB) RenewalCandidate(ctx context.Context, deviceID string) (c RenewalC
 
 func (db *DB) renewalCandidates(ctx context.Context, deviceID string) ([]RenewalCandidate, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT d.id, COALESCE(NULLIF(d.name,''), NULLIF(d.serial,''), d.id), d.checkin_host,
-			c.sha256, c.common_name, c.san_email, c.not_after
+			c.sha256, c.common_name, c.san_email, c.not_after,
+			COALESCE((SELECT CAST(v AS TEXT) FROM nano_kv WHERE bucket='enrollments' AND k = d.id || '.topic'), '')
 		FROM device_identity_certs c
 		JOIN cert_auth ca ON ca.sha256 = c.sha256
 		JOIN devices d ON d.id = ca.enrollment_id
@@ -84,7 +86,7 @@ func (db *DB) renewalCandidates(ctx context.Context, deviceID string) ([]Renewal
 	for rows.Next() {
 		var c RenewalCandidate
 		var notAfter string
-		if err := rows.Scan(&c.DeviceID, &c.DeviceName, &c.CheckInHost, &c.SHA256, &c.CommonName, &c.SANEmail, &notAfter); err != nil {
+		if err := rows.Scan(&c.DeviceID, &c.DeviceName, &c.CheckInHost, &c.SHA256, &c.CommonName, &c.SANEmail, &notAfter, &c.Topic); err != nil {
 			rows.Close()
 			return nil, err
 		}

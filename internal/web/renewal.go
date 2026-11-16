@@ -37,6 +37,8 @@ type identityView struct {
 	GraceUntil time.Time
 	Renewing   bool   // Cairn renews this device on its own schedule
 	CanRenew   bool   // show the button
+	InProgress bool   // an attempt is waiting on the device
+	Off        bool   // this server does not renew certificates
 	Blocked    string // why renewal cannot run
 	Attempts   []sqlite.Renewal
 }
@@ -62,8 +64,10 @@ func (a *App) identityView(ctx context.Context, deviceID string) (identityView, 
 	default:
 		v.State = "refused"
 	}
+	v.Off = a.renewals == nil
 	if a.renewals != nil {
 		v.Blocked = a.renewals.Status(c).Blocked
+		v.InProgress = c.Last.Open()
 		v.CanRenew = v.State != "refused" && v.Blocked == "" && !c.Last.Open()
 	}
 	if v.Attempts, err = rs.DeviceRenewals(ctx, deviceID, 5); err != nil {

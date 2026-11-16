@@ -111,7 +111,9 @@ func TestExpiredDeviceIsRenewedAndNothingElse(t *testing.T) {
 		topic = "com.apple.mgmt.External.renew-test"
 		cn    = "C02RENEW01.devices.legacy.example"
 	)
-	if err = db.SetSetting(ctx, push.SettingTopic, topic); err != nil {
+	// The server default is another push certificate's topic: the renewal
+	// profile must repeat the device's own.
+	if err = db.SetSetting(ctx, push.SettingTopic, "com.apple.mgmt.External.server-default"); err != nil {
 		t.Fatal(err)
 	}
 	ca := newRenewalCA(t, "Renewal Test CA")
@@ -130,7 +132,7 @@ func TestExpiredDeviceIsRenewedAndNothingElse(t *testing.T) {
 		ServerURL:    "https://cairn.example.org/mdm",
 		Hosts:        []string{"mdm.legacy.example"},
 		Anchors:      []*x509.Certificate{ca.cert},
-		Profile:      externalRenewalProfile(ctx, "cairn.cairn.example.org", [][]byte{ca.cert.Raw}, "https://ca.example.org/scep/mdm", "challenge", db, nil),
+		Profile:      externalRenewalProfile("cairn.cairn.example.org", [][]byte{ca.cert.Raw}, "https://ca.example.org/scep/mdm", "challenge", nil),
 		ManualOnly:   true,
 	}, log)
 	if err != nil {

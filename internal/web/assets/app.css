@@ -126,6 +126,7 @@ td .sub { color: var(--muted); font-size: 13px; }
 }
 
 .callout.error { color: var(--error-text); }
+.card .expired { color: var(--error-text); }
 
 /* Buttons ---------------------------------------------------------------- */
 .btn {

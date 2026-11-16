@@ -61,11 +61,11 @@
 
     <h2>Identity certificate</h2>
     {{with .Presented}}
-    <div class="card{{if $.PresentedExpired}} callout error{{end}}">
-      <p style="margin:12px 16px">
+    <div class="card">
+      <p style="margin:12px 16px"{{if $.PresentedExpired}} class="expired"{{end}}>
         {{if eq $.Identity.State "refused"}}<span class="dot off"></span> <strong>Expired {{.NotAfter.Format "2006-01-02"}}.</strong> Cairn refuses this device's check-ins, so no command or profile reaches it. Remove the management profile on the device and enroll it again with a new link.
-        {{else if eq $.Identity.State "grace"}}<span class="dot off"></span> <strong>Expired {{.NotAfter.Format "2006-01-02"}}.</strong> Until {{$.Identity.GraceUntil.Format "2006-01-02"}} this device can check in to be renewed and receives nothing else. {{if $.Identity.Renewing}}Cairn renews it when it next checks in.{{else if $.Identity.CanRenew}}Start the renewal below.{{else}}Renewal is off, so enroll it again before then.{{end}}
-        {{else}}<span class="dot on"></span> The certificate this device checks in with expires <strong>{{.NotAfter.Format "2006-01-02"}}</strong> ({{$.PresentedDays}} days). {{if $.Identity.Renewing}}Cairn renews it before then.{{else}}Enroll the device again before then; after that date it cannot be reached.{{end}}{{end}}</p>
+        {{else if eq $.Identity.State "grace"}}<span class="dot off"></span> <strong>Expired {{.NotAfter.Format "2006-01-02"}}.</strong> Until {{$.Identity.GraceUntil.Format "2006-01-02"}} this device can check in to be renewed and receives nothing else. {{if $.Identity.InProgress}}A renewal is in progress; reload this page to see the next step.{{else if $.Identity.Renewing}}Cairn renews it when it next checks in.{{else if $.Identity.CanRenew}}Start the renewal below.{{else if $.Identity.Off}}Renewal is off, so enroll it again before then.{{end}}
+        {{else}}<span class="dot on"></span> The certificate this device checks in with expires <strong>{{.NotAfter.Format "2006-01-02"}}</strong> ({{$.PresentedDays}} days). {{if $.Identity.InProgress}}A renewal is in progress; reload this page to see the next step.{{else if $.Identity.Renewing}}Cairn renews it before then.{{else if $.Identity.CanRenew}}Renew it below before then; after that date it cannot be reached.{{else if $.Identity.Off}}Enroll the device again before then; after that date it cannot be reached.{{end}}{{end}}</p>
       <p class="sub" style="margin:0 16px 12px">Serial <span class="mono">{{.Serial}}</span>, issued by {{.Issuer}}.{{if .LastAccepted}} Last accepted check-in {{.LastAccepted}} UTC.{{end}}{{if .LastRefused}} Last refused {{.LastRefused}} UTC ({{.Refusals}} refused).{{end}}</p>
       {{if $.Identity.Blocked}}<p class="sub" style="margin:0 16px 12px"><strong>This device cannot be renewed.</strong> {{$.Identity.Blocked}}</p>{{end}}
       {{if $.Identity.Attempts}}

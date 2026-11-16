@@ -83,6 +83,7 @@ type Target struct {
 	ServerURL    string // check-in URL the device already uses
 	CommonName   string // certificate name to ask the CA for
 	OwnerEmail   string // rfc822 name to carry over, if the current certificate has one
+	Topic        string // APNs topic the device enrolled under; a device refuses a profile that changes it
 }
 
 // Options configure the service.
@@ -310,6 +311,10 @@ func (s *Service) ProfileList(ctx context.Context, deviceID, commandUUID string,
 		fail(err.Error())
 		return
 	}
+	if c.Topic == "" {
+		fail("The device has no push topic on record.")
+		return
+	}
 	installed := enrollment[0]
 	body, err := s.opts.Profile(Target{
 		Identifier:   installed.Identifier,
@@ -318,6 +323,7 @@ func (s *Service) ProfileList(ctx context.Context, deviceID, commandUUID string,
 		ServerURL:    server,
 		CommonName:   c.CommonName,
 		OwnerEmail:   c.SANEmail,
+		Topic:        c.Topic,
 	})
 	if err != nil {
 		fail("Could not build the enrollment profile: " + err.Error())

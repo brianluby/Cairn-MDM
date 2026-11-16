@@ -96,6 +96,7 @@ func addDevice(t *testing.T, db *sqlite.DB, id, host string, notAfter time.Time)
 		`INSERT INTO cert_auth(enrollment_id, sha256) VALUES(?1, ?2)`,
 		`INSERT INTO device_identity_certs(sha256, not_after, common_name, last_accepted) VALUES(?2, ?3, ?1, datetime('now'))`,
 		`UPDATE devices SET checkin_host=?4 WHERE id=?1`,
+		`INSERT INTO nano_kv(bucket, k, v) VALUES('enrollments', ?1 || '.topic', 'com.apple.mgmt.External.test')`,
 	} {
 		if _, err := db.SQL().ExecContext(ctx, q, id, hash, notAfter.UTC().Format(time.RFC3339), host); err != nil {
 			t.Fatal(err)
