@@ -109,3 +109,16 @@ func TestReadyzHidesDependencyError(t *testing.T) {
 		t.Errorf("readyz body = %s, want generic \"not ready\"", rr.Body.String())
 	}
 }
+
+func TestLogPathLeavesOutTheChallenge(t *testing.T) {
+	for in, want := range map[string]string{
+		"/scep-challenge/host.devices.example.org/AB:CD/secret-value": "/scep-challenge/host.devices.example.org/AB:CD/[challenge]",
+		"/scep-challenge/secret-value":                                "/scep-challenge/[challenge]",
+		"/scep-challenge/":                                            "/scep-challenge/",
+		"/admin/devices/1":                                            "/admin/devices/1",
+	} {
+		if got := logPath(in); got != want {
+			t.Errorf("logPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
