@@ -259,3 +259,66 @@ func TestDisableRollbackPreservesPendingWork(t *testing.T) {
 		t.Fatalf("queue lost on rollback: %v %v", next, err)
 	}
 }
+
+// An iPhone acknowledges the profile that renewed it after it has sent
+// Authenticate, which cleared its queue. Commands queued afterwards must still
+// reach it.
+func TestAnswerAfterTheQueueWasClearedLeavesTheQueueUsable(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	store := db.NanoStorage(nil).(*nanoStore)
+	req := mdm.NewRequestWithContext(ctx, nil)
+	req.EnrollID = &mdm.EnrollID{ID: "phone"}
+	var old []string
+	for i := 0; i < 3; i++ {
+		cmd, _ := mdmcore.DeviceInformationCommand()
+		if _, err := store.EnqueueNotifiedCommand(ctx, []string{"phone"}, cmd, false); err != nil {
+			t.Fatal(err)
+		}
+		old = append(old, cmd.CommandUUID)
+	}
+	if err := store.Disable(req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().Exec(`DELETE FROM nano_kv WHERE bucket='enrollments' AND k='phone.disabled'`); err != nil {
+		t.Fatal(err)
+	}
+	var links int
+	if err := db.SQL().QueryRow(`SELECT count(*) FROM nano_kv WHERE bucket='queue' AND (k LIKE 'phone.%.queueitem.next' OR k LIKE 'phone.%.queueitem.prev' OR k LIKE 'phone.queuekey.%')`).Scan(&links); err != nil || links != 0 {
+		t.Fatalf("list pointers left after clear: %d %v", links, err)
+	}
+	// One new command, then the late answers for cleared ones.
+	first, _ := mdmcore.DeviceInformationCommand()
+	if _, err := store.EnqueueNotifiedCommand(ctx, []string{"phone"}, first, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, uuid := range old[1:] {
+		if err := store.StoreCommandReport(req, &mdm.CommandResults{CommandUUID: uuid, Status: "Acknowledged", Raw: []byte("late")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second, _ := mdmcore.DeviceInformationCommand()
+	if _, err := store.EnqueueNotifiedCommand(ctx, []string{"phone"}, second, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{first.CommandUUID, second.CommandUUID} {
+		next, err := store.RetrieveNextCommand(req, false)
+		if err != nil || next == nil || next.CommandUUID != want {
+			t.Fatalf("next command = %+v %v, want %s", next, err, want)
+		}
+		if err = store.StoreCommandReport(req, &mdm.CommandResults{CommandUUID: want, Status: "Acknowledged", Raw: []byte("ok")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := db.ListCommands(ctx, "phone", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, h := range history {
+		status[h.CommandUUID] = h.Status
+	}
+	if status[old[0]] != "Cancelled" || status[old[2]] != "Acknowledged" {
+		t.Fatalf("history: %v", status)
+	}
+}

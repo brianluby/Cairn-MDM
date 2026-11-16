@@ -172,6 +172,26 @@ func (s *nanoStore) StoreCommandReport(r *mdm.Request, report *mdm.CommandResult
 		return err
 	}
 	defer tx.Rollback()
+	if report.Status != "Idle" && report.CommandUUID != "" {
+		linked, err := queueLinked(r.Context(), tx, r.ID, report.CommandUUID)
+		if err != nil {
+			return err
+		}
+		if !linked {
+			// A device can answer a command after its queue was cleared: an
+			// iPhone acknowledges the profile that renewed it after it has
+			// sent Authenticate. NanoMDM's unlink assumes the command is still
+			// in the list and would drop the list's first and last pointers,
+			// stranding whatever was queued since. Record the answer only.
+			_, err = tx.ExecContext(r.Context(), `UPDATE command_history SET status=?, error='', result_at=datetime('now')
+				WHERE command_uuid=? AND device_id=? AND status='Cancelled' AND ?='Acknowledged'`,
+				report.Status, report.CommandUUID, r.ID, report.Status)
+			if err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
+	}
 	if err = newNanoKV(tx, s.log).StoreCommandReport(r, report); err != nil {
 		return err
 	}
@@ -193,6 +213,26 @@ func (s *nanoStore) StoreCommandReport(r *mdm.Request, report *mdm.CommandResult
 	}
 	return tx.Commit()
 }
+// queueLinked reports whether the command is in the device's queue list: it is
+// the first item or has one before it.
+func queueLinked(ctx context.Context, executor sqlExecutor, deviceID, commandUUID string) (bool, error) {
+	var n int
+	err := executor.QueryRowContext(ctx, `SELECT count(*) FROM nano_kv WHERE bucket='queue' AND
+		((k=? AND CAST(v AS TEXT)=?) OR k=?)`,
+		deviceID+".queuekey.queue.first", commandUUID, deviceID+"."+commandUUID+".queueitem.prev").Scan(&n)
+	return n > 0, err
+}
+
+// dropQueueLinks removes every list pointer for the device. NanoMDM v0.9.0's
+// clear leaves the last item's prev pointer behind.
+func dropQueueLinks(ctx context.Context, executor sqlExecutor, deviceID string) error {
+	prefix := deviceID + "."
+	_, err := executor.ExecContext(ctx, `DELETE FROM nano_kv WHERE bucket='queue' AND substr(k,1,length(?))=?
+		AND (k LIKE '%.queueitem.next' OR k LIKE '%.queueitem.prev' OR k LIKE '%.queuekey.queue.first' OR k LIKE '%.queuekey.queue.last')`,
+		prefix, prefix)
+	return err
+}
+
 func (s *nanoStore) ClearQueue(r *mdm.Request) error {
 	tx, err := s.db.sql.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -200,6 +240,9 @@ func (s *nanoStore) ClearQueue(r *mdm.Request) error {
 	}
 	defer tx.Rollback()
 	if err = newNanoKV(tx, s.log).ClearQueue(r); err != nil {
+		return err
+	}
+	if err = dropQueueLinks(r.Context(), tx, r.ID); err != nil {
 		return err
 	}
 	// Clearing the queue leaves command bodies behind; a VPN profile's holds a key.
@@ -248,6 +291,9 @@ func (s *nanoStore) Disable(r *mdm.Request) error {
 			return err
 		}
 		if err = store.ClearQueue(request); err != nil {
+			return err
+		}
+		if err = dropQueueLinks(r.Context(), tx, id); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(r.Context(), `UPDATE command_history SET status='Cancelled',error='Enrollment disabled',result_at=datetime('now') WHERE device_id=? AND status IN ('Queued','Sent','NotNow')`, id); err != nil {
