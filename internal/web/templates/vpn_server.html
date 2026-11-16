@@ -69,9 +69,6 @@
           </select></label>
           <span class="sub">With a password the user types it on the device the first time and the device keeps it; Cairn never puts a password in a profile. With a certificate the device makes its own key and the key never leaves it.</span></p>
 
-        <p><label><input type="checkbox" name="keep_password"{{if .Form.KeepPassword}} checked{{end}}> Let the device keep the password (password sign-in only)</label>
-          <span class="sub">The device asks for the password once and stores it, which connecting on demand needs. The profile gets an empty password field to make that happen; it never holds the password itself.</span></p>
-
         <h2>Encryption</h2>
         <p><label>Encryption<br>
           <select name="encryption">

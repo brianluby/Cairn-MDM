@@ -207,14 +207,9 @@ profile, and checks every rendered profile for all three before it is queued.
 
 With On Demand the profile connects on Wi-Fi and cellular and stays off the VPN
 on any other network. Wi-Fi networks listed as trusted disconnect it. The user
-can switch On Demand off in Settings unless the record locks it.
-
-With password sign-in the device asks for the password at every connection
-unless the record has "Let the device keep the password" ticked. That writes
-an empty password field into the profile, which makes the device ask once and
-store what the user types; On Demand needs it. The profile never holds the
-password itself, and a rendered profile with a value in that field is
-refused.
+can switch On Demand off in Settings unless the record locks it. With password
+sign-in, On Demand starts working once the user has connected by hand and the
+device holds the password.
 
 ### Certificate sign-in
 
