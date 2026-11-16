@@ -70,6 +70,9 @@
           </select></label>
           <span class="sub">A password profile is downloaded from this page and installed by hand, because a device cannot store a password for a VPN that MDM installed. A certificate profile is sent from a device's page; the device makes its own key and the key never leaves it.</span></p>
 
+        <p><label><input type="checkbox" name="keep_password"{{if .Form.KeepPassword}} checked{{end}}> Let the device keep the password (password sign-in only)</label>
+          <span class="sub">The device asks for the password once and stores it, which connecting on demand needs. The profile gets an empty password field to make that happen; it never holds the password itself.</span></p>
+
         <h2>Encryption</h2>
         <p><label>Encryption<br>
           <select name="encryption">
