@@ -235,6 +235,14 @@ type Enrollment struct {
 	// enrollment requires a single-use grant link (/e/{token}). Set true only
 	// for a low-stakes homelab that accepts an open enrollment endpoint.
 	AllowOpen bool `toml:"allow_open"`
+	// CheckOutWhenRemoved makes a device tell Cairn when its enrollment
+	// profile is removed, so the device shows as gone. Default false.
+	CheckOutWhenRemoved bool `toml:"check_out_when_removed"`
+	// BootstrapToken declares that Cairn keeps a Mac's bootstrap token.
+	// Default false. Both settings also go into the profile that renews a
+	// device's certificate: set them to what the devices' current enrollment
+	// profiles carry, or a renewal changes how those devices are managed.
+	BootstrapToken bool `toml:"bootstrap_token"`
 }
 
 // Profile configures configuration-profile handling.

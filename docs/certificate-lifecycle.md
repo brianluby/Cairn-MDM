@@ -121,8 +121,19 @@ What renewal does not do:
   accepting it for MDM; anything else that trusts that CA accepts it until it
   expires. Revoke it at the CA if that matters.
 - The profile's management payload is the one Cairn writes for new
-  enrollments. Settings another server put there, such as bootstrap token
-  escrow or `CheckOutWhenRemoved`, are not carried over.
+  enrollments. A device does not report the settings of the payload it has,
+  so Cairn cannot copy them. Two are set in the config and go into both new
+  enrollments and renewals:
+
+  ```toml
+  [enrollment]
+  check_out_when_removed = true   # the device reports its profile's removal
+  bootstrap_token = true          # Cairn keeps a Mac's bootstrap token
+  ```
+
+  Both default to off. Before turning renewal on for devices another server
+  enrolled, read those two settings from an installed enrollment profile and
+  set them to match. Access rights are always all rights.
 - The CA has to allow a second certificate for the same name while the first
   is still valid.
 

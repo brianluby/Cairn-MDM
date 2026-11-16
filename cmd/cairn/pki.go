@@ -131,6 +131,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	// enrollment.allow_open).
 	mountEnroll := func(c enroll.Config) {
 		c.AllowOpen = cfg.Enrollment.AllowOpen
+		c.Management = management(cfg.Enrollment)
 		c.Signer = signer
 		h := enroll.New(c, topics, redeemer, push.SettingTopic, log)
 		deps.Enroll = h
@@ -319,7 +320,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	deps.CA = caDownloadHandler(anchors)
 	log.Info("external SCEP configured", "scep_url", cfg.CA.External.SCEPURL, "trust_anchors", len(anchors))
 	log.Info("enrollment endpoint ready", "grant_path", "/e/{token}", "open", cfg.Enrollment.AllowOpen)
-	renewalProfile := externalRenewalProfile(org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, mintRenew, signer)
+	renewalProfile := externalRenewalProfile(org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, mintRenew, signer, management(cfg.Enrollment))
 	return &pkiResult{
 		Signer:         signer,
 		Challenges:     challenges,
@@ -340,6 +341,10 @@ func profileSigner(s *profile.Signer) func([]byte) ([]byte, error) {
 	return func(body []byte) ([]byte, error) { return profile.Sign(body, *s) }
 }
 
+func management(e config.Enrollment) profile.Management {
+	return profile.Management{CheckOutWhenRemoved: e.CheckOutWhenRemoved, BootstrapToken: e.BootstrapToken}
+}
+
 // renewalKeyCheck is the renewal service's key check when the CA looks
 // challenges up with Cairn, and nil when it does not.
 func renewalKeyCheck(c *challenge.Service) func(context.Context, string, *x509.Certificate, time.Time) error {
@@ -353,7 +358,7 @@ func renewalKeyCheck(c *challenge.Service) func(context.Context, string, *x509.C
 // device's identity certificate in external mode. A renewal is the enrollment
 // profile pushed over MDM: the device asks the external CA for a new
 // certificate exactly as it did when it enrolled.
-func externalRenewalProfile(org string, anchors [][]byte, scepURL, static string, mint func(context.Context, string, string) (string, error), signer *profile.Signer) func(renew.Target) ([]byte, error) {
+func externalRenewalProfile(org string, anchors [][]byte, scepURL, static string, mint func(context.Context, string, string) (string, error), signer *profile.Signer, mgmt profile.Management) func(renew.Target) ([]byte, error) {
 	return func(t renew.Target) ([]byte, error) {
 		challenge := static
 		if mint != nil {
@@ -369,6 +374,7 @@ func externalRenewalProfile(org string, anchors [][]byte, scepURL, static string
 			return nil, errors.New("the device has no push topic on record")
 		}
 		prof, err := profile.BuildEnrollment(profile.EnrollmentParams{
+			Management:        mgmt,
 			Organization:      org,
 			ProfileIdentifier: t.Identifier,
 			DisplayName:       t.DisplayName,

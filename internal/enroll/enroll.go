@@ -43,6 +43,8 @@ type Config struct {
 	MDMServerURL  string   // e.g. https://mdm.example.com/mdm
 	SubjectPrefix string   // device cert CN suffix, e.g. "devices.example.com"
 
+	Management profile.Management // site settings of the management payload
+
 	// PerGrantChallenge, when true, sets each profile's SCEP challenge to the
 	// enrolling grant's own token instead of the static Challenge. This is the
 	// enrollment-authorization Broker path: the SCEP endpoint resolves that token to
@@ -177,6 +179,7 @@ func (h *Handler) serveProfile(w http.ResponseWriter, r *http.Request, red Redem
 	}
 
 	prof, err := profile.BuildEnrollment(profile.EnrollmentParams{
+		Management:    h.cfg.Management,
 		Organization:  h.cfg.Organization,
 		CAAnchorsDER:  h.cfg.CAAnchorsDER,
 		SCEPURL:       h.cfg.SCEPURL,

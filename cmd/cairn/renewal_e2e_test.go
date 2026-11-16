@@ -25,6 +25,7 @@ import (
 	"github.com/micromdm/plist"
 
 	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
+	"github.com/nickpdawson/cairn-mdm/internal/profile"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/renew"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
@@ -132,7 +133,7 @@ func TestExpiredDeviceIsRenewedAndNothingElse(t *testing.T) {
 		ServerURL:    "https://cairn.example.org/mdm",
 		Hosts:        []string{"mdm.legacy.example"},
 		Anchors:      []*x509.Certificate{ca.cert},
-		Profile:      externalRenewalProfile("cairn.cairn.example.org", [][]byte{ca.cert.Raw}, "https://ca.example.org/scep/mdm", "challenge", nil, nil),
+		Profile:      externalRenewalProfile("cairn.cairn.example.org", [][]byte{ca.cert.Raw}, "https://ca.example.org/scep/mdm", "challenge", nil, nil, profile.Management{}),
 		ManualOnly:   true,
 	}, log)
 	if err != nil {
@@ -389,7 +390,7 @@ func TestRenewalProfileCarriesAMintedChallenge(t *testing.T) {
 		func(_ context.Context, deviceID, commonName string) (string, error) {
 			device, name = deviceID, commonName
 			return "one-time-challenge", nil
-		}, nil)
+		}, nil, profile.Management{CheckOutWhenRemoved: true, BootstrapToken: true})
 	body, err := build(renew.Target{DeviceID: "DEVICE1", Identifier: "org.example.enroll", CommonName: "C02ABC.devices.example.org",
 		ServerURL: "https://mdm.example.org/mdm", Topic: "com.apple.mgmt.External.abc"})
 	if err != nil {
@@ -400,5 +401,20 @@ func TestRenewalProfileCarriesAMintedChallenge(t *testing.T) {
 	}
 	if device != "DEVICE1" || name != "C02ABC.devices.example.org" {
 		t.Fatalf("minted for device=%q name=%q", device, name)
+	}
+	// The site's management settings ride along, so a renewal keeps them.
+	for _, want := range []string{"<key>CheckOutWhenRemoved</key>", "com.apple.mdm.bootstraptoken"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("renewal profile lacks %s", want)
+		}
+	}
+	plain, err := externalRenewalProfile("org.example", nil, "https://ca.example.org/scep/mdm", "static-challenge", nil, nil, profile.Management{})(
+		renew.Target{DeviceID: "DEVICE1", Identifier: "org.example.enroll", CommonName: "C02ABC.devices.example.org",
+			ServerURL: "https://mdm.example.org/mdm", Topic: "com.apple.mgmt.External.abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "CheckOutWhenRemoved") || strings.Contains(string(plain), "bootstraptoken") {
+		t.Fatal("settings that are off appear in the renewal profile")
 	}
 }
