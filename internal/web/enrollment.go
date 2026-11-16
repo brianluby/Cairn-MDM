@@ -58,7 +58,7 @@ func (a *App) handleGrantCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.cfg.OwnerEnrollment {
-		http.Error(w, "Enrollment is paused while certificate authorization is configured. Owner previews remain available.", 503)
+		http.Error(w, "This server cannot create enrollment links: its certificate authority issues to anyone with the shared challenge. Turn on one-time challenges (ca.external.challenge_lookup) first.", 503)
 		return
 	}
 	store, ok := a.grants.(authorizedGrantStore)
@@ -222,7 +222,8 @@ func (a *App) handleEnrollmentPreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "strict-origin")
 	a.render(w, r, 200, "enrollment_preview.html", map[string]any{
 		"Title": "Confirm device owner", "Preview": p, "Token": token,
-		"IssuanceReady": a.cfg.OwnerEnrollment && len(conflicts) == 0,
-		"Matches":       result.Matches, "PreviewProfiles": profiles, "Conflicts": conflicts,
+		"IssuanceReady":   a.cfg.OwnerEnrollment && len(conflicts) == 0,
+		"OwnerUnverified": a.cfg.OwnerUnverified,
+		"Matches":         result.Matches, "PreviewProfiles": profiles, "Conflicts": conflicts,
 	})
 }

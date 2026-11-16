@@ -206,7 +206,8 @@ func runServe(ctx context.Context, args []string) error {
 	console, err := web.New(sessions, authn, db, commander, reconciler,
 		web.Config{
 			PublicURL:           cfg.Server.PublicURL,
-			OwnerEnrollment:     cfg.CA.Mode.Embedded() || cfg.CA.Mode == config.CABroker,
+			OwnerEnrollment:     ownerEnrollment(cfg.CA),
+			OwnerUnverified:     cfg.CA.Mode == config.CAExternal,
 			Organization:        pki.Org,
 			SCEPURL:             pki.SCEPURL,
 			SCEPChallenge:       pki.Challenge,
@@ -473,4 +474,13 @@ func roleMappings(cfg config.Config) []web.RoleMapping {
 		add("oidc", o.GroupRoles, o.DefaultRole)
 	}
 	return out
+}
+
+// ownerEnrollment reports whether an enrollment link decides who gets a
+// certificate. It does when Cairn issues or relays the request, and with an
+// external CA only when that CA looks up Cairn's one-time challenges; with a
+// shared challenge the CA would issue to anyone who has read it.
+func ownerEnrollment(ca config.CA) bool {
+	return ca.Mode.Embedded() || ca.Mode == config.CABroker ||
+		(ca.Mode == config.CAExternal && ca.External.Lookup.Enabled)
 }

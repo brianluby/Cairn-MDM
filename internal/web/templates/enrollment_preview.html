@@ -4,7 +4,8 @@
 <p>Owner: <strong>{{.Preview.Owner.UPN}}</strong> ({{.Preview.Owner.AccountName}})</p>
 <p>Device: {{.Preview.Label}} · {{.Preview.Platform}}</p><p>Link expires after {{.Preview.Hours}} hour(s). This confirmation expires after five minutes.</p>
 <p>You authorize this enrollment as {{.User.Username}}. The owner opens the link on their device and approves installation; they do not sign in to Cairn.</p>
-{{if .Preview.GroupID}}<p>Explicit Cairn group: <strong>{{.Preview.GroupName}}</strong>. The device joins it once it enrolls and is bound to this owner.</p>{{end}}
+{{if .OwnerUnverified}}<p class="callout">The certificate authority issues this device's certificate itself, so Cairn will not record a verified owner for it. Directory rules{{if .Preview.GroupID}} and the group {{.Preview.GroupName}}{{end}} will not apply. Add the device to groups from its page after it enrolls.</p>
+{{else if .Preview.GroupID}}<p>Explicit Cairn group: <strong>{{.Preview.GroupName}}</strong>. The device joins it once it enrolls and is bound to this owner.</p>{{end}}
 </div>
 
 <h2>Profiles this device will receive</h2>
@@ -19,5 +20,5 @@
 <div class="card" style="padding:24px">
 {{if .IssuanceReady}}<form method="post" action="/admin/enrollment"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="preview" value="{{.Token}}"><button class="btn">Create single-use link</button> <a href="/admin/enrollment">Change owner or device</a></form>
 {{else if .Conflicts}}<p role="status">The link cannot be created while profile identifiers conflict.</p><p><a href="/admin/enrollment">Change owner or device</a></p>
-{{else}}<p role="status">Enrollment is paused while certificate authorization is configured. This owner preview has not created an enrollment link.</p><p><a href="/admin/enrollment">Preview another owner</a></p>{{end}}
+{{else}}<p role="status">No link was created. This server's certificate authority issues to anyone with the shared challenge, so a link would not control who enrolls. Turn on one-time challenges (<span class="mono">ca.external.challenge_lookup</span>) to create links.</p><p><a href="/admin/enrollment">Preview another owner</a></p>{{end}}
 </div></main></body></html>

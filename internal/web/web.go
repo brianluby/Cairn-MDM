@@ -195,6 +195,7 @@ type Reconciler interface {
 type Config struct {
 	PublicURL       string // for showing the enrollment URL
 	OwnerEnrollment bool   // only CA modes with the authoritative Cairn issuance boundary
+	OwnerUnverified bool   // the CA issues on its own, so an enrolled device gets no verified owner
 
 	// Builder defaults, from the wired PKI:
 	Organization  string   // reverse-DNS identifier root for built profiles
