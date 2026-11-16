@@ -15,7 +15,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/vpn"
 )
 
-// VPNServers is the catalogue of OpenVPN server records; *vpn.Servers provides it.
+// VPNServers is the catalogue of VPN server records; *vpn.Servers provides it.
 type VPNServers interface {
 	List(ctx context.Context) ([]vpn.Server, error)
 	Get(ctx context.Context, id int64) (vpn.Server, error)
@@ -141,7 +141,24 @@ type vpnServerForm struct {
 	UserAuth       bool
 	OnDemand       bool
 	Extra          string
+
+	// IKEv2 servers.
+	Kind               string
+	RemoteAddress      string
+	RemoteIdentifier   string
+	ServerCertIssuerCN string
+	ServerCertCN       string
+	SignIn             string
+	Encryption         string
+	Integrity          string
+	DHGroup            string
+	PFS                bool
+	TrustedSSIDs       string
+	LockOnDemand       bool
 }
+
+// IKEv2 reports whether the form is for a native IKEv2 server.
+func (f vpnServerForm) IKEv2() bool { return f.Kind == vpn.KindIKEv2 }
 
 func formFromServer(s vpn.Server, showKey bool) vpnServerForm {
 	f := vpnServerForm{
@@ -149,6 +166,14 @@ func formFromServer(s vpn.Server, showKey bool) vpnServerForm {
 		TLSKeyMode: s.TLSKeyMode, KeyDirection: strconv.Itoa(s.KeyDirection),
 		HasStoredKey: s.ID != 0 && s.TLSKey != "", Cipher: s.Cipher, Auth: s.Auth,
 		UserAuth: s.UserAuth, OnDemand: s.OnDemand,
+	}
+	if s.IsIKEv2() {
+		k := s.IKEv2
+		f.Kind, f.RemoteAddress, f.RemoteIdentifier = vpn.KindIKEv2, k.RemoteAddress, k.RemoteIdentifier
+		f.ServerCertIssuerCN, f.ServerCertCN, f.SignIn = k.ServerCertIssuerCN, k.ServerCertCN, k.SignIn
+		f.Encryption, f.Integrity, f.DHGroup, f.PFS = k.Encryption, k.Integrity, strconv.Itoa(k.DHGroup), k.PFS
+		f.TrustedSSIDs, f.LockOnDemand = strings.Join(k.TrustedSSIDs, "\n"), k.LockOnDemand
+		return f
 	}
 	if showKey {
 		f.TLSKey = s.TLSKey
@@ -182,10 +207,39 @@ func formFromRequest(r *http.Request) vpnServerForm {
 		Cipher: v("cipher"), Auth: v("auth"), TunMTU: v("tun_mtu"),
 		UserAuth: r.PostFormValue("user_auth") == "on", OnDemand: r.PostFormValue("on_demand") == "on",
 		Extra: r.PostFormValue("extra"),
+
+		Kind: v("kind"), RemoteAddress: v("remote_address"), RemoteIdentifier: v("remote_identifier"),
+		ServerCertIssuerCN: v("server_cert_issuer_cn"), ServerCertCN: v("server_cert_cn"), SignIn: v("sign_in"),
+		Encryption: v("encryption"), Integrity: v("integrity"), DHGroup: v("dh_group"),
+		PFS: r.PostFormValue("pfs") == "on", TrustedSSIDs: r.PostFormValue("trusted_ssids"),
+		LockOnDemand: r.PostFormValue("lock_on_demand") == "on",
 	}
 }
 
+func (f vpnServerForm) ikev2Server() (vpn.Server, error) {
+	s := vpn.Server{ID: f.ID, Name: f.Name, Slug: f.Slug, Kind: vpn.KindIKEv2, CAPEM: f.CAPEM, OnDemand: f.OnDemand}
+	group, err := strconv.Atoi(f.DHGroup)
+	if err != nil {
+		return s, errors.New("Diffie-Hellman group must be a number")
+	}
+	s.IKEv2 = vpn.IKEv2{
+		RemoteAddress: f.RemoteAddress, RemoteIdentifier: f.RemoteIdentifier,
+		ServerCertIssuerCN: f.ServerCertIssuerCN, ServerCertCN: f.ServerCertCN, SignIn: f.SignIn,
+		Encryption: f.Encryption, Integrity: f.Integrity, DHGroup: group, PFS: f.PFS, LockOnDemand: f.LockOnDemand,
+	}
+	// A network name may begin or end with a space, so lines are not trimmed.
+	for _, line := range strings.Split(strings.ReplaceAll(f.TrustedSSIDs, "\r", ""), "\n") {
+		if line != "" {
+			s.IKEv2.TrustedSSIDs = append(s.IKEv2.TrustedSSIDs, line)
+		}
+	}
+	return s, nil
+}
+
 func (f vpnServerForm) server() (vpn.Server, error) {
+	if f.IKEv2() {
+		return f.ikev2Server()
+	}
 	s := vpn.Server{
 		ID: f.ID, Name: f.Name, Slug: f.Slug, VerifyX509Name: f.VerifyX509Name, CAPEM: f.CAPEM,
 		TLSKeyMode: f.TLSKeyMode, TLSKey: vpn.NormalizeStaticKey(f.TLSKey),
@@ -366,7 +420,11 @@ func (a *App) handleVPNIssue(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("VPN profile not sent: "+vpnFormError(err)), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, back+"?flash="+url.QueryEscape("VPN profile for "+v.Owner.AccountName+" queued. It installs when the device next connects."), http.StatusSeeOther)
+	msg := "VPN profile for " + v.Owner.AccountName + " queued. It installs when the device next connects."
+	if v.ID == 0 {
+		msg += " The command history below shows when it is installed."
+	}
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 func (a *App) handleVPNRemove(w http.ResponseWriter, r *http.Request) {
@@ -444,11 +502,18 @@ func (a *App) renderVPNServer(w http.ResponseWriter, r *http.Request, status int
 	w.Header().Set("Cache-Control", "no-store")
 	a.render(w, r, status, "vpn_server.html", map[string]any{
 		"Title": "VPN", "Form": f, "Error": message, "Skipped": skipped, "New": f.ID == 0,
+		"Options": vpn.IKEv2Options(),
 	})
 }
 
 func (a *App) handleVPNServerNew(w http.ResponseWriter, r *http.Request) {
 	if !a.vpnAvailable(w) {
+		return
+	}
+	if r.URL.Query().Get("kind") == vpn.KindIKEv2 {
+		a.renderVPNServer(w, r, http.StatusOK, vpnServerForm{
+			Kind: vpn.KindIKEv2, SignIn: vpn.IKEv2Password, Encryption: "AES-256-GCM", Integrity: "SHA2-256", DHGroup: "20", PFS: true,
+		}, "", nil)
 		return
 	}
 	a.renderVPNServer(w, r, http.StatusOK, vpnServerForm{KeyDirection: "1", TLSKeyMode: vpn.TLSKeyAuth}, "", nil)
@@ -532,7 +597,7 @@ func (a *App) handleVPNServerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := formFromRequest(r)
-	f.ID, f.Slug = current.ID, current.Slug
+	f.ID, f.Slug, f.Kind = current.ID, current.Slug, current.Kind
 	f.HasStoredKey = current.TLSKey != ""
 	s, err := f.server()
 	if err == nil {

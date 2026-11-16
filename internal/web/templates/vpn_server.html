@@ -5,7 +5,7 @@
   {{template "topbar" .}}
   <main>
     <p><a href="/admin/vpn">← VPN</a></p>
-    <h1>{{if .New}}Add OpenVPN server{{else}}{{.Form.Name}}{{end}}</h1>
+    <h1>{{if .New}}{{if .Form.IKEv2}}Add IKEv2 server{{else}}Add OpenVPN server{{end}}{{else}}{{.Form.Name}}{{end}}</h1>
 
     {{if .Error}}<div class="card callout error">{{.Error}}</div>{{end}}
     {{if .Skipped}}
@@ -18,7 +18,7 @@
     <p class="sub">Saving needs an MFA code verified in the last five minutes
     (<a href="/account/mfa">Account security</a>).</p>
 
-    {{if .New}}
+    {{if and .New (not .Form.IKEv2)}}
     <div class="card" style="padding:24px">
       <h2 style="margin-top:0">Start from a client file</h2>
       <form method="post" action="/admin/vpn/import">
@@ -37,13 +37,62 @@
 
         <h2 style="margin-top:0">Server</h2>
         <p><label>Name<br><input type="text" name="name" value="{{.Form.Name}}" required size="40" maxlength="100"></label>
-          <span class="sub">Shown in OpenVPN Connect and in Settings on the device.</span></p>
+          <span class="sub">{{if .Form.IKEv2}}Shown in Settings on the device.{{else}}Shown in OpenVPN Connect and in Settings on the device.{{end}}</span></p>
         {{if .New}}
         <p><label>Identifier<br><input type="text" name="slug" value="{{.Form.Slug}}" size="40" pattern="[a-z0-9][a-z0-9-]*" maxlength="63"></label>
           <span class="sub">Lowercase letters, digits and hyphens. Leave empty to derive it from the name. It cannot be changed later.</span></p>
         {{else}}
         <p>Identifier<br><span class="mono">{{.Form.Slug}}</span></p>
         {{end}}
+{{if .Form.IKEv2}}
+        <input type="hidden" name="kind" value="ikev2">
+        <p><label>Server address<br><input type="text" name="remote_address" value="{{.Form.RemoteAddress}}" required size="40" placeholder="vpn.example.org"></label></p>
+        <p><label>Server identifier<br><input type="text" name="remote_identifier" value="{{.Form.RemoteIdentifier}}" size="40"></label>
+          <span class="sub">The IKE identity the server presents. It must be a name in the server certificate. Leave empty to use the address.</span></p>
+        <p><label>Server certificate name<br><input type="text" name="server_cert_cn" value="{{.Form.ServerCertCN}}" size="40"></label>
+          <span class="sub">The common name of the server certificate. Leave empty to use the identifier.</span></p>
+        <p><label>Server certificate issuer<br><input type="text" name="server_cert_issuer_cn" value="{{.Form.ServerCertIssuerCN}}" required size="40" placeholder="Example Issuing CA"></label>
+          <span class="sub">The common name of the CA that issued the server certificate. It must be one of the certificates below.</span></p>
+        <p><label>CA chain that signed the server certificate (PEM)<br>
+          <textarea name="ca_pem" rows="6" cols="80" spellcheck="false" required placeholder="-----BEGIN CERTIFICATE-----">{{.Form.CAPEM}}</textarea></label>
+          <span class="sub">Each certificate is installed on the device with the profile.</span></p>
+
+        <h2>Sign-in</h2>
+        <p><label>Devices sign in with<br>
+          <select name="sign_in">
+            <option value="password"{{if eq .Form.SignIn "password"}} selected{{end}}>Account name and password (EAP-MSCHAPv2)</option>
+            <option value="eap-tls"{{if eq .Form.SignIn "eap-tls"}} selected{{end}}>Certificate over EAP (EAP-TLS)</option>
+            <option value="certificate"{{if eq .Form.SignIn "certificate"}} selected{{end}}>Certificate (IKE certificate authentication)</option>
+          </select></label>
+          <span class="sub">With a password the device asks for it at every connection; Cairn never puts a password in a profile. With a certificate the device makes its own key and the key never leaves it.</span></p>
+
+        <h2>Encryption</h2>
+        <p><label>Encryption<br>
+          <select name="encryption">
+            {{range $v := .Options.Encryption}}<option value="{{$v}}"{{if eq $.Form.Encryption $v}} selected{{end}}>{{$v}}</option>{{end}}
+          </select></label></p>
+        <p><label>Integrity<br>
+          <select name="integrity">
+            {{range $v := .Options.Integrity}}<option value="{{$v}}"{{if eq $.Form.Integrity $v}} selected{{end}}>{{$v}}</option>{{end}}
+          </select></label></p>
+        <p><label>Diffie-Hellman group<br>
+          <select name="dh_group">
+            {{range $v := .Options.DHGroups}}<option value="{{$v}}"{{if eq $.Form.DHGroup $v}} selected{{end}}>{{$v}}</option>{{end}}
+          </select></label>
+          <span class="sub">The same three settings are used for the IKE and the child security association. They must match a proposal on the server.</span></p>
+        <p><label><input type="checkbox" name="pfs"{{if .Form.PFS}} checked{{end}}> Perfect forward secrecy</label>
+          <span class="sub">Needs a PFS group on the server's phase 2.</span></p>
+
+        <h2>On Demand</h2>
+        <p><label><input type="checkbox" name="on_demand"{{if .Form.OnDemand}} checked{{end}}> Connect on demand on Wi-Fi and cellular</label>
+          <span class="sub">Only with certificate sign-in.</span></p>
+        <p><label>Trusted Wi-Fi networks, one name per line<br>
+          <textarea name="trusted_ssids" rows="4" cols="40" spellcheck="false">{{.Form.TrustedSSIDs}}</textarea></label>
+          <span class="sub">On these networks the VPN disconnects.</span></p>
+        <p><label><input type="checkbox" name="lock_on_demand"{{if .Form.LockOnDemand}} checked{{end}}> Stop the user switching On Demand off</label>
+          <span class="sub">Leave this off unless every network the device meets lets the VPN through; a hotel sign-in page will not.</span></p>
+
+        {{else}}
         <p><label>Addresses, one per line: host port udp or tcp<br>
           <textarea name="remotes" rows="3" cols="60" spellcheck="false" required placeholder="vpn.example.org 443 udp">{{.Form.Remotes}}</textarea></label>
           <span class="sub">Each address becomes its own connection on the device, with the same certificate. Add a TCP address for networks that block UDP. A fourth value sets the tunnel MTU for that address only.</span></p>
@@ -79,6 +128,7 @@
         <p><label>Other client options, one per line<br>
           <textarea name="extra" rows="3" cols="60" spellcheck="false">{{.Form.Extra}}</textarea></label></p>
 
+        {{end}}
         <p style="margin-top:20px"><button class="btn" type="submit">Save</button></p>
       </form>
     </div>

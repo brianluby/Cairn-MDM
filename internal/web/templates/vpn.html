@@ -8,12 +8,12 @@
 
     {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
 
-    <h2>OpenVPN servers</h2>
+    <h2>Servers</h2>
     <div class="card">
       {{if .Servers}}
       <table>
         <thead>
-          <tr><th>Server</th><th>Addresses</th><th>Certificate name</th><th>Sign-in</th></tr>
+          <tr><th>Server</th><th>Type</th><th>Addresses</th><th>Certificate name</th><th>Sign-in</th></tr>
         </thead>
         <tbody>
           {{range .Servers}}
@@ -22,11 +22,21 @@
               <a href="/admin/vpn/{{.ID}}">{{.Name}}</a>
               <div class="sub mono">{{.Slug}}</div>
             </td>
+            {{if .IsIKEv2}}
+            <td>IKEv2</td>
+            <td class="mono">{{.IKEv2.RemoteAddress}}</td>
+            <td class="mono">{{if .IKEv2.ServerCertCN}}{{.IKEv2.ServerCertCN}}{{else if .IKEv2.RemoteIdentifier}}{{.IKEv2.RemoteIdentifier}}{{else}}{{.IKEv2.RemoteAddress}}{{end}}</td>
+            <td class="sub">
+              {{if eq .IKEv2.SignIn "password"}}Account name and password{{else if eq .IKEv2.SignIn "eap-tls"}}Certificate (EAP-TLS){{else}}Certificate{{end}}{{if .OnDemand}}, connects on demand{{end}}
+            </td>
+            {{else}}
+            <td>OpenVPN</td>
             <td class="mono">{{range .Remotes}}{{.Host}} {{.Port}} {{.Proto}}<br>{{end}}</td>
             <td class="mono">{{.VerifyX509Name}}</td>
             <td class="sub">
               Certificate{{if .UserAuth}} and password{{end}}{{if .OnDemand}}, connects on demand{{end}}
             </td>
+            {{end}}
           </tr>
           {{end}}
         </tbody>
@@ -35,7 +45,7 @@
       <div class="empty">No servers yet. Add one to issue VPN profiles to devices.</div>
       {{end}}
     </div>
-    <p style="margin-top:12px"><a class="btn" href="/admin/vpn/new">Add server</a></p>
+    <p style="margin-top:12px"><a class="btn" href="/admin/vpn/new">Add OpenVPN server</a> <a class="btn" href="/admin/vpn/new?kind=ikev2">Add IKEv2 server</a></p>
     <p class="sub">Send a profile from a device's page.</p>
 
     {{if .IssuerMissing}}<div class="card callout error">VPN certificates cannot be issued yet: {{.IssuerMissing}}</div>{{end}}

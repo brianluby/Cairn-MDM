@@ -219,3 +219,65 @@ func TestDirectoryAdminIsRecheckedForVPNWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestIKEv2ServerCreateAndEdit(t *testing.T) {
+	app, sessions, db := testApp(t)
+	servers, err := vpn.NewServers(db, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.SetVPN(servers)
+	m := mux(app)
+	cookie, csrf := freshAdmin(t, app, sessions, db)
+	values := func() url.Values {
+		return url.Values{
+			"csrf": {csrf}, "kind": {"ikev2"}, "name": {"Office IKEv2"}, "remote_address": {"vpn.example.org"},
+			"server_cert_issuer_cn": {"Test CA"}, "ca_pem": {vpnTestCA(t)}, "sign_in": {"eap-tls"},
+			"encryption": {"AES-256-GCM"}, "integrity": {"SHA2-256"}, "dh_group": {"20"}, "pfs": {"on"},
+			"on_demand": {"on"}, "trusted_ssids": {"Office\r\nHome Net\r\n"},
+		}
+	}
+	req := httptest.NewRequest("GET", "/admin/vpn/new?kind=ikev2", nil)
+	req.AddCookie(cookie)
+	page := httptest.NewRecorder()
+	m.ServeHTTP(page, req)
+	if page.Code != 200 || !strings.Contains(page.Body.String(), "Add IKEv2 server") || strings.Contains(page.Body.String(), "Static key") {
+		t.Fatalf("new IKEv2 form = %d", page.Code)
+	}
+	rr := postForm(m, cookie, "/admin/vpn/new", values().Encode())
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("create = %d: %s", rr.Code, rr.Body.String())
+	}
+	s, err := servers.Get(context.Background(), 1)
+	if err != nil || !s.IsIKEv2() || s.Slug != "office-ikev2" || !s.OnDemand || !s.IKEv2.PFS || s.IKEv2.DHGroup != 20 ||
+		len(s.IKEv2.TrustedSSIDs) != 2 || s.IKEv2.TrustedSSIDs[1] != "Home Net" {
+		t.Fatalf("stored server = %+v, %v", s, err)
+	}
+
+	// An edit cannot turn the record into an OpenVPN server.
+	v := values()
+	v.Set("kind", "openvpn")
+	v.Set("name", "Office IKEv2 b")
+	v.Set("sign_in", "certificate")
+	if rr = postForm(m, cookie, "/admin/vpn/1", v.Encode()); rr.Code != http.StatusSeeOther {
+		t.Fatalf("update = %d: %s", rr.Code, rr.Body.String())
+	}
+	if s, _ = servers.Get(context.Background(), 1); !s.IsIKEv2() || s.Name != "Office IKEv2 b" || s.IKEv2.SignIn != vpn.IKEv2Certificate {
+		t.Fatalf("after update = %+v", s)
+	}
+
+	// On demand with a password is refused, with the form shown again.
+	v = values()
+	v.Set("sign_in", "password")
+	if rr = postForm(m, cookie, "/admin/vpn/1", v.Encode()); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "certificate sign-in") {
+		t.Fatalf("on demand with password = %d", rr.Code)
+	}
+
+	req = httptest.NewRequest("GET", "/admin/vpn", nil)
+	req.AddCookie(cookie)
+	page = httptest.NewRecorder()
+	m.ServeHTTP(page, req)
+	if page.Code != 200 || !strings.Contains(page.Body.String(), "IKEv2") || !strings.Contains(page.Body.String(), "vpn.example.org") {
+		t.Fatalf("list page = %d", page.Code)
+	}
+}

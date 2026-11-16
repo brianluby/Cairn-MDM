@@ -1,5 +1,5 @@
-// Package vpn models OpenVPN servers and renders per-device client profiles for
-// them. It has no storage or network dependencies: callers supply the server
+// Package vpn models OpenVPN and native IKEv2 servers and renders per-device
+// client profiles for them. It has no storage or network dependencies: callers supply the server
 // record and the device's certificate and key, and get profile bytes back.
 package vpn
 
@@ -30,11 +30,15 @@ type Remote struct {
 	TunMTU int `json:"TunMTU,omitempty"`
 }
 
-// Server is an admin-managed OpenVPN server definition.
+// Server is an admin-managed VPN server definition. Kind says which protocol
+// it is; the OpenVPN fields below are unused for an IKEv2 server and IKEv2 is
+// unused for an OpenVPN one. Name, Slug, CAPEM and OnDemand apply to both.
 type Server struct {
 	ID             int64
 	Name           string
 	Slug           string // immutable; part of the profile's PayloadIdentifier
+	Kind           string // KindOpenVPN or KindIKEv2; empty means OpenVPN
+	IKEv2          IKEv2
 	Remotes        []Remote
 	VerifyX509Name string // exact CN of the server certificate
 	CAPEM          string // chain that signs the server certificate
@@ -60,6 +64,8 @@ var (
 	hostRE = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$`)
 	nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._*-]{0,252}$`)
 	algRE  = regexp.MustCompile(`^[A-Za-z0-9-]{1,40}$`)
+	// accountRE is a directory account name as it appears in a certificate.
+	accountRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 )
 
 // extraAllowed lists the pass-through options a server record may carry. Anything
@@ -101,6 +107,13 @@ func (s Server) Validate() error {
 	}
 	if !slugRE.MatchString(s.Slug) {
 		return errors.New("identifier must be lowercase letters, digits and hyphens")
+	}
+	switch s.Kind {
+	case "", KindOpenVPN:
+	case KindIKEv2:
+		return s.validateIKEv2()
+	default:
+		return fmt.Errorf("unknown server kind %q", s.Kind)
 	}
 	if len(s.Remotes) == 0 || len(s.Remotes) > 8 {
 		return errors.New("one to eight server addresses are required")

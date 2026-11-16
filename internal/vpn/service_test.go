@@ -624,3 +624,54 @@ func TestRevocationStaysWithTheIssuingCA(t *testing.T) {
 		t.Fatalf("manual confirmation for the earlier issuer: %v", err)
 	}
 }
+
+func TestIKEv2PasswordProfileIsQueuedWithoutACertificate(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	office, err := f.servers.Get(ctx, f.server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := vpn.Server{
+		Name: "Office IKEv2", Slug: "office-ikev2", Kind: vpn.KindIKEv2, CAPEM: office.CAPEM,
+		IKEv2: vpn.IKEv2{RemoteAddress: "vpn.example.org", ServerCertIssuerCN: "Test CA", SignIn: vpn.IKEv2Password,
+			Encryption: "AES-256-GCM", Integrity: "SHA2-256", DHGroup: 20},
+	}
+	id, err := f.servers.Create(ctx, record, "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.servers.Get(ctx, id)
+	if err != nil || !stored.IsIKEv2() || stored.IKEv2.RemoteAddress != "vpn.example.org" || stored.IKEv2.DHGroup != 20 {
+		t.Fatalf("stored record = %+v, %v", stored, err)
+	}
+	svc := f.service(t, f.backend)
+	v, err := svc.Issue(ctx, "PHONE1", id, "alice", "nick")
+	if err != nil || v.Owner.AccountName != "alice" || v.ID != 0 {
+		t.Fatalf("Issue = %+v, %v", v, err)
+	}
+	cmd := f.device(t, "PHONE1", "Acknowledged")
+	if cmd == nil || cmd.Command.RequestType != "InstallProfile" {
+		t.Fatalf("queued command = %+v", cmd)
+	}
+	if f.keyAtRest(t) {
+		t.Fatal("a private key is in the database after a password-only profile")
+	}
+	rows, err := f.db.DeviceVPNIdentities(ctx, "PHONE1")
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("certificate rows = %d, %v; a password profile has no certificate", len(rows), err)
+	}
+
+	// Certificate sign-in is refused until Cairn can issue for a device-made key.
+	record.Slug, record.IKEv2.SignIn = "office-eap-tls", vpn.IKEv2EAPTLS
+	certID, err := f.servers.Create(ctx, record, "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Issue(ctx, "PHONE1", certID, "alice", "nick"); !errors.Is(err, vpn.ErrDeviceKeyed) {
+		t.Fatalf("certificate sign-in: err = %v, want ErrDeviceKeyed", err)
+	}
+	if cmd = f.device(t, "PHONE1", ""); cmd != nil {
+		t.Fatal("a profile was queued for a refused request")
+	}
+}

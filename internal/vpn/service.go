@@ -95,6 +95,7 @@ var (
 	ErrDeviceGone      = errors.New("the device is not enrolled or cannot receive commands")
 	ErrAwaitingDevice  = errors.New("a profile is already waiting for this device and installs when it next connects; revoke that certificate first to send a new one")
 	ErrPlatform        = errors.New("OpenVPN profiles are built for iPhone and iPad; this device is a Mac")
+	ErrDeviceKeyed     = errors.New("this server signs devices in with a certificate, and Cairn cannot yet issue one for a key the device makes; use password sign-in until it can")
 	ErrHeld            = errors.New("the certificate authority's answer could not be trusted; the request is held for review and no profile was sent")
 )
 
@@ -143,12 +144,12 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 	if err != nil || dev.CheckedOutAt.Valid || !dev.TokenUpdatedAt.Valid {
 		return none, ErrDeviceGone
 	}
-	if strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac") {
-		return none, ErrPlatform
-	}
 	server, err := s.servers.Get(ctx, serverID)
 	if err != nil {
 		return none, fmt.Errorf("vpn: server: %w", err)
+	}
+	if !server.IsIKEv2() && (strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac")) {
+		return none, ErrPlatform
 	}
 	owner, err := s.Owner(ctx, deviceID, account)
 	if err != nil {
@@ -156,6 +157,9 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 	}
 	if owner.AccountName == "" || owner.UPN == "" {
 		return none, ErrOwnerIneligible
+	}
+	if server.IsIKEv2() {
+		return s.sendIKEv2(ctx, deviceID, server, owner, actor)
 	}
 
 	// One undelivered key per device and server at a time.
@@ -251,6 +255,25 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 	}
 	s.log.Info("vpn: profile queued", "identity", id, "device", deviceID, "server", server.Slug, "owner", owner.UPN, "serial", res.Serial, "actor", actor)
 	return s.store.GetVPNIdentity(ctx, id)
+}
+
+// sendIKEv2 queues an IKEv2 profile. With password sign-in there is no
+// certificate and nothing to record beyond the command: the profile holds the
+// account name, the server settings and the CA chain.
+func (s *Service) sendIKEv2(ctx context.Context, deviceID string, server Server, owner directory.DirectoryIdentity, actor string) (sqlite.VPNIdentity, error) {
+	var none sqlite.VPNIdentity
+	if server.IKEv2.UsesCertificate() {
+		return none, ErrDeviceKeyed
+	}
+	profile, err := RenderIKEv2(s.opts.Organization, server, IKEv2Identity{DeviceID: deviceID, Username: owner.AccountName})
+	if err != nil {
+		return none, err
+	}
+	if err = s.cmd.SendInstallProfileAs(ctx, mdmcore.NewCommandUUID(), profile, deviceID); err != nil {
+		return none, fmt.Errorf("vpn: the profile could not be queued: %w", err)
+	}
+	s.log.Info("vpn: IKEv2 profile queued", "device", deviceID, "server", server.Slug, "owner", owner.UPN, "sign_in", server.IKEv2.SignIn, "actor", actor)
+	return sqlite.VPNIdentity{ServerID: server.ID, DeviceID: deviceID, Owner: owner, Actor: actor}, nil
 }
 
 // Remove queues removal of the server's profile from the device. The

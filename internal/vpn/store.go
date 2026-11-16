@@ -47,6 +47,8 @@ func NewServers(rows RowStore, key []byte) (*Servers, error) {
 // storedConfig is the JSON kept in vpn_servers.config: every setting except the
 // TLS key.
 type storedConfig struct {
+	Kind           string      `json:"kind,omitempty"` // absent on OpenVPN records
+	IKEv2          *IKEv2      `json:"ikev2,omitempty"`
 	Remotes        []Remote    `json:"remotes"`
 	VerifyX509Name string      `json:"verify_x509_name"`
 	CAPEM          string      `json:"ca_pem"`
@@ -95,6 +97,10 @@ func (c *Servers) fromRow(r sqlite.VPNServerRow) (Server, error) {
 		TLSKeyMode: cfg.TLSKeyMode, KeyDirection: cfg.KeyDirection,
 		Cipher: cfg.Cipher, Auth: cfg.Auth, TunMTU: cfg.TunMTU,
 		UserAuth: cfg.UserAuth, OnDemand: cfg.OnDemand, Extra: cfg.Extra,
+		Kind: KindOpenVPN,
+	}
+	if cfg.Kind == KindIKEv2 && cfg.IKEv2 != nil {
+		s.Kind, s.IKEv2 = KindIKEv2, *cfg.IKEv2
 	}
 	if len(r.SealedKey) > 0 {
 		key, err := c.openKey(r.Slug, r.SealedKey)
@@ -107,6 +113,9 @@ func (c *Servers) fromRow(r sqlite.VPNServerRow) (Server, error) {
 }
 
 func toConfig(s Server) ([]byte, error) {
+	if s.IsIKEv2() {
+		return json.Marshal(storedConfig{Kind: KindIKEv2, IKEv2: &s.IKEv2, CAPEM: s.CAPEM, OnDemand: s.OnDemand})
+	}
 	return json.Marshal(storedConfig{
 		Remotes: s.Remotes, VerifyX509Name: s.VerifyX509Name, CAPEM: s.CAPEM,
 		TLSKeyMode: s.TLSKeyMode, KeyDirection: s.KeyDirection,
@@ -161,7 +170,11 @@ func (c *Servers) Update(ctx context.Context, s Server, actor string) error {
 	if err != nil {
 		return err
 	}
-	s.Slug = current.Slug
+	// The kind decides which profile replaces the one on a device; it stays.
+	s.Slug, s.Kind = current.Slug, current.Kind
+	if s.IsIKEv2() {
+		s.TLSKeyMode, s.TLSKey = TLSKeyNone, ""
+	}
 	if s.TLSKeyMode != TLSKeyNone && s.TLSKey == "" {
 		s.TLSKey = current.TLSKey
 	}
@@ -189,7 +202,7 @@ func (c *Servers) toRow(s Server) (sqlite.VPNServerRow, error) {
 		return sqlite.VPNServerRow{}, err
 	}
 	row := sqlite.VPNServerRow{ID: s.ID, Name: s.Name, Slug: s.Slug, Config: cfg}
-	if s.TLSKeyMode != TLSKeyNone {
+	if s.TLSKeyMode != TLSKeyNone && !s.IsIKEv2() {
 		if row.SealedKey, err = c.sealKey(s.Slug, s.TLSKey); err != nil {
 			return sqlite.VPNServerRow{}, err
 		}

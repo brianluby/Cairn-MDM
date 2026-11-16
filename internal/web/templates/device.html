@@ -138,7 +138,8 @@
                 {{else if eq .State "REVOKED"}}<span class="dot off"></span> Certificate <span class="mono">{{.CertSerial}}</span> revoked{{if not .RevokedAt.Valid}} in Cairn; not yet confirmed at the certificate authority{{end}}
                 {{else if eq .State "SUPERSEDED"}}<span class="dot off"></span> Replaced
                 {{else}}<span class="dot wait"></span> Requesting a certificate{{end}}
-              {{else}}<span class="sub">No VPN profile sent.</span>{{end}}
+              {{else}}{{if and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password")}}<span class="sub">Password sign-in: no certificate. A sent profile shows in the command history.</span>
+              {{else}}<span class="sub">No VPN profile sent.</span>{{end}}{{end}}
             </td>
             {{if $.User.Role.AtLeast "admin"}}
             <td>
@@ -148,6 +149,13 @@
                 {{if not $.Owner}}<label>Account <input type="text" name="account" required size="16" placeholder="jsmith" autocomplete="off"></label>{{end}}
                 <button class="btn" type="submit">{{if .Latest}}Send new profile{{else}}Send profile{{end}}</button>
               </form>
+              {{if and .Server.IsIKEv2 (not .Latest)}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/remove" style="display:inline"
+                    onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">Remove profile</button>
+              </form>
+              {{end}}
               {{with .Latest}}{{if eq .State "ISSUED"}}
               {{if eq .DeployStatus "installed"}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.ServerID}}/remove" style="display:inline"
@@ -170,7 +178,7 @@
         </tbody>
       </table>
       <p class="sub" style="margin:8px 16px 16px">{{if .Owner}}The certificate is issued to this device's verified owner.{{else}}This device has no verified owner, so name the directory account the certificate is for. {{end}}
-      Sending needs an MFA code verified in the last five minutes. On an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app.</p>
+      Sending needs an MFA code verified in the last five minutes. For an OpenVPN server on an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app. An IKEv2 server needs no app.</p>
     </div>
     {{end}}
 

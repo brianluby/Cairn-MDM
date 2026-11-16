@@ -186,13 +186,43 @@ CA's answer.
 - Requests held for review.
 - Certificates retired in Cairn that the CA has not revoked after two hours.
 
+## IKEv2 servers
+
+A server record can also describe a native IKEv2 server. The device's built-in
+client is used, so no app is needed, and the profile works on a Mac as well as
+an iPhone or iPad. Add one from VPN > Add IKEv2 server.
+
+The record holds the server address, the IKE identifier, the server
+certificate's name and issuer, the CA chain, one encryption proposal used for
+both security associations, and how devices sign in:
+
+| Sign-in | What the profile carries | State |
+|---|---|---|
+| Account name and password (EAP-MSCHAPv2) | The account name. No password: the device asks for it at every connection | Built; no device test yet |
+| Certificate over EAP (EAP-TLS) | A SCEP request, so the device makes its own key | Record and profile built; Cairn cannot yet issue the certificate, so sending is refused |
+| Certificate (IKE certificate authentication) | The same | The same |
+
+Cairn never puts a password, a shared secret or a private key in an IKEv2
+profile, and checks every rendered profile for all three before it is queued.
+That is why On Demand is refused with password sign-in: the device would have
+nothing to sign in with.
+
+With On Demand the profile connects on Wi-Fi and cellular and stays off the VPN
+on any other network. Wi-Fi networks listed as trusted disconnect it. The user
+can switch On Demand off in Settings unless the record locks it.
+
+The profile installs each certificate of the CA chain. The issuer name in the
+record has to be the common name of one of them.
+
 ## Not built yet
 
+- Issuing a certificate for a key the device makes, which IKEv2 certificate
+  sign-in needs: a SCEP endpoint on Cairn that accepts one request per
+  one-time challenge and passes it to the configured CA.
 - A run of the SCEP issuer against a real CA.
 - One connection that tries several addresses in turn.
 - More than one value for an option such as `route` or `dhcp-option`; the
   server form refuses a repeat and the importer keeps the first.
-- Native IKEv2 profiles that use the device's enrolled identity.
 - macOS: a keychain identity pushed by MDM plus a Viscosity connection.
 - Automatic re-issue before expiry.
 - Certificate classes that keep a VPN certificate from being accepted where a
