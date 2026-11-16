@@ -87,6 +87,14 @@ first-class: you do not need an Apple Business Manager account to use Cairn.
 curl -fsSL https://raw.githubusercontent.com/nickpdawson/Cairn-MDM/main/packaging/install.sh | sh
 ```
 
+A beta is a GitHub prerelease, which "latest" skips. To install one, name it:
+`... | sh -s -- v0.2.0-beta.1`.
+
+**Which setup fits you depends on whether you have LDAP/AD and where your
+certificates come from. Read [the install guide](docs/install.md) first.** In
+this beta, enrolling devices needs an LDAP or Active Directory server unless you
+use an external SCEP CA with open enrollment.
+
 Or grab a release tarball / `.deb` / `.rpm` from the releases page, or run the
 container (`ghcr.io/nickpdawson/cairn-mdm`). Building from source: `go build ./cmd/cairn`
 (pure Go, `CGO_ENABLED=0`).
@@ -95,7 +103,8 @@ container (`ghcr.io/nickpdawson/cairn-mdm`). Building from source: `go build ./c
 
 ```sh
 # One command sets up config, a CA (self-signed by default), and the admin
-# account, and prints the enrollment URL. Note: running your own CA is a real
+# account. Enrollment links then need an LDAP/AD directory in the config
+# (docs/install.md). Note: running your own CA is a real
 # security decision (offline root, rollover — see SECURITY.md); if you already
 # have a PKI, prefer external mode so the signing key never lives on this host.
 cairn init --public-url https://mdm.example.org

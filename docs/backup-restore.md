@@ -6,7 +6,7 @@ the database loses enrollments — treat it like the crown jewel it is.
 
 ## What to back up
 
-| Item | Path (DZsec CT 226) | Why |
+| Item | Path (reference deployment) | Why |
 |---|---|---|
 | Database | `/var/lib/cairn/cairn.db` (+ `-wal`, `-shm`) | Devices, enrollments, cert-auth associations, **APNs push cert/key**, embedded CA (generate/import mode), sessions, profiles, grants, audit |
 | MFA key (candidate schema 027 onward) | `<storage.path>.mfa/key`, normally `/var/lib/cairn/cairn.db.mfa/key` | Decrypts confirmed and pending authenticator secrets; restore the matching key with the DB; directory 0700 and file 0600 |

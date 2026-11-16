@@ -85,7 +85,7 @@ rely on URL secrecy. Owner decision.
   cert/key config + validation; `profile.LoadSigner` verifies key↔cert match +
   validity (rejects expired/mismatched), fails boot on a bad cert, logs
   fingerprint. DZsec signing identity: a **dedicated Let's Encrypt cert for
-  cairn.dzsec.net via DNS-01** (certbot dns-cloudflare on CT 226, auto-renew +
+  cairn.dzsec.net via DNS-01** (certbot dns-cloudflare on the Cairn host, auto-renew +
   deploy-hook copies to /etc/cairn/sign.* and reloads). Live: served profile is
   CMS/PKCS7-signed, signature verifies, chains cairn.dzsec.net→LE→ISRG (public
   → green "Verified"); on-device banner still to eyeball on hardware.
