@@ -103,10 +103,12 @@ func (s Server) validateIKEv2() error {
 	if !hostRE.MatchString(k.RemoteAddress) {
 		return fmt.Errorf("server address %q is not a hostname or IP address", k.RemoteAddress)
 	}
-	for _, name := range []string{k.remoteID(), k.serverCN()} {
-		if !nameRE.MatchString(name) {
-			return fmt.Errorf("%q is not a server identifier or certificate name", name)
-		}
+	if !nameRE.MatchString(k.remoteID()) {
+		return fmt.Errorf("server identifier %q must be a host name or address, as it appears in the server certificate", k.remoteID())
+	}
+	// A common name may hold spaces; a host name is still the usual value.
+	if !issuerRE.MatchString(k.serverCN()) {
+		return fmt.Errorf("server certificate name %q is not a certificate common name", k.serverCN())
 	}
 	if !issuerRE.MatchString(k.ServerCertIssuerCN) {
 		return errors.New("server certificate issuer is required: the common name of the CA that issued the server certificate")

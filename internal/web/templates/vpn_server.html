@@ -50,7 +50,7 @@
         <p><label>Server identifier<br><input type="text" name="remote_identifier" value="{{.Form.RemoteIdentifier}}" size="40"></label>
           <span class="sub">The IKE identity the server presents. It must be a name in the server certificate. Leave empty to use the address.</span></p>
         <p><label>Server certificate name<br><input type="text" name="server_cert_cn" value="{{.Form.ServerCertCN}}" size="40"></label>
-          <span class="sub">The common name of the server certificate. Leave empty to use the identifier.</span></p>
+          <span class="sub">The common name (CN) inside the server certificate, usually the server's host name. It is not the label a firewall or certificate manager lists the certificate under. Leave empty to use the identifier.</span></p>
         <p><label>Server certificate issuer<br><input type="text" name="server_cert_issuer_cn" value="{{.Form.ServerCertIssuerCN}}" required size="40" placeholder="Example Issuing CA"{{if .KnownCAs}} list="known-cas" autocomplete="off"{{end}}></label>
           {{if .KnownCAs}}<datalist id="known-cas">{{range .KnownCAs}}<option value="{{.}}"></option>{{end}}</datalist>{{end}}
           <span class="sub">The common name of the CA that issued the server certificate.{{if .KnownCAs}} Pick one of the CAs devices get at enrollment, or type another name.{{end}}</span></p>

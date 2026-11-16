@@ -160,6 +160,7 @@ func TestIKEv2Refusals(t *testing.T) {
 		{"chain to install but none given", func(s *Server, _ *IKEv2Identity) { s.CAPEM, s.IKEv2.InstallCA = "", true }, "chain"},
 		{"trusted networks without on demand", func(s *Server, _ *IKEv2Identity) { s.IKEv2.TrustedSSIDs = []string{"Office"} }, "on demand"},
 		{"weak group", func(s *Server, _ *IKEv2Identity) { s.IKEv2.DHGroup = 2 }, "group"},
+		{"identifier with spaces", func(s *Server, _ *IKEv2Identity) { s.IKEv2.RemoteIdentifier = "Office VPN" }, "host name"},
 		{"unknown cipher", func(s *Server, _ *IKEv2Identity) { s.IKEv2.Encryption = "3DES" }, "encryption"},
 		{"no sign-in", func(s *Server, _ *IKEv2Identity) { s.IKEv2.SignIn = "" }, "sign in"},
 		{"certificate without a request", func(s *Server, _ *IKEv2Identity) { s.IKEv2.SignIn = IKEv2EAPTLS }, "SCEP"},
@@ -228,5 +229,19 @@ func TestIKEv2PasswordOnDemand(t *testing.T) {
 	misplaced := strings.Replace(string(out), "<key>AuthName</key>", "<key>OnDemandEnabled</key>\n\t\t\t\t<integer>1</integer>\n\t\t\t\t<key>AuthName</key>", 1)
 	if err := CheckIKEv2([]byte(misplaced)); err == nil || !strings.Contains(err.Error(), "top of the VPN payload") {
 		t.Errorf("On Demand inside IKEv2 passed: %v", err)
+	}
+}
+
+// A certificate common name may hold spaces; the identifier may not.
+func TestIKEv2CertificateNameWithSpaces(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	s.IKEv2.ServerCertCN = "Office VPN Gateway 1"
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ike, _ := ikev2Of(t, out); ike["ServerCertificateCommonName"] != "Office VPN Gateway 1" || ike["RemoteIdentifier"] != "vpn.example.org" {
+		t.Fatalf("names = %v / %v", ike["ServerCertificateCommonName"], ike["RemoteIdentifier"])
 	}
 }
