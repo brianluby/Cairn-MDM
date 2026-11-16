@@ -137,6 +137,12 @@ and certificate name, and acts in that window can have their own certificate
 accepted in the device's place; the real device is then refused. One-time
 challenges, below, close this.
 
+Tested on hardware: two Macs and an iPhone renewed this way. A Mac accepts
+the replacement for a profile that was installed by hand and signed by another
+server's certificate. Both platforms answer with a fresh Authenticate and then
+TokenUpdate. The profile has to repeat the push topic the device enrolled
+under, or the device refuses it.
+
 ### One-time challenges checked by the CA
 
 Some CAs can ask another system whether a request's challenge is good.
