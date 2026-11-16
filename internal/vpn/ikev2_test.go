@@ -58,8 +58,22 @@ func TestIKEv2PasswordProfile(t *testing.T) {
 	if _, has := ike["PayloadCertificateUUID"]; has || len(byType["com.apple.security.scep"]) != 0 {
 		t.Error("password sign-in carries a certificate request")
 	}
-	if len(byType["com.apple.security.root"]) != 1 {
-		t.Errorf("root CA payloads = %d, want 1", len(byType["com.apple.security.root"]))
+	if len(byType["com.apple.security.root"]) != 0 {
+		t.Error("CA chain installed although the record does not ask for it")
+	}
+	withCA := testIKEv2Server(caPEM)
+	withCA.IKEv2.InstallCA = true
+	installed, err := RenderIKEv2("org.example", withCA, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, with := ikev2Of(t, installed); len(with["com.apple.security.root"]) != 1 {
+		t.Errorf("root CA payloads = %d, want 1", len(with["com.apple.security.root"]))
+	}
+	// Devices that already trust the CA need no chain in the record at all.
+	bare := testIKEv2Server("")
+	if _, err = RenderIKEv2("org.example", bare, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"}); err != nil {
+		t.Errorf("record without a CA chain: %v", err)
 	}
 	child := ike["ChildSecurityAssociationParameters"].(map[string]any)
 	if child["EncryptionAlgorithm"] != "AES-256-GCM" || child["IntegrityAlgorithm"] != "SHA2-256" || child["DiffieHellmanGroup"] != uint64(20) {
@@ -107,7 +121,11 @@ func TestIKEv2CertificateProfilePointsAtTheSCEPPayload(t *testing.T) {
 	if ike["AuthenticationMethod"] != "Certificate" || ike["ExtendedAuthEnabled"] != uint64(1) {
 		t.Errorf("EAP-TLS sign-in = %v / %v", ike["AuthenticationMethod"], ike["ExtendedAuthEnabled"])
 	}
-	rules := ike["OnDemandRules"].([]any)
+	vpn := byType["com.apple.vpn.managed"][0]
+	if _, inside := ike["OnDemandRules"]; inside || vpn["OnDemandEnabled"] != uint64(1) {
+		t.Fatal("On Demand keys must sit at the top of the VPN payload")
+	}
+	rules := vpn["OnDemandRules"].([]any)
 	first, last := rules[0].(map[string]any), rules[len(rules)-1].(map[string]any)
 	if first["Action"] != "Disconnect" || len(first["SSIDMatch"].([]any)) != 2 {
 		t.Errorf("first rule = %v", first)
@@ -115,7 +133,7 @@ func TestIKEv2CertificateProfilePointsAtTheSCEPPayload(t *testing.T) {
 	if len(last) != 1 || last["Action"] != "Disconnect" {
 		t.Errorf("last rule = %v", last)
 	}
-	if ike["OnDemandUserOverrideDisabled"] != uint64(0) {
+	if vpn["OnDemandUserOverrideDisabled"] != uint64(0) {
 		t.Error("user cannot switch On Demand off although the record allows it")
 	}
 
@@ -139,7 +157,7 @@ func TestIKEv2Refusals(t *testing.T) {
 		want   string
 	}{
 		{"issuer not in the chain", func(s *Server, _ *IKEv2Identity) { s.IKEv2.ServerCertIssuerCN = "Some Other CA" }, "issuer"},
-		{"on demand with a password", func(s *Server, _ *IKEv2Identity) { s.OnDemand = true }, "on demand"},
+		{"chain to install but none given", func(s *Server, _ *IKEv2Identity) { s.CAPEM, s.IKEv2.InstallCA = "", true }, "chain"},
 		{"trusted networks without on demand", func(s *Server, _ *IKEv2Identity) { s.IKEv2.TrustedSSIDs = []string{"Office"} }, "on demand"},
 		{"weak group", func(s *Server, _ *IKEv2Identity) { s.IKEv2.DHGroup = 2 }, "group"},
 		{"unknown cipher", func(s *Server, _ *IKEv2Identity) { s.IKEv2.Encryption = "3DES" }, "encryption"},
@@ -190,5 +208,25 @@ func TestCheckIKEv2RejectsSecrets(t *testing.T) {
 	unpinned := strings.Replace(string(out), "<string>Test CA</string>", "<string></string>", 1)
 	if err := CheckIKEv2([]byte(unpinned)); err == nil {
 		t.Error("profile without a pinned issuer passed")
+	}
+}
+
+// A password record may connect on demand: the device keeps the password the
+// user types, so the profile still holds no secret.
+func TestIKEv2PasswordOnDemand(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	s.OnDemand = true
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ike, byType := ikev2Of(t, out)
+	if _, has := ike["AuthPassword"]; has || byType["com.apple.vpn.managed"][0]["OnDemandEnabled"] != uint64(1) {
+		t.Fatalf("password On Demand profile: %v", ike)
+	}
+	misplaced := strings.Replace(string(out), "<key>AuthName</key>", "<key>OnDemandEnabled</key>\n\t\t\t\t<integer>1</integer>\n\t\t\t\t<key>AuthName</key>", 1)
+	if err := CheckIKEv2([]byte(misplaced)); err == nil || !strings.Contains(err.Error(), "top of the VPN payload") {
+		t.Errorf("On Demand inside IKEv2 passed: %v", err)
 	}
 }

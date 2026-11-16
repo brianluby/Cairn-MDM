@@ -266,11 +266,11 @@ func TestIKEv2ServerCreateAndEdit(t *testing.T) {
 		t.Fatalf("after update = %+v", s)
 	}
 
-	// On demand with a password is refused, with the form shown again.
+	// A record the renderer would refuse is not saved; the form is shown again.
 	v = values()
-	v.Set("sign_in", "password")
-	if rr = postForm(m, cookie, "/admin/vpn/1", v.Encode()); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "certificate sign-in") {
-		t.Fatalf("on demand with password = %d", rr.Code)
+	v.Set("server_cert_issuer_cn", "Some Other CA")
+	if rr = postForm(m, cookie, "/admin/vpn/1", v.Encode()); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "CA chain") {
+		t.Fatalf("issuer outside the chain = %d", rr.Code)
 	}
 
 	req = httptest.NewRequest("GET", "/admin/vpn", nil)

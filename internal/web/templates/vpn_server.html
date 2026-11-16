@@ -52,10 +52,12 @@
         <p><label>Server certificate name<br><input type="text" name="server_cert_cn" value="{{.Form.ServerCertCN}}" size="40"></label>
           <span class="sub">The common name of the server certificate. Leave empty to use the identifier.</span></p>
         <p><label>Server certificate issuer<br><input type="text" name="server_cert_issuer_cn" value="{{.Form.ServerCertIssuerCN}}" required size="40" placeholder="Example Issuing CA"></label>
-          <span class="sub">The common name of the CA that issued the server certificate. It must be one of the certificates below.</span></p>
-        <p><label>CA chain that signed the server certificate (PEM)<br>
-          <textarea name="ca_pem" rows="6" cols="80" spellcheck="false" required placeholder="-----BEGIN CERTIFICATE-----">{{.Form.CAPEM}}</textarea></label>
-          <span class="sub">Each certificate is installed on the device with the profile.</span></p>
+          <span class="sub">The common name of the CA that issued the server certificate.</span></p>
+        <p><label>CA chain that signed the server certificate (PEM), optional<br>
+          <textarea name="ca_pem" rows="6" cols="80" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----">{{.Form.CAPEM}}</textarea></label>
+          <span class="sub">When given, the issuer above is checked against it.</span></p>
+        <p><label><input type="checkbox" name="install_ca"{{if .Form.InstallCA}} checked{{end}}> Install this chain with every profile</label>
+          <span class="sub">Leave this off when devices already trust the CA, for example from their enrollment profile.</span></p>
 
         <h2>Sign-in</h2>
         <p><label>Devices sign in with<br>
@@ -64,7 +66,7 @@
             <option value="eap-tls"{{if eq .Form.SignIn "eap-tls"}} selected{{end}}>Certificate over EAP (EAP-TLS)</option>
             <option value="certificate"{{if eq .Form.SignIn "certificate"}} selected{{end}}>Certificate (IKE certificate authentication)</option>
           </select></label>
-          <span class="sub">With a password the device asks for it at every connection; Cairn never puts a password in a profile. With a certificate the device makes its own key and the key never leaves it.</span></p>
+          <span class="sub">With a password the user types it on the device the first time and the device keeps it; Cairn never puts a password in a profile. With a certificate the device makes its own key and the key never leaves it.</span></p>
 
         <h2>Encryption</h2>
         <p><label>Encryption<br>
@@ -85,7 +87,7 @@
 
         <h2>On Demand</h2>
         <p><label><input type="checkbox" name="on_demand"{{if .Form.OnDemand}} checked{{end}}> Connect on demand on Wi-Fi and cellular</label>
-          <span class="sub">Only with certificate sign-in.</span></p>
+          <span class="sub">With password sign-in it starts working after the user has connected once by hand and the device has kept the password.</span></p>
         <p><label>Trusted Wi-Fi networks, one name per line<br>
           <textarea name="trusted_ssids" rows="4" cols="40" spellcheck="false">{{.Form.TrustedSSIDs}}</textarea></label>
           <span class="sub">On these networks the VPN disconnects.</span></p>

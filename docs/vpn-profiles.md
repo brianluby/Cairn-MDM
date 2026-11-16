@@ -193,26 +193,29 @@ client is used, so no app is needed, and the profile works on a Mac as well as
 an iPhone or iPad. Add one from VPN > Add IKEv2 server.
 
 The record holds the server address, the IKE identifier, the server
-certificate's name and issuer, the CA chain, one encryption proposal used for
-both security associations, and how devices sign in:
+certificate's name and issuer, one encryption proposal used for both security
+associations, and how devices sign in:
 
 | Sign-in | What the profile carries | State |
 |---|---|---|
-| Account name and password (EAP-MSCHAPv2) | The account name. No password: the device asks for it at every connection | Built; no device test yet |
+| Account name and password (EAP-MSCHAPv2) | The account name. No password: the user types it on the device the first time, and the device keeps it | Built; no device test yet |
 | Certificate over EAP (EAP-TLS) | A SCEP request, so the device makes its own key | Record and profile built; Cairn cannot yet issue the certificate, so sending is refused |
 | Certificate (IKE certificate authentication) | The same | The same |
 
 Cairn never puts a password, a shared secret or a private key in an IKEv2
 profile, and checks every rendered profile for all three before it is queued.
-That is why On Demand is refused with password sign-in: the device would have
-nothing to sign in with.
 
 With On Demand the profile connects on Wi-Fi and cellular and stays off the VPN
 on any other network. Wi-Fi networks listed as trusted disconnect it. The user
-can switch On Demand off in Settings unless the record locks it.
+can switch On Demand off in Settings unless the record locks it. With password
+sign-in, On Demand starts working once the user has connected by hand and the
+device holds the password.
 
-The profile installs each certificate of the CA chain. The issuer name in the
-record has to be the common name of one of them.
+The CA chain is optional in an IKEv2 record. Devices normally trust the CA
+already, from their enrollment profile, and the profile then carries no
+certificates. Give the chain to have the issuer name checked against it, and
+tick "Install this chain with every profile" only when the VPN server's CA is
+not one the devices trust yet.
 
 ## Not built yet
 

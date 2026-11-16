@@ -64,6 +64,8 @@ var (
 	hostRE = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$`)
 	nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._*-]{0,252}$`)
 	algRE  = regexp.MustCompile(`^[A-Za-z0-9-]{1,40}$`)
+	// issuerRE is a certificate common name as typed into a record.
+	issuerRE = regexp.MustCompile(`^[^\x00-\x1f<>]{1,128}$`)
 	// accountRE is a directory account name as it appears in a certificate.
 	accountRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 )

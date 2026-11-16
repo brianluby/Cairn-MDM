@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"bytes"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,8 +19,8 @@ const (
 // How a device signs in to an IKEv2 server.
 const (
 	// IKEv2Password is EAP with the user's name and password (MSCHAPv2). The
-	// device asks for the password on every connection: a profile cannot keep
-	// one the user typed, and Cairn does not put passwords in profiles.
+	// user types the password once on the device, which keeps it; Cairn does
+	// not put passwords in profiles.
 	IKEv2Password = "password"
 	// IKEv2EAPTLS is EAP-TLS with a certificate whose key the device makes.
 	IKEv2EAPTLS = "eap-tls"
@@ -28,12 +29,13 @@ const (
 )
 
 // IKEv2 holds the settings of a native IKEv2 server. Name, Slug, CAPEM and
-// OnDemand come from the Server it belongs to.
+// OnDemand come from the Server it belongs to. CAPEM is optional: devices
+// normally trust the CA already, from the enrollment profile.
 type IKEv2 struct {
 	RemoteAddress    string
 	RemoteIdentifier string // IKE identity of the server; empty means RemoteAddress
-	// ServerCertIssuerCN and ServerCertCN pin the server certificate. The
-	// issuer must be a certificate in the server record's CA chain.
+	// ServerCertIssuerCN and ServerCertCN pin the server certificate. When the
+	// record has a CA chain, the issuer must be a certificate in it.
 	ServerCertIssuerCN string
 	ServerCertCN       string // empty means RemoteIdentifier
 	SignIn             string
@@ -46,6 +48,9 @@ type IKEv2 struct {
 	TrustedSSIDs []string
 	// LockOnDemand stops the user switching On Demand off in Settings.
 	LockOnDemand bool
+	// InstallCA puts the record's CA chain in every profile. Leave it off when
+	// devices already trust the CA.
+	InstallCA bool
 }
 
 var (
@@ -103,25 +108,30 @@ func (s Server) validateIKEv2() error {
 			return fmt.Errorf("%q is not a server identifier or certificate name", name)
 		}
 	}
-	chain, err := parseCertificates(s.CAPEM)
-	if err != nil {
-		return fmt.Errorf("CA chain: %w", err)
+	if !issuerRE.MatchString(k.ServerCertIssuerCN) {
+		return errors.New("server certificate issuer is required: the common name of the CA that issued the server certificate")
 	}
-	issuerKnown := false
-	for _, c := range chain {
-		if c.Subject.CommonName == k.ServerCertIssuerCN {
-			issuerKnown = true
+	if strings.TrimSpace(s.CAPEM) == "" {
+		if k.InstallCA {
+			return errors.New("installing the CA chain with the profile needs the chain")
 		}
-	}
-	if k.ServerCertIssuerCN == "" || !issuerKnown {
-		return errors.New("server certificate issuer must be the common name of a certificate in the CA chain")
+	} else {
+		chain, err := parseCertificates(s.CAPEM)
+		if err != nil {
+			return fmt.Errorf("CA chain: %w", err)
+		}
+		issuerKnown := false
+		for _, c := range chain {
+			if c.Subject.CommonName == k.ServerCertIssuerCN {
+				issuerKnown = true
+			}
+		}
+		if !issuerKnown {
+			return errors.New("server certificate issuer must be the common name of a certificate in the CA chain")
+		}
 	}
 	switch k.SignIn {
-	case IKEv2Password:
-		if s.OnDemand {
-			return errors.New("connecting on demand needs certificate sign-in: with a password the device has to ask the user each time")
-		}
-	case IKEv2EAPTLS, IKEv2Certificate:
+	case IKEv2Password, IKEv2EAPTLS, IKEv2Certificate:
 	default:
 		return errors.New("choose how devices sign in: password, EAP-TLS or certificate")
 	}
@@ -176,8 +186,8 @@ type IKEv2Identity struct {
 }
 
 // RenderIKEv2 builds an Apple configuration profile for the native IKEv2
-// client: the VPN payload, the CA chain that signs the server certificate, and
-// for certificate sign-in a SCEP payload the VPN payload points at. No private
+// client: the VPN payload, for certificate sign-in a SCEP payload the VPN
+// payload points at, and the CA chain when the record asks for it. No private
 // key or password is ever part of the profile. The result has passed CheckIKEv2.
 func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 	if !s.IsIKEv2() {
@@ -233,7 +243,6 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 		"NATKeepAliveInterval":                      110,
 		"IKESecurityAssociationParameters":          proposal(480),
 		"ChildSecurityAssociationParameters":        proposal(60),
-		"OnDemandEnabled":                           boolInt(s.OnDemand),
 	}
 	switch k.SignIn {
 	case IKEv2Password:
@@ -246,6 +255,22 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 		ike["ExtendedAuthEnabled"] = boolInt(k.SignIn == IKEv2EAPTLS)
 		ike["CertificateType"] = "RSA"
 		ike["PayloadCertificateUUID"] = payloadUUID("scep")
+	}
+	// On Demand keys sit beside the IKEv2 dictionary, at the top of the VPN
+	// payload, for every VPN type.
+	vpn := map[string]any{
+		"PayloadType":        "com.apple.vpn.managed",
+		"PayloadVersion":     1,
+		"PayloadIdentifier":  identifier + ".vpn",
+		"PayloadUUID":        payloadUUID("vpn"),
+		"PayloadDisplayName": "VPN",
+		"PayloadDescription": "IKEv2 configuration for " + s.Name,
+		"UserDefinedName":    s.Name,
+		"VPNType":            "IKEv2",
+		"IKEv2":              ike,
+		"IPv4":               map[string]any{"OverridePrimary": 1},
+		"Proxies":            map[string]any{"HTTPEnable": 0, "HTTPSEnable": 0},
+		"OnDemandEnabled":    boolInt(s.OnDemand),
 	}
 	if s.OnDemand {
 		var rules []any
@@ -262,23 +287,11 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 			// Anything else, a wired Mac for one, stays off the VPN.
 			map[string]any{"Action": "Disconnect"},
 		)
-		ike["OnDemandRules"] = rules
-		ike["OnDemandUserOverrideDisabled"] = boolInt(k.LockOnDemand)
+		vpn["OnDemandRules"] = rules
+		vpn["OnDemandUserOverrideDisabled"] = boolInt(k.LockOnDemand)
 	}
 
-	payloads := []any{map[string]any{
-		"PayloadType":        "com.apple.vpn.managed",
-		"PayloadVersion":     1,
-		"PayloadIdentifier":  identifier + ".vpn",
-		"PayloadUUID":        payloadUUID("vpn"),
-		"PayloadDisplayName": "VPN",
-		"PayloadDescription": "IKEv2 configuration for " + s.Name,
-		"UserDefinedName":    s.Name,
-		"VPNType":            "IKEv2",
-		"IKEv2":              ike,
-		"IPv4":               map[string]any{"OverridePrimary": 1},
-		"Proxies":            map[string]any{"HTTPEnable": 0, "HTTPSEnable": 0},
-	}}
+	payloads := []any{vpn}
 	if k.UsesCertificate() {
 		size := id.SCEP.KeySize
 		if size == 0 {
@@ -311,9 +324,12 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 			"PayloadContent":     content,
 		})
 	}
-	chain, err := parseCertificates(s.CAPEM)
-	if err != nil {
-		return nil, fmt.Errorf("vpn: CA chain: %w", err)
+	var chain []*x509.Certificate
+	if k.InstallCA {
+		var err error
+		if chain, err = parseCertificates(s.CAPEM); err != nil {
+			return nil, fmt.Errorf("vpn: CA chain: %w", err)
+		}
 	}
 	for i, c := range chain {
 		kind := "com.apple.security.pkcs1"
@@ -334,7 +350,7 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 
 	description := s.Name + " for " + id.Username + "."
 	if k.SignIn == IKEv2Password {
-		description += " The device asks for the account password when it connects."
+		description += " The device asks for the account password the first time it connects."
 	}
 	prof := map[string]any{
 		"PayloadType":              "Configuration",
@@ -367,7 +383,8 @@ func boolInt(b bool) int {
 // CheckIKEv2 applies the rules an IKEv2 profile must meet before it is sent:
 // the server certificate is pinned, the profile holds no password and no
 // private key, a certificate sign-in points at a SCEP payload in the same
-// profile, and On Demand rules end in a rule that always matches.
+// profile, and On Demand rules sit at the top of the VPN payload and end in a
+// rule that always matches.
 func CheckIKEv2(profile []byte) error {
 	if bytes.Contains(profile, []byte("PRIVATE KEY")) {
 		return errors.New("an IKEv2 profile must not carry a private key")
@@ -380,9 +397,8 @@ func CheckIKEv2(profile []byte) error {
 	if str(top["PayloadIdentifier"]) == "" || str(top["PayloadUUID"]) == "" || len(content) == 0 {
 		return errors.New("profile needs an identifier, a UUID and at least one payload")
 	}
-	var ike map[string]any
+	var vpn, ike map[string]any
 	scep := map[string]map[string]any{} // by PayloadUUID
-	authorities := 0
 	seen := map[string]bool{}
 	for _, raw := range content {
 		p, ok := raw.(map[string]any)
@@ -405,20 +421,17 @@ func CheckIKEv2(profile []byte) error {
 			if ike, ok = p["IKEv2"].(map[string]any); !ok {
 				return errors.New("VPN payload has no IKEv2 dictionary")
 			}
+			vpn = p
 		case "com.apple.security.scep":
 			c, _ := p["PayloadContent"].(map[string]any)
 			scep[id] = c
 		case "com.apple.security.root", "com.apple.security.pkcs1":
-			authorities++
 		default:
 			return fmt.Errorf("payload type %q does not belong in an IKEv2 profile", str(p["PayloadType"]))
 		}
 	}
 	if ike == nil {
 		return errors.New("profile has no VPN payload")
-	}
-	if authorities == 0 {
-		return errors.New("profile needs the CA chain that signs the server certificate")
 	}
 	for _, key := range []string{"RemoteAddress", "RemoteIdentifier", "LocalIdentifier", "ServerCertificateIssuerCommonName", "ServerCertificateCommonName"} {
 		if str(ike[key]) == "" {
@@ -431,14 +444,16 @@ func CheckIKEv2(profile []byte) error {
 	if _, has := ike["SharedSecret"]; has {
 		return errors.New("an IKEv2 profile must not carry a shared secret")
 	}
-	onDemand := fmt.Sprint(ike["OnDemandEnabled"]) == "1"
+	for _, key := range []string{"OnDemandEnabled", "OnDemandRules", "OnDemandUserOverrideDisabled"} {
+		if _, has := ike[key]; has {
+			return fmt.Errorf("%s belongs at the top of the VPN payload, not inside IKEv2", key)
+		}
+	}
+	onDemand := fmt.Sprint(vpn["OnDemandEnabled"]) == "1"
 	switch str(ike["AuthenticationMethod"]) {
 	case "None":
 		if fmt.Sprint(ike["ExtendedAuthEnabled"]) != "1" || str(ike["AuthName"]) == "" {
 			return errors.New("password sign-in needs EAP and the account name")
-		}
-		if onDemand {
-			return errors.New("On Demand needs certificate sign-in")
 		}
 		if len(scep) != 0 {
 			return errors.New("password sign-in takes no certificate request")
@@ -457,7 +472,7 @@ func CheckIKEv2(profile []byte) error {
 	default:
 		return fmt.Errorf("authentication method %q is not supported", str(ike["AuthenticationMethod"]))
 	}
-	rules, _ := ike["OnDemandRules"].([]any)
+	rules, _ := vpn["OnDemandRules"].([]any)
 	if onDemand {
 		if len(rules) == 0 {
 			return errors.New("On Demand needs rules")

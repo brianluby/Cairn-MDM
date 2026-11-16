@@ -155,6 +155,7 @@ type vpnServerForm struct {
 	PFS                bool
 	TrustedSSIDs       string
 	LockOnDemand       bool
+	InstallCA          bool
 }
 
 // IKEv2 reports whether the form is for a native IKEv2 server.
@@ -172,7 +173,7 @@ func formFromServer(s vpn.Server, showKey bool) vpnServerForm {
 		f.Kind, f.RemoteAddress, f.RemoteIdentifier = vpn.KindIKEv2, k.RemoteAddress, k.RemoteIdentifier
 		f.ServerCertIssuerCN, f.ServerCertCN, f.SignIn = k.ServerCertIssuerCN, k.ServerCertCN, k.SignIn
 		f.Encryption, f.Integrity, f.DHGroup, f.PFS = k.Encryption, k.Integrity, strconv.Itoa(k.DHGroup), k.PFS
-		f.TrustedSSIDs, f.LockOnDemand = strings.Join(k.TrustedSSIDs, "\n"), k.LockOnDemand
+		f.TrustedSSIDs, f.LockOnDemand, f.InstallCA = strings.Join(k.TrustedSSIDs, "\n"), k.LockOnDemand, k.InstallCA
 		return f
 	}
 	if showKey {
@@ -212,7 +213,7 @@ func formFromRequest(r *http.Request) vpnServerForm {
 		ServerCertIssuerCN: v("server_cert_issuer_cn"), ServerCertCN: v("server_cert_cn"), SignIn: v("sign_in"),
 		Encryption: v("encryption"), Integrity: v("integrity"), DHGroup: v("dh_group"),
 		PFS: r.PostFormValue("pfs") == "on", TrustedSSIDs: r.PostFormValue("trusted_ssids"),
-		LockOnDemand: r.PostFormValue("lock_on_demand") == "on",
+		LockOnDemand: r.PostFormValue("lock_on_demand") == "on", InstallCA: r.PostFormValue("install_ca") == "on",
 	}
 }
 
@@ -225,7 +226,7 @@ func (f vpnServerForm) ikev2Server() (vpn.Server, error) {
 	s.IKEv2 = vpn.IKEv2{
 		RemoteAddress: f.RemoteAddress, RemoteIdentifier: f.RemoteIdentifier,
 		ServerCertIssuerCN: f.ServerCertIssuerCN, ServerCertCN: f.ServerCertCN, SignIn: f.SignIn,
-		Encryption: f.Encryption, Integrity: f.Integrity, DHGroup: group, PFS: f.PFS, LockOnDemand: f.LockOnDemand,
+		Encryption: f.Encryption, Integrity: f.Integrity, DHGroup: group, PFS: f.PFS, LockOnDemand: f.LockOnDemand, InstallCA: f.InstallCA,
 	}
 	// A network name may begin or end with a space, so lines are not trimmed.
 	for _, line := range strings.Split(strings.ReplaceAll(f.TrustedSSIDs, "\r", ""), "\n") {
