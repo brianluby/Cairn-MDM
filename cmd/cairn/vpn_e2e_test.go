@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -201,5 +202,37 @@ func TestVPNProfileThroughTheConsole(t *testing.T) {
 	db.SQL().QueryRow(`SELECT count(*) FROM audit_log WHERE provider='cairn-vpn' AND username='nick' AND action IN ('vpn.identity.issue','vpn.identity.revoke')`).Scan(&audits)
 	if audits != 2 {
 		t.Fatalf("issue and revoke audit rows = %d, want 2", audits)
+	}
+	// A password sign-in IKEv2 server: the profile is downloaded for an
+	// account, and cannot be pushed to a device.
+	if rr := do("POST", "/admin/vpn/new", url.Values{
+		"kind": {"ikev2"}, "name": {"Office IKEv2"}, "remote_address": {"vpn.example.org"}, "server_cert_issuer_cn": {"Cairn VPN E2E CA"},
+		"sign_in": {"password"}, "encryption": {"AES-256-GCM"}, "integrity": {"SHA2-256"}, "dh_group": {"20"}, "on_demand": {"on"},
+	}); rr.Code != http.StatusSeeOther {
+		t.Fatalf("IKEv2 server create = %d: %s", rr.Code, rr.Body.String())
+	}
+	var ikev2ID int64
+	if err = db.SQL().QueryRow(`SELECT id FROM vpn_servers WHERE slug='office-ikev2'`).Scan(&ikev2ID); err != nil {
+		t.Fatal(err)
+	}
+	ikev2Path := fmt.Sprintf("/admin/vpn/%d", ikev2ID)
+	if page := do("GET", ikev2Path, nil); page.Code != 200 || !strings.Contains(page.Body.String(), "Download a profile") {
+		t.Fatalf("server page lacks the download form (%d)", page.Code)
+	}
+	dl := do("POST", ikev2Path+"/download", url.Values{"account": {"lynch.user"}})
+	if dl.Code != 200 || dl.Header().Get("Content-Type") != "application/x-apple-aspen-config" ||
+		!strings.Contains(dl.Header().Get("Content-Disposition"), "office-ikev2-lynch.user.mobileconfig") {
+		t.Fatalf("download = %d %q %q", dl.Code, dl.Header().Get("Content-Type"), dl.Header().Get("Content-Disposition"))
+	}
+	if err = vpn.CheckIKEv2(dl.Body.Bytes()); err != nil || !strings.Contains(dl.Body.String(), "lynch.user") {
+		t.Fatalf("downloaded profile: %v", err)
+	}
+	push := do("POST", fmt.Sprintf("/admin/devices/PHONE/vpn/%d/issue", ikev2ID), url.Values{"account": {"lynch.user"}})
+	if loc, _ := url.QueryUnescape(push.Header().Get("Location")); push.Code != http.StatusSeeOther || !strings.Contains(loc, "download the profile") {
+		t.Fatalf("push of a password profile = %d %q", push.Code, loc)
+	}
+	if page := do("GET", "/admin/devices/PHONE", nil); !strings.Contains(page.Body.String(), "installed by hand") ||
+		strings.Contains(page.Body.String(), fmt.Sprintf("/vpn/%d/issue", ikev2ID)) {
+		t.Fatal("device page still offers to send the password profile")
 	}
 }

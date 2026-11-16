@@ -66,6 +66,9 @@ type Options struct {
 	// DeviceSCEPURL is where devices reach Cairn's SCEP endpoint for VPN
 	// certificates on keys they make. Empty leaves certificate sign-in off.
 	DeviceSCEPURL string
+	// Sign signs a profile that is handed to a person to install, so the
+	// device shows who it came from. Nil leaves such profiles unsigned.
+	Sign func([]byte) ([]byte, error)
 	// IssuedHere reports whether the configured CA issued a certificate. Set it
 	// when the CA's identity is known locally (Cairn's own CA), so a certificate
 	// from an earlier issuer is never sent to this one for revocation.
@@ -106,6 +109,7 @@ var (
 	ErrDeviceGone      = errors.New("the device is not enrolled or cannot receive commands")
 	ErrAwaitingDevice  = errors.New("a profile is already waiting for this device and installs when it next connects; revoke that certificate first to send a new one")
 	ErrPlatform        = errors.New("OpenVPN profiles are built for iPhone and iPad; this device is a Mac")
+	ErrDownloadOnly    = errors.New("this server signs in with a password, and a device cannot store a password for a VPN that MDM installed; download the profile from the VPN page and install it by hand")
 	ErrDeviceKeyed     = errors.New("this server signs devices in with a certificate, and Cairn's SCEP endpoint for VPN certificates is not set up")
 	ErrHeld            = errors.New("the certificate authority's answer could not be trusted; the request is held for review and no profile was sent")
 )
@@ -268,24 +272,47 @@ func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, ac
 	return s.store.GetVPNIdentity(ctx, id)
 }
 
-// sendIKEv2 queues an IKEv2 profile. With password sign-in there is no
-// certificate and nothing to record beyond the command: the profile holds the
-// account name and the server settings. With certificate sign-in the profile
-// carries an offer the device answers with its own key.
+// sendIKEv2 queues an IKEv2 profile for certificate sign-in: the profile
+// carries an offer the device answers with its own key. A password sign-in
+// profile is never pushed. A VPN that MDM installs is read-only in the
+// device's settings, so the user could not store the password and would be
+// asked at every connection; Download hands that profile out for installing
+// by hand.
 func (s *Service) sendIKEv2(ctx context.Context, deviceID string, server Server, owner directory.DirectoryIdentity, actor string) (sqlite.VPNIdentity, error) {
-	var none sqlite.VPNIdentity
-	if server.IKEv2.UsesCertificate() {
-		return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
+	if !server.IKEv2.UsesCertificate() {
+		return sqlite.VPNIdentity{}, ErrDownloadOnly
 	}
-	profile, err := RenderIKEv2(s.opts.Organization, server, IKEv2Identity{DeviceID: deviceID, Username: owner.AccountName})
+	return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
+}
+
+// Download renders a password sign-in IKEv2 profile for an account, to be
+// installed by hand. It holds the account name and the server settings and no
+// secret. The file name is suggested for the download.
+func (s *Service) Download(ctx context.Context, serverID int64, account, actor string) (filename string, profile []byte, err error) {
+	server, err := s.servers.Get(ctx, serverID)
 	if err != nil {
-		return none, err
+		return "", nil, fmt.Errorf("vpn: server: %w", err)
 	}
-	if err = s.cmd.SendInstallProfileAs(ctx, mdmcore.NewCommandUUID(), profile, deviceID); err != nil {
-		return none, fmt.Errorf("vpn: the profile could not be queued: %w", err)
+	if !server.IsIKEv2() || server.IKEv2.UsesCertificate() {
+		return "", nil, errors.New("only a password sign-in IKEv2 profile is installed by hand; send this one from a device's page")
 	}
-	s.log.Info("vpn: IKEv2 profile queued", "device", deviceID, "server", server.Slug, "owner", owner.UPN, "sign_in", server.IKEv2.SignIn, "actor", actor)
-	return sqlite.VPNIdentity{ServerID: server.ID, DeviceID: deviceID, Owner: owner, Actor: actor}, nil
+	owner, err := s.dir.ResolveOwner(ctx, account)
+	if err != nil || owner == nil || owner.AccountName == "" {
+		return "", nil, ErrOwnerIneligible
+	}
+	// The account stands in for a device, so each person's copy has its own
+	// payload UUIDs and installing a newer copy replaces the older one.
+	profile, err = RenderIKEv2(s.opts.Organization, server, IKEv2Identity{DeviceID: "download." + owner.ObjectID, Username: owner.AccountName})
+	if err != nil {
+		return "", nil, err
+	}
+	if s.opts.Sign != nil {
+		if profile, err = s.opts.Sign(profile); err != nil {
+			return "", nil, fmt.Errorf("vpn: sign profile: %w", err)
+		}
+	}
+	s.log.Info("vpn: IKEv2 profile downloaded", "server", server.Slug, "owner", owner.UPN, "actor", actor)
+	return server.Slug + "-" + owner.AccountName + ".mobileconfig", profile, nil
 }
 
 // Remove queues removal of the server's profile from the device. The

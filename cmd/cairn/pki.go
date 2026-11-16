@@ -94,6 +94,9 @@ type pkiResult struct {
 	// Challenges issues one-time SCEP challenges when the external CA looks
 	// them up with Cairn. Nil otherwise.
 	Challenges *challenge.Service
+	// Signer signs profiles so devices show who they came from. Nil when
+	// profile signing is not configured.
+	Signer *profile.Signer
 	// RenewalProfile builds the enrollment profile that renews a device's
 	// identity certificate. Nil in the modes where renewal is not built.
 	RenewalProfile func(renew.Target) ([]byte, error)
@@ -201,6 +204,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 			"ca_cn", authority.Certificate().Subject.CommonName)
 		log.Info("enrollment endpoint ready", "grant_path", "/e/{token}", "open", cfg.Enrollment.AllowOpen)
 		return &pkiResult{
+			Signer:    signer,
 			Authority: authority,
 			Org:       org,
 			SCEPURL:   cfg.Server.PublicURL + "/scep",
@@ -265,6 +269,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 			"device_scep_path", "/scep", "trust_anchors", len(anchors))
 		log.Info("enrollment endpoint ready", "grant_path", "/e/{token}", "open", cfg.Enrollment.AllowOpen)
 		return &pkiResult{
+			Signer:  signer,
 			Org:     org,
 			SCEPURL: cfg.Server.PublicURL + "/scep",
 			Anchors: anchors,
@@ -316,6 +321,7 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 	log.Info("enrollment endpoint ready", "grant_path", "/e/{token}", "open", cfg.Enrollment.AllowOpen)
 	renewalProfile := externalRenewalProfile(org, anchors, cfg.CA.External.SCEPURL, cfg.CA.External.Challenge, mintRenew, signer)
 	return &pkiResult{
+		Signer:         signer,
 		Challenges:     challenges,
 		Org:            org,
 		SCEPURL:        cfg.CA.External.SCEPURL,
@@ -323,6 +329,15 @@ func wirePKI(ctx context.Context, cfg config.Config, store *sqlite.DB, topics en
 		Anchors:        anchors,
 		RenewalProfile: renewalProfile,
 	}, nil
+}
+
+// profileSigner adapts the configured signer for services that hand out
+// profiles; nil when signing is off.
+func profileSigner(s *profile.Signer) func([]byte) ([]byte, error) {
+	if s == nil {
+		return nil
+	}
+	return func(body []byte) ([]byte, error) { return profile.Sign(body, *s) }
 }
 
 // renewalKeyCheck is the renewal service's key check when the CA looks

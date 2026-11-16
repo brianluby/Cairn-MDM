@@ -139,17 +139,19 @@
                 {{else if eq .State "REVOKED"}}<span class="dot off"></span> Certificate <span class="mono">{{.CertSerial}}</span> revoked{{if not .RevokedAt.Valid}} in Cairn; not yet confirmed at the certificate authority{{end}}
                 {{else if eq .State "SUPERSEDED"}}<span class="dot off"></span> Replaced
                 {{else}}<span class="dot wait"></span> Requesting a certificate{{end}}
-              {{else}}{{if and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password")}}<span class="sub">Password sign-in: no certificate. A sent profile shows in the command history.</span>
+              {{else}}{{if and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password")}}<span class="sub">Password sign-in: installed by hand. Download a profile for the user from <a href="/admin/vpn/{{.Server.ID}}">this server's page</a>.</span>
               {{else if not .Offered}}<span class="sub">No VPN profile sent.</span>{{end}}{{end}}
             </td>
             {{if $.User.Role.AtLeast "admin"}}
             <td>
               {{if $.VPNCanIssue}}
+              {{if not (and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password"))}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/issue" style="display:inline">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
                 {{if not $.Owner}}<label>Account <input type="text" name="account" required size="16" placeholder="jsmith" autocomplete="off"></label>{{end}}
                 <button class="btn" type="submit">{{if .Latest}}Send new profile{{else}}Send profile{{end}}</button>
               </form>
+              {{end}}
               {{if .Offered}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/withdraw" style="display:inline">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -160,7 +162,7 @@
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/remove" style="display:inline"
                     onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                <button class="btn" type="submit">Remove profile</button>
+                <button class="btn" type="submit">Remove pushed profile</button>
               </form>
               {{end}}
               {{with .Latest}}{{if eq .State "ISSUED"}}

@@ -352,7 +352,7 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 
 	description := s.Name + " for " + id.Username + "."
 	if k.SignIn == IKEv2Password {
-		description += " The device asks for the account password the first time it connects."
+		description += " After installing, store your password under Settings > VPN > (i)."
 	}
 	prof := map[string]any{
 		"PayloadType":              "Configuration",

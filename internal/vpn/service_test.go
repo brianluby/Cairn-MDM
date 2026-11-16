@@ -625,7 +625,9 @@ func TestRevocationStaysWithTheIssuingCA(t *testing.T) {
 	}
 }
 
-func TestIKEv2PasswordProfileIsQueuedWithoutACertificate(t *testing.T) {
+// A password sign-in profile is never pushed: a device cannot store the
+// password for a VPN that MDM installed. It is downloaded for an account.
+func TestIKEv2PasswordProfileIsDownloadedNotPushed(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	office, err := f.servers.Get(ctx, f.server)
@@ -633,7 +635,7 @@ func TestIKEv2PasswordProfileIsQueuedWithoutACertificate(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := vpn.Server{
-		Name: "Office IKEv2", Slug: "office-ikev2", Kind: vpn.KindIKEv2, CAPEM: office.CAPEM,
+		Name: "Office IKEv2", Slug: "office-ikev2", Kind: vpn.KindIKEv2, CAPEM: office.CAPEM, OnDemand: true,
 		IKEv2: vpn.IKEv2{RemoteAddress: "vpn.example.org", ServerCertIssuerCN: "Test CA", SignIn: vpn.IKEv2Password,
 			Encryption: "AES-256-GCM", Integrity: "SHA2-256", DHGroup: 20},
 	}
@@ -645,33 +647,57 @@ func TestIKEv2PasswordProfileIsQueuedWithoutACertificate(t *testing.T) {
 	if err != nil || !stored.IsIKEv2() || stored.IKEv2.RemoteAddress != "vpn.example.org" || stored.IKEv2.DHGroup != 20 {
 		t.Fatalf("stored record = %+v, %v", stored, err)
 	}
-	svc := f.service(t, f.backend)
-	v, err := svc.Issue(ctx, "PHONE1", id, "alice", "nick")
-	if err != nil || v.Owner.AccountName != "alice" || v.ID != 0 {
-		t.Fatalf("Issue = %+v, %v", v, err)
+	signed := false
+	pol := issue.Policy{LeafValidity: 365 * 24 * time.Hour, Backdate: 5 * time.Minute}
+	svc, err := vpn.NewService(f.servers, f.db, f.dir, f.backend, f.cmd, vpn.Options{Organization: "org.example", Policy: pol,
+		Sign: func(b []byte) ([]byte, error) { signed = true; return b, nil }}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
 	}
-	cmd := f.device(t, "PHONE1", "Acknowledged")
-	if cmd == nil || cmd.Command.RequestType != "InstallProfile" {
-		t.Fatalf("queued command = %+v", cmd)
+	if _, err = svc.Issue(ctx, "PHONE1", id, "alice", "nick"); !errors.Is(err, vpn.ErrDownloadOnly) {
+		t.Fatalf("push of a password profile: err = %v, want ErrDownloadOnly", err)
 	}
-	if f.keyAtRest(t) {
-		t.Fatal("a private key is in the database after a password-only profile")
+	if cmd := f.device(t, "PHONE1", ""); cmd != nil {
+		t.Fatal("a password profile was queued for the device")
 	}
-	rows, err := f.db.DeviceVPNIdentities(ctx, "PHONE1")
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("certificate rows = %d, %v; a password profile has no certificate", len(rows), err)
+	name, body, err := svc.Download(ctx, id, "alice", "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "office-ikev2-alice.mobileconfig" || !signed {
+		t.Fatalf("download name=%q signed=%v", name, signed)
+	}
+	if err = vpn.CheckIKEv2(body); err != nil {
+		t.Fatalf("downloaded profile fails its checks: %v", err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "store your password under Settings") || strings.Contains(text, "AuthPassword") || strings.Contains(text, "PRIVATE KEY") {
+		t.Fatal("downloaded profile lacks the install note or holds a secret")
+	}
+	if _, again, _ := svc.Download(ctx, id, "alice", "nick"); string(again) != text {
+		t.Fatal("two downloads for one account differ, so a newer copy would not replace the older")
+	}
+	if _, _, err = svc.Download(ctx, id, "mallory", "nick"); !errors.Is(err, vpn.ErrOwnerIneligible) {
+		t.Fatalf("download for an unknown account: %v", err)
+	}
+	if rows, _ := f.db.DeviceVPNIdentities(ctx, "PHONE1"); len(rows) != 0 {
+		t.Fatal("a password profile created a certificate row")
 	}
 
-	// Certificate sign-in is refused until Cairn can issue for a device-made key.
+	// A certificate record is sent from a device page, never downloaded, and
+	// needs the SCEP endpoint this service was built without.
 	record.Slug, record.IKEv2.SignIn = "office-eap-tls", vpn.IKEv2EAPTLS
 	certID, err := f.servers.Create(ctx, record, "nick")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.Issue(ctx, "PHONE1", certID, "alice", "nick"); !errors.Is(err, vpn.ErrDeviceKeyed) {
-		t.Fatalf("certificate sign-in: err = %v, want ErrDeviceKeyed", err)
+	if _, _, err = svc.Download(ctx, certID, "alice", "nick"); err == nil {
+		t.Fatal("a certificate profile was offered as a download")
 	}
-	if cmd = f.device(t, "PHONE1", ""); cmd != nil {
-		t.Fatal("a profile was queued for a refused request")
+	if _, err = svc.Issue(ctx, "PHONE1", certID, "alice", "nick"); !errors.Is(err, vpn.ErrDeviceKeyed) {
+		t.Fatalf("certificate sign-in without the endpoint: err = %v, want ErrDeviceKeyed", err)
+	}
+	if _, _, err = svc.Download(ctx, f.server, "alice", "nick"); err == nil {
+		t.Fatal("an OpenVPN profile was offered as a download")
 	}
 }

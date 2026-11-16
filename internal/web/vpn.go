@@ -32,6 +32,7 @@ type VPNIssuer interface {
 	Issue(ctx context.Context, deviceID string, serverID int64, account, actor string) (sqlite.VPNIdentity, error)
 	Remove(ctx context.Context, deviceID string, serverID int64, actor string) error
 	Withdraw(ctx context.Context, deviceID string, serverID int64, actor string) (bool, error)
+	Download(ctx context.Context, serverID int64, account, actor string) (filename string, profile []byte, err error)
 	Revoke(ctx context.Context, identityID int64, actor string) error
 	ConfirmRevokedAtCA(ctx context.Context, identityID int64, actor string) error
 	CanRevoke() bool
@@ -64,6 +65,7 @@ func (a *App) registerVPN(mux *http.ServeMux) {
 	mux.Handle("POST /admin/vpn/import", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerImport)))
 	mux.Handle("GET /admin/vpn/{id}", a.requireRole(auth.RoleAdmin, a.handleVPNServerEdit))
 	mux.Handle("POST /admin/vpn/{id}", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerUpdate)))
+	mux.Handle("POST /admin/vpn/{id}/download", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNDownload)))
 	mux.Handle("POST /admin/vpn/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerDelete)))
 	mux.Handle("POST /admin/devices/{id}/vpn/{server}/issue", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNIssue)))
 	mux.Handle("POST /admin/devices/{id}/vpn/{server}/remove", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNRemove)))
@@ -439,9 +441,6 @@ func (a *App) handleVPNIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg := "VPN profile for " + v.Owner.AccountName + " queued. It installs when the device next connects."
-	if v.ID == 0 {
-		msg += " The command history below shows when it is installed."
-	}
 	if a.vpn != nil {
 		if s, serr := a.vpn.Get(r.Context(), serverID); serr == nil && s.IsIKEv2() && s.IKEv2.UsesCertificate() {
 			msg = "VPN profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
@@ -467,6 +466,30 @@ func (a *App) handleVPNRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape("Removal queued. The certificate stays valid until it is revoked or expires."), http.StatusSeeOther)
+}
+
+// handleVPNDownload hands out a password sign-in IKEv2 profile for one
+// account, to be installed by hand.
+func (a *App) handleVPNDownload(w http.ResponseWriter, r *http.Request) {
+	if !a.vpnIssueGate(w, r) {
+		return
+	}
+	serverID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	actor := sessionFrom(r).Identity.Username
+	name, body, err := a.vpnIssuer.Download(r.Context(), serverID, strings.TrimSpace(r.PostFormValue("account")), actor)
+	if err != nil {
+		a.log.Warn("vpn profile download refused", "server", serverID, "user", actor, "err", err)
+		http.Redirect(w, r, fmt.Sprintf("/admin/vpn/%d?flash=%s", serverID, url.QueryEscape("No profile: "+vpnFormError(err))), http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(body)
 }
 
 // handleVPNWithdraw ends an offer the device has not answered.
@@ -549,6 +572,7 @@ func (a *App) renderVPNServer(w http.ResponseWriter, r *http.Request, status int
 	a.render(w, r, status, "vpn_server.html", map[string]any{
 		"Title": "VPN", "Form": f, "Error": message, "Skipped": skipped, "New": f.ID == 0,
 		"Options": vpn.IKEv2Options(), "KnownCAs": a.knownCANames(),
+		"Flash": r.URL.Query().Get("flash"), "CanIssue": a.vpnIssuer != nil,
 	})
 }
 

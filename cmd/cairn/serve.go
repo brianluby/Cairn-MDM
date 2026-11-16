@@ -302,7 +302,7 @@ func runServe(ctx context.Context, args []string) error {
 		} else {
 			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, vpnCA, commander,
 				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType, IssuedHere: issuedHere,
-					DeviceSCEPURL: cfg.Server.PublicURL + "/scep/vpn"}, log)
+					DeviceSCEPURL: cfg.Server.PublicURL + "/scep/vpn", Sign: profileSigner(pki.Signer)}, log)
 			if err != nil {
 				return err
 			}

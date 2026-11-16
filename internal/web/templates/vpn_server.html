@@ -7,6 +7,7 @@
     <p><a href="/admin/vpn">← VPN</a></p>
     <h1>{{if .New}}{{if .Form.IKEv2}}Add IKEv2 server{{else}}Add OpenVPN server{{end}}{{else}}{{.Form.Name}}{{end}}</h1>
 
+    {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
     {{if .Error}}<div class="card callout error">{{.Error}}</div>{{end}}
     {{if .Skipped}}
     <div class="card callout">
@@ -67,7 +68,7 @@
             <option value="eap-tls"{{if eq .Form.SignIn "eap-tls"}} selected{{end}}>Certificate over EAP (EAP-TLS)</option>
             <option value="certificate"{{if eq .Form.SignIn "certificate"}} selected{{end}}>Certificate (IKE certificate authentication)</option>
           </select></label>
-          <span class="sub">With a password the user types it on the device the first time and the device keeps it; Cairn never puts a password in a profile. With a certificate the device makes its own key and the key never leaves it.</span></p>
+          <span class="sub">A password profile is downloaded from this page and installed by hand, because a device cannot store a password for a VPN that MDM installed. A certificate profile is sent from a device's page; the device makes its own key and the key never leaves it.</span></p>
 
         <h2>Encryption</h2>
         <p><label>Encryption<br>
@@ -135,6 +136,22 @@
         <p style="margin-top:20px"><button class="btn" type="submit">Save</button></p>
       </form>
     </div>
+
+    {{if and (not .New) .Form.IKEv2 (eq .Form.SignIn "password")}}
+    <h2>Download a profile</h2>
+    <div class="card" style="padding:24px">
+      {{if .CanIssue}}
+      <form method="post" action="/admin/vpn/{{.Form.ID}}/download">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p><label>Account<br><input type="text" name="account" required size="24" placeholder="jsmith" autocomplete="off"></label>
+          <span class="sub">The directory account that will sign in. Its name goes into the profile; no password does.</span></p>
+        <p><button class="btn" type="submit">Download profile</button></p>
+      </form>
+      <p class="sub">Send the file to that person, by AirDrop for one. They open it, then install it under Settings > General > VPN &amp; Device Management.
+      After installing, they store their password under Settings > VPN > (i). Downloading needs an MFA code verified in the last five minutes.</p>
+      {{else}}<p class="sub">Profiles cannot be made until VPN issuing is set up.</p>{{end}}
+    </div>
+    {{end}}
 
     {{if not .New}}
     <h2>Delete</h2>
