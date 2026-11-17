@@ -153,7 +153,7 @@ verified in the last five minutes.
 
 ## Sending a profile
 
-On the device page, under VPN, choose Send profile.
+On the device page, under VPN, choose Send VPN profile.
 
 - A device enrolled through an owner-authorized link gets a certificate for its
   verified owner.
@@ -175,7 +175,7 @@ certificate is marked replaced once the new profile is acknowledged.
 
 With `[vpn] renew_before_days` set, Cairn sends a device a new profile and
 certificate by itself when the installed certificate has that many days left.
-It is off by default. It runs in the hourly sweep and does what Send profile
+It is off by default. It runs in the hourly sweep and does what Send VPN profile
 does, with these differences:
 
 - No administrator and no authenticator code take part. The device already
@@ -347,7 +347,7 @@ The record holds:
   profile, because a Wi-Fi setting can only trust certificates from its own
   profile.
 
-"Send profile" on a device's page queues one profile holding the CA
+"Send Wi-Fi profile" on a device's page queues one profile holding the CA
 certificates, the identity and the Wi-Fi settings. The certificate has the
 account name as its common name and the account's UPN as an email SAN. It is
 always a new one; a VPN certificate already on the device is not reused and is
@@ -375,7 +375,7 @@ Limits:
 
 - On a Mac the profile sets the network up for the system: the certificate is
   in the System keychain and the Mac joins by itself, before and after login.
-  Not yet run on a Mac.
+  Run on one Mac.
 - The certificate names an account, not a device. A certificate named for the
   device, with the owner in a SAN, needs the device-owner binding that
   enrollment through Cairn's own CA or the broker gives; it is not built for
@@ -397,8 +397,9 @@ Limits:
 - More than one value for an option such as `route` or `dhcp-option`; the
   server form refuses a repeat and the importer keeps the first.
 - macOS: a keychain identity pushed by MDM plus a Viscosity connection.
-- A Wi-Fi profile on a Mac. On any device: a second send replacing the profile
-  in place, and refusal of a RADIUS server with another certificate.
+- For a Wi-Fi profile: a second send replacing the profile in place, a Mac
+  joining at the login window, and refusal of a RADIUS server with another
+  certificate.
 - Renewal before expiry on a real device.
 - Certificate classes that keep a VPN certificate from being accepted where a
   device identity certificate is expected. VPN and device certificates from the
