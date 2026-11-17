@@ -303,7 +303,8 @@ func runServe(ctx context.Context, args []string) error {
 		} else {
 			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, vpnCA, commander,
 				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType, IssuedHere: issuedHere,
-					DeviceSCEPURL: cfg.Server.PublicURL + "/scep/vpn", Sign: profileSigner(pki.Signer)}, log)
+					DeviceSCEPURL: cfg.Server.PublicURL + "/scep/vpn", Sign: profileSigner(pki.Signer),
+					RenewBefore: time.Duration(vpnCfg.RenewBeforeDays) * 24 * time.Hour}, log)
 			if err != nil {
 				return err
 			}
@@ -323,7 +324,7 @@ func runServe(ctx context.Context, args []string) error {
 					}
 				}
 			}()
-			log.Info("VPN profiles enabled", "ca", vpnCfg.Issuer.Backend, "leaf_validity_days", vpnCfg.LeafValidityDays, "key_type", vpnCfg.KeyType)
+			log.Info("VPN profiles enabled", "ca", vpnCfg.Issuer.Backend, "leaf_validity_days", vpnCfg.LeafValidityDays, "key_type", vpnCfg.KeyType, "renew_before_days", vpnCfg.RenewBeforeDays)
 		}
 	}
 	// Evidence-gated quarantine release. Only the embedded CA can produce the

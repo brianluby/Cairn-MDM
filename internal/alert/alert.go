@@ -196,7 +196,7 @@ func vpnConditions(ctx context.Context, src vpnSource, now time.Time) ([]Conditi
 		out = append(out, Condition{Key: "vpn-cert.expired", Title: "Cairn: VPN certificate EXPIRED", Message: "VPN certificates have expired for: " + strings.Join(expired, ", ") + ". Send a new VPN profile from each device's page while the device can still reach Cairn.", Priority: "urgent"})
 	}
 	if len(expiring) > 0 {
-		out = append(out, Condition{Key: "vpn-cert.expiring", Title: "Cairn: VPN certificates expire within 30 days", Message: "Send a new VPN profile before expiry: " + strings.Join(expiring, ", ") + ".", Priority: "high"})
+		out = append(out, Condition{Key: "vpn-cert.expiring", Title: "Cairn: VPN certificates expire within 30 days", Message: "Send a new VPN profile before expiry, or check why automatic renewal has not replaced it: " + strings.Join(expiring, ", ") + ".", Priority: "high"})
 	}
 	held, err := src.QuarantinedVPNIdentities(ctx)
 	if err != nil {

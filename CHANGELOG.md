@@ -1,6 +1,13 @@
 # Changelog
 
-## v0.2.0-beta.1 (unreleased)
+## Unreleased
+
+- VPN certificates can be replaced before they expire without an
+  administrator: `[vpn] renew_before_days` (off by default). The owner's
+  account is checked in the directory first. See
+  [VPN profiles](docs/vpn-profiles.md).
+
+## v0.2.0-beta.1 (November 16, 2026)
 
 A beta for testers. It has not passed the release gate in
 [docs/completion-prd.md](docs/completion-prd.md); that file lists what has run

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/directory"
@@ -26,6 +27,7 @@ type IdentityStore interface {
 	MarkVPNDeployFailed(ctx context.Context, id int64, reason string) error
 	GetVPNIdentity(ctx context.Context, id int64) (sqlite.VPNIdentity, error)
 	DeviceVPNIdentities(ctx context.Context, deviceID string) ([]sqlite.VPNIdentity, error)
+	CurrentVPNIdentities(ctx context.Context) ([]sqlite.VPNIdentity, error)
 	MarkVPNIdentityRevoked(ctx context.Context, id int64, actor string) error
 	MarkVPNCertificateRevoked(ctx context.Context, id int64, actor string) error
 	QuarantineStaleVPNIssuing(ctx context.Context, before time.Time) (int, error)
@@ -73,6 +75,11 @@ type Options struct {
 	// when the CA's identity is known locally (Cairn's own CA), so a certificate
 	// from an earlier issuer is never sent to this one for revocation.
 	IssuedHere func(*x509.Certificate) bool
+	// RenewBefore is how long before expiry the sweep sends a device a new
+	// profile and certificate without an administrator. Zero leaves that off.
+	RenewBefore time.Duration
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
 }
 
 // Service issues VPN certificates and delivers the profiles that carry them.
@@ -85,6 +92,9 @@ type Service struct {
 	opts    Options
 	log     *slog.Logger
 	now     func() time.Time
+
+	mu    sync.Mutex
+	tried map[int64]time.Time // identity ID to the last automatic re-issue attempt
 }
 
 // NewService wires the VPN service.
@@ -98,7 +108,11 @@ func NewService(servers *Servers, store IdentityStore, dir Directory, backend is
 	if opts.UncollectedAfter == 0 {
 		opts.UncollectedAfter = 7 * 24 * time.Hour
 	}
-	return &Service{servers: servers, store: store, dir: dir, backend: backend, cmd: cmd, opts: opts, log: log, now: time.Now}, nil
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{servers: servers, store: store, dir: dir, backend: backend, cmd: cmd, opts: opts, log: log, now: now, tried: map[int64]time.Time{}}, nil
 }
 
 // Errors an administrator can act on.
@@ -155,21 +169,37 @@ func sameAccount(account string, id directory.DirectoryIdentity) bool {
 // listed for revocation.
 func (s *Service) Issue(ctx context.Context, deviceID string, serverID int64, account, actor string) (sqlite.VPNIdentity, error) {
 	var none sqlite.VPNIdentity
-	dev, err := s.store.GetDevice(ctx, deviceID)
-	if err != nil || dev.CheckedOutAt.Valid || !dev.TokenUpdatedAt.Valid {
-		return none, ErrDeviceGone
-	}
-	server, err := s.servers.Get(ctx, serverID)
+	server, err := s.target(ctx, deviceID, serverID)
 	if err != nil {
-		return none, fmt.Errorf("vpn: server: %w", err)
-	}
-	if !server.IsIKEv2() && (strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac")) {
-		return none, ErrPlatform
+		return none, err
 	}
 	owner, err := s.Owner(ctx, deviceID, account)
 	if err != nil {
 		return none, err
 	}
+	return s.send(ctx, deviceID, server, owner, actor)
+}
+
+// target returns the server record when the device can take its profile.
+func (s *Service) target(ctx context.Context, deviceID string, serverID int64) (Server, error) {
+	dev, err := s.store.GetDevice(ctx, deviceID)
+	if err != nil || dev.CheckedOutAt.Valid || !dev.TokenUpdatedAt.Valid {
+		return Server{}, ErrDeviceGone
+	}
+	server, err := s.servers.Get(ctx, serverID)
+	if err != nil {
+		return Server{}, fmt.Errorf("vpn: server: %w", err)
+	}
+	if !server.IsIKEv2() && (strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac")) {
+		return Server{}, ErrPlatform
+	}
+	return server, nil
+}
+
+// send issues for an owner the caller has already resolved in the directory.
+func (s *Service) send(ctx context.Context, deviceID string, server Server, owner directory.DirectoryIdentity, actor string) (sqlite.VPNIdentity, error) {
+	var none sqlite.VPNIdentity
+	serverID := server.ID
 	if owner.AccountName == "" || owner.UPN == "" {
 		return none, ErrOwnerIneligible
 	}
@@ -427,8 +457,9 @@ func (s *Service) CanRevokeIdentity(v sqlite.VPNIdentity) bool {
 	return err == nil && s.opts.IssuedHere(leaf)
 }
 
-// Sweep withdraws profiles no device collected and revokes certificates that
-// were replaced or never delivered. It is safe to run repeatedly.
+// Sweep withdraws profiles no device collected, replaces certificates close to
+// expiry when that is turned on, and revokes certificates that were replaced or
+// never delivered. It is safe to run repeatedly.
 func (s *Service) Sweep(ctx context.Context) {
 	if n, err := s.store.QuarantineStaleVPNIssuing(ctx, s.now().Add(-15*time.Minute)); err != nil {
 		s.log.Error("vpn: hold abandoned requests", "err", err)
@@ -445,6 +476,7 @@ func (s *Service) Sweep(ctx context.Context) {
 	} else if n > 0 {
 		s.log.Warn("vpn: withdrew profiles whose device never requested a certificate", "count", n)
 	}
+	s.reissueExpiring(ctx)
 	retired, err := s.store.VPNIdentitiesAwaitingRevocation(ctx)
 	if err != nil {
 		s.log.Error("vpn: list certificates awaiting revocation", "err", err)
@@ -455,4 +487,84 @@ func (s *Service) Sweep(ctx context.Context) {
 			s.log.Error("vpn: revoke retired certificate", "identity", v.ID, "err", err)
 		}
 	}
+}
+
+// RenewalActor is the name recorded for a profile Cairn sent by itself.
+const RenewalActor = "cairn-vpn-renewal"
+
+// reissueExpiring sends a new profile for each installed certificate inside the
+// renewal window. No administrator takes part: the device still holds the
+// certificate an administrator approved, and the owner is rechecked in the
+// directory, so a disabled or changed account is left to expire.
+func (s *Service) reissueExpiring(ctx context.Context) {
+	if s.opts.RenewBefore <= 0 {
+		return
+	}
+	current, err := s.store.CurrentVPNIdentities(ctx)
+	if err != nil {
+		s.log.Error("vpn: list certificates for renewal", "err", err)
+		return
+	}
+	for _, v := range current {
+		if v.DeployStatus != "installed" || !s.renewalDue(v) {
+			continue
+		}
+		err := s.reissue(ctx, v)
+		switch {
+		case err == nil:
+			s.log.Info("vpn: certificate near expiry; new profile queued", "identity", v.ID, "device", v.DeviceID, "owner", v.Owner.UPN, "expires", v.NotAfter)
+		case errors.Is(err, ErrAwaitingDevice):
+			// The replacement is already on its way.
+		default:
+			s.log.Warn("vpn: certificate near expiry was not replaced", "identity", v.ID, "device", v.DeviceID, "owner", v.Owner.UPN, "expires", v.NotAfter, "err", err)
+		}
+	}
+}
+
+// renewalDue reports whether a certificate is inside the renewal window and has
+// not been tried in the last day. A certificate in the first half of its life
+// is never due, so a window longer than the CA's lifetime cannot replace
+// certificates as fast as they are issued.
+func (s *Service) renewalDue(v sqlite.VPNIdentity) bool {
+	now := s.now()
+	exp := v.Expires()
+	if exp.IsZero() || exp.Sub(now) > s.opts.RenewBefore {
+		return false
+	}
+	leaf, err := x509.ParseCertificate(v.LeafDER)
+	if err != nil || now.Before(leaf.NotBefore.Add(leaf.NotAfter.Sub(leaf.NotBefore)/2)) {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if last, ok := s.tried[v.ID]; ok && now.Sub(last) < 24*time.Hour {
+		return false
+	}
+	s.tried[v.ID] = now
+	return true
+}
+
+func (s *Service) reissue(ctx context.Context, v sqlite.VPNIdentity) error {
+	server, err := s.target(ctx, v.DeviceID, v.ServerID)
+	if err != nil {
+		return err
+	}
+	if server.IsIKEv2() && !server.IKEv2.UsesCertificate() {
+		return errors.New("the server record no longer signs devices in with a certificate")
+	}
+	// The new certificate names the account the old one names, and only while
+	// the directory still describes that account the same way.
+	fresh, err := s.dir.RevalidateOwner(ctx, v.Owner)
+	if err != nil || fresh == nil || *fresh != v.Owner {
+		return ErrOwnerIneligible
+	}
+	bound, err := s.store.GetDeviceOwner(ctx, v.DeviceID)
+	switch {
+	case err == nil && bound.Owner != v.Owner:
+		return ErrOwnerMismatch
+	case err != nil && !errors.Is(err, sqlite.ErrNoOwner):
+		return err
+	}
+	_, err = s.send(ctx, v.DeviceID, server, v.Owner, RenewalActor)
+	return err
 }
