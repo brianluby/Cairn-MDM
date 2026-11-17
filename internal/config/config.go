@@ -120,9 +120,12 @@ func (r Renewal) WithDefaults() Renewal {
 type VPN struct {
 	Enabled bool `toml:"enabled"`
 	// LeafValidityDays is the VPN certificate lifetime when Cairn's own CA signs
-	// it. Default 365: there is no automatic re-issue yet, so an administrator
-	// issues the profile again before expiry.
+	// it. Default 365.
 	LeafValidityDays int `toml:"leaf_validity_days"`
+	// RenewBeforeDays is how long before a VPN certificate expires Cairn sends
+	// the device a new profile and certificate without an administrator. Zero,
+	// the default, leaves that to an administrator.
+	RenewBeforeDays int `toml:"renew_before_days"`
 	// KeyType is the key Cairn generates for each VPN certificate: "rsa2048"
 	// (default) or "p256".
 	KeyType string    `toml:"key_type"`
@@ -702,6 +705,9 @@ func (c Config) Validate() error {
 	}
 	if c.VPN.LeafValidityDays < 0 || c.VPN.LeafValidityDays > 825 {
 		errs = append(errs, errors.New("vpn.leaf_validity_days must be between 1 and 825"))
+	}
+	if c.VPN.RenewBeforeDays < 0 || c.VPN.RenewBeforeDays > 180 {
+		errs = append(errs, errors.New("vpn.renew_before_days must be between 0 and 180"))
 	}
 	if k := c.VPN.KeyType; k != "" && k != "rsa2048" && k != "p256" {
 		errs = append(errs, fmt.Errorf("vpn.key_type must be rsa2048 or p256, got %q", k))

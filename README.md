@@ -57,8 +57,8 @@ the Wi-Fi hardware tests. See `SECURITY.md` and
 - **Renewal** of device identity certificates exists for an external CA only.
   With the embedded CA or the broker, re-enroll a device before its certificate
   expires.
-- **VPN**: no automatic re-issue before a VPN certificate expires; macOS
-  OpenVPN delivery is not built.
+- **VPN**: renewal before expiry (`[vpn] renew_before_days`) is off by default
+  and has not run on a real device; macOS OpenVPN delivery is not built.
 - **Auth**: Kerberos/SPNEGO is not built. OIDC has not been verified against a
   live provider.
 - **Apple scope**: Declarative Device Management (DDM) and ABM/ADE automated
@@ -140,7 +140,7 @@ Before 1.0:
 - Independent review of enrollment authorization and certificate renewal.
 - EAP-TLS Wi-Fi proven on real Macs and iPhones, with renewal and revocation.
 - Renewal for the embedded CA and broker modes.
-- Re-issue of VPN certificates before they expire.
+- VPN certificate renewal proven on real devices.
 - A qualified release: fixed candidate, hardware matrix, recorded soak.
 
 Later: Declarative Device Management, ABM/ADE automated enrollment,

@@ -63,6 +63,7 @@ mode = "generate"
 # enabled = true
 # leaf_validity_days = 365
 # key_type = "rsa2048"   # or "p256"
+# renew_before_days = 0  # 45: send a new profile and certificate this long before expiry
 
 [log]
 format = "text" # text | json

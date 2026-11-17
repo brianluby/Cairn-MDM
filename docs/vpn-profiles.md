@@ -80,6 +80,7 @@ backup` says so in the bundle's notes.
 enabled = true
 # leaf_validity_days = 365
 # key_type = "rsa2048"   # or "p256"
+# renew_before_days = 45 # replace certificates this long before expiry; 0 (default) is off
 
 # Without this section Cairn's own CA signs VPN certificates.
 # [vpn.issuer]
@@ -169,6 +170,34 @@ appears.
 Sending again issues a new certificate and key under the same payload
 identifier. The device replaces the installed profile, and the earlier
 certificate is marked replaced once the new profile is acknowledged.
+
+## Renewal before expiry
+
+With `[vpn] renew_before_days` set, Cairn sends a device a new profile and
+certificate by itself when the installed certificate has that many days left.
+It is off by default. It runs in the hourly sweep and does what Send profile
+does, with these differences:
+
+- No administrator and no authenticator code take part. The device already
+  holds a certificate an administrator approved; Cairn replaces it for the same
+  account on the same device.
+- The account is checked in the directory first. If it is disabled, missing, or
+  its name or sign-in name has changed, nothing is sent and the certificate
+  runs out. Send a profile by hand if the change is intended.
+- A device that has left management gets nothing.
+- Each certificate is tried once a day. A profile the device has not collected
+  is withdrawn after seven days and sent again at the next sweep.
+- A certificate in the first half of its life is never replaced, whatever the
+  setting says.
+
+The audit log records these under the name `cairn-vpn-renewal`. Set the window longer than 30 days, so the "expire within
+30 days" alert means renewal has been failing and not that it has just begun.
+
+With a CA Cairn cannot revoke at, the replaced certificate stays valid at the
+CA until it expires and is listed on the VPN page like any other replaced
+certificate. It has at most the renewal window left.
+
+This is tested in-process only. No device has been through it.
 
 ## Revocation
 
@@ -305,8 +334,6 @@ not one the devices trust yet.
   the password (the trial setting).
 - Gateway refusals: a disabled account, a revoked certificate, and two devices
   for one owner.
-- Renewal of a device-keyed VPN certificate before it expires; send the
-  profile again.
 - A deployment record for a pushed password profile. It shows in the device's
   command history only.
 - A setting for the server certificate revocation check in IKEv2 profiles. It
@@ -315,7 +342,7 @@ not one the devices trust yet.
 - More than one value for an option such as `route` or `dhcp-option`; the
   server form refuses a repeat and the importer keeps the first.
 - macOS: a keychain identity pushed by MDM plus a Viscosity connection.
-- Automatic re-issue before expiry.
+- Renewal before expiry on a real device.
 - Certificate classes that keep a VPN certificate from being accepted where a
   device identity certificate is expected. VPN and device certificates from the
   embedded CA share an issuer and the client-authentication usage; they differ

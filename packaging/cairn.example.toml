@@ -123,6 +123,7 @@ allow_open = false
 # enabled = true
 # leaf_validity_days = 365
 # key_type = "rsa2048"            # or "p256"
+# renew_before_days = 0           # 45: send a new profile and certificate this long before expiry
 # [vpn.issuer]
 # backend = "embedded"            # Cairn's own CA, or "scep" for an external one
 # scep_url = "https://ca.example.org/scep/vpn"
