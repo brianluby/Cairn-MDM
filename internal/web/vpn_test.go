@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
+	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/vpn"
 )
 
@@ -329,5 +330,100 @@ func TestIKEv2FormSuggestsKnownIssuers(t *testing.T) {
 	}.Encode())
 	if rr.Code != http.StatusSeeOther {
 		t.Fatalf("create with a typed issuer = %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestWiFiNetworkCreateAndEdit(t *testing.T) {
+	app, sessions, db := testApp(t)
+	servers, err := vpn.NewServers(db, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.SetVPN(servers)
+	ca := vpnTestCA(t)
+	block, _ := pem.Decode([]byte(ca))
+	app.cfg.CAAnchorsDER = [][]byte{block.Bytes}
+	m := mux(app)
+	cookie, csrf := freshAdmin(t, app, sessions, db)
+
+	// The new-network form starts with the CA certificates devices get at enrollment.
+	req := httptest.NewRequest("GET", "/admin/wifi/new", nil)
+	req.AddCookie(cookie)
+	page := httptest.NewRecorder()
+	m.ServeHTTP(page, req)
+	if body := page.Body.String(); page.Code != 200 || !strings.Contains(body, "Add Wi-Fi network") || !strings.Contains(body, "BEGIN CERTIFICATE") || strings.Contains(body, "Static key") {
+		t.Fatalf("new Wi-Fi form = %d, or it lacks the CA prefill or shows OpenVPN fields", page.Code)
+	}
+
+	values := url.Values{"csrf": {csrf}, "kind": {"wifi"}, "name": {"Office Wi-Fi"}, "ssid": {"Office Secure"},
+		"security": {"wpa3-enterprise"}, "server_names": {"radius1.example.org\r\nradius2.example.org\r\n"}, "ca_pem": {ca}}
+	rr := postForm(m, cookie, "/admin/wifi/new", values.Encode())
+	if rr.Code != http.StatusSeeOther || !strings.HasPrefix(rr.Header().Get("Location"), "/admin/wifi?") {
+		t.Fatalf("create = %d to %q: %s", rr.Code, rr.Header().Get("Location"), rr.Body.String())
+	}
+	s, err := servers.Get(context.Background(), 1)
+	if err != nil || !s.IsWiFi() || s.Slug != "office-wi-fi" || s.WiFi.SSID != "Office Secure" || s.WiFi.Security != vpn.WiFiWPA3Enterprise ||
+		len(s.WiFi.ServerNames) != 2 || s.WiFi.ServerNames[1] != "radius2.example.org" {
+		t.Fatalf("stored network = %+v, %v", s, err)
+	}
+
+	// An edit cannot turn the record into another kind, and a wildcard name is refused.
+	values.Set("kind", "ikev2")
+	values.Set("security", "wpa2-enterprise")
+	if rr := postForm(m, cookie, "/admin/wifi/1", values.Encode()); rr.Code != http.StatusSeeOther {
+		t.Fatalf("update = %d: %s", rr.Code, rr.Body.String())
+	}
+	if s, _ = servers.Get(context.Background(), 1); !s.IsWiFi() || s.WiFi.Security != vpn.WiFiWPA2Enterprise {
+		t.Fatalf("after update = %+v", s)
+	}
+	values.Set("server_names", "*.example.org")
+	if rr := postForm(m, cookie, "/admin/wifi/1", values.Encode()); rr.Code != http.StatusBadRequest {
+		t.Fatalf("wildcard server name = %d, want 400", rr.Code)
+	}
+
+	// The network is on the Wi-Fi page and not among the VPN servers.
+	get := func(path string) string {
+		t.Helper()
+		req := httptest.NewRequest("GET", path, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		m.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, rec.Code)
+		}
+		return rec.Body.String()
+	}
+	if body := get("/admin/wifi"); !strings.Contains(body, "Office Secure") || !strings.Contains(body, `href="/admin/wifi/1"`) || strings.Contains(body, "Add OpenVPN server") {
+		t.Fatal("the Wi-Fi page does not list the network, or shows VPN actions")
+	}
+	if body := get("/admin/vpn"); strings.Contains(body, "Office Secure") || strings.Contains(body, "Office Wi-Fi") {
+		t.Fatal("the VPN page lists a Wi-Fi network")
+	}
+	if body := get("/admin/wifi/1"); !strings.Contains(body, `action="/admin/wifi/1"`) || !strings.Contains(body, "← Wi-Fi") {
+		t.Fatal("the network's form does not post back to the Wi-Fi addresses")
+	}
+
+	// A device page has a Wi-Fi card of its own beside the VPN card.
+	if _, err := servers.Create(context.Background(), vpn.Server{Name: "Office IKEv2", Slug: "office-ikev2", Kind: vpn.KindIKEv2,
+		IKEv2: vpn.IKEv2{RemoteAddress: "vpn.example.org", ServerCertIssuerCN: "Test CA", SignIn: vpn.IKEv2EAPTLS,
+			Encryption: "AES-256-GCM", Integrity: "SHA2-256", DHGroup: 20}}, "nick"); err != nil {
+		t.Fatal(err)
+	}
+	app.SetVPNIssuer(nil, db, "not set up in this test")
+	if err := db.DeviceEnrolled(context.Background(), mdmcore.DeviceRecord{ID: "PHONE1", UDID: "PHONE1", Name: "Phone"}); err != nil {
+		t.Fatal(err)
+	}
+	body := get("/admin/devices/PHONE1")
+	vpnCard, wifiCard := strings.Index(body, "<h2>VPN</h2>"), strings.Index(body, "<h2>Wi-Fi</h2>")
+	if vpnCard < 0 || wifiCard < vpnCard {
+		t.Fatalf("device page cards: VPN at %d, Wi-Fi at %d", vpnCard, wifiCard)
+	}
+	if !strings.Contains(body[wifiCard:], "Joins Office Secure") || strings.Contains(body[vpnCard:wifiCard], "Office Wi-Fi") ||
+		!strings.Contains(body[vpnCard:wifiCard], "Office IKEv2") || !strings.Contains(body[wifiCard:], "No Wi-Fi profile sent") {
+		t.Fatal("the Wi-Fi network is not in its own card on the device page")
+	}
+
+	if rr := postForm(m, cookie, "/admin/wifi/1/delete", "csrf="+csrf); rr.Code != http.StatusSeeOther || !strings.HasPrefix(rr.Header().Get("Location"), "/admin/wifi?") {
+		t.Fatalf("delete = %d to %q", rr.Code, rr.Header().Get("Location"))
 	}
 }

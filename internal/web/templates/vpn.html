@@ -4,10 +4,39 @@
 <body>
   {{template "topbar" .}}
   <main>
-    <h1>VPN</h1>
+    <h1>{{.Title}}</h1>
 
     {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
 
+    {{if .WiFiPage}}
+    <h2>Networks</h2>
+    <div class="card">
+      {{if .Servers}}
+      <table>
+        <thead>
+          <tr><th>Network</th><th>Name (SSID)</th><th>Security</th><th>RADIUS server names</th></tr>
+        </thead>
+        <tbody>
+          {{range .Servers}}
+          <tr>
+            <td>
+              <a href="/admin/wifi/{{.ID}}">{{.Name}}</a>
+              <div class="sub mono">{{.Slug}}</div>
+            </td>
+            <td class="mono">{{.WiFi.SSID}}</td>
+            <td>{{if eq .WiFi.Security "wpa3-enterprise"}}WPA3 Enterprise{{else}}WPA2 Enterprise{{end}}, certificate (EAP-TLS)</td>
+            <td class="mono">{{range .WiFi.ServerNames}}{{.}}<br>{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No networks yet. Add one to send devices a Wi-Fi profile that signs in with a certificate.</div>
+      {{end}}
+    </div>
+    <p style="margin-top:12px"><a class="btn" href="/admin/wifi/new">Add Wi-Fi network</a></p>
+    <p class="sub">Send a profile from a device's page. Certificates come from the same issuer as VPN certificates.</p>
+    {{else}}
     <h2>Servers</h2>
     <div class="card">
       {{if .Servers}}
@@ -47,14 +76,15 @@
     </div>
     <p style="margin-top:12px"><a class="btn" href="/admin/vpn/new">Add OpenVPN server</a> <a class="btn" href="/admin/vpn/new?kind=ikev2">Add IKEv2 server</a></p>
     <p class="sub">Send a profile from a device's page.</p>
+    {{end}}
 
-    {{if .IssuerMissing}}<div class="card callout error">VPN certificates cannot be issued yet: {{.IssuerMissing}}</div>{{end}}
+    {{if .IssuerMissing}}<div class="card callout error">Certificates cannot be issued yet: {{.IssuerMissing}}</div>{{end}}
 
     {{if .Held}}
     <h2>Held for review</h2>
     <div class="card">
       <table>
-        <thead><tr><th>Device</th><th>Server</th><th>Account</th><th>Reason</th><th>Serial</th><th></th></tr></thead>
+        <thead><tr><th>Device</th><th>{{if .WiFiPage}}Network{{else}}Server{{end}}</th><th>Account</th><th>Reason</th><th>Serial</th><th></th></tr></thead>
         <tbody>
           {{range .Held}}
           <tr>
@@ -95,7 +125,7 @@
           {{end}}
         </tbody>
       </table>
-      <p class="sub" style="margin:8px 16px 16px">Cairn revokes a certificate from its current certificate authority within the hour. For the others, shown with a button, revoke the serial at the authority that issued it and then confirm it here. A revocation stops a connection only if the VPN server checks that authority's revocation list.</p>
+      <p class="sub" style="margin:8px 16px 16px">Cairn revokes a certificate from its current certificate authority within the hour. For the others, shown with a button, revoke the serial at the authority that issued it and then confirm it here. A revocation stops a connection only if the {{if .WiFiPage}}RADIUS server{{else}}VPN server{{end}} checks that authority's revocation list.</p>
     </div>
     {{end}}
 
@@ -103,7 +133,7 @@
     <div class="card">
       {{if .Current}}
       <table>
-        <thead><tr><th>Device</th><th>Server</th><th>Account</th><th>Serial</th><th>Expires</th><th>Profile</th></tr></thead>
+        <thead><tr><th>Device</th><th>{{if .WiFiPage}}Network{{else}}Server{{end}}</th><th>Account</th><th>Serial</th><th>Expires</th><th>Profile</th></tr></thead>
         <tbody>
           {{range .Current}}
           <tr>
@@ -116,7 +146,7 @@
         </tbody>
       </table>
       {{else}}
-      <div class="empty">No VPN certificates issued yet.</div>
+      <div class="empty">No {{if .WiFiPage}}Wi-Fi{{else}}VPN{{end}} certificates issued yet.</div>
       {{end}}
     </div>
   </main>

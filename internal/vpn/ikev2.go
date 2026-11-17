@@ -193,6 +193,54 @@ type SCEPEnrollment struct {
 	KeySize    int    // RSA bits; 0 means 2048
 }
 
+// check reports why an enrollment cannot go into a profile for username.
+func (e *SCEPEnrollment) check(username string) error {
+	switch {
+	case !strings.HasPrefix(e.URL, "https://") && !strings.HasPrefix(e.URL, "http://"):
+		return errors.New("vpn: SCEP URL must be http or https")
+	case e.Challenge == "":
+		return errors.New("vpn: SCEP enrollment needs a challenge")
+	case e.CommonName != username:
+		return fmt.Errorf("vpn: certificate name %q does not match username %q", e.CommonName, username)
+	}
+	return nil
+}
+
+// scepPayload is the payload that has a device make a key and ask for its
+// certificate.
+func scepPayload(identifier, uuid, displayName string, e *SCEPEnrollment) map[string]any {
+	size := e.KeySize
+	if size == 0 {
+		size = 2048
+	}
+	content := map[string]any{
+		"URL":       e.URL,
+		"Subject":   []any{[]any{[]any{"CN", e.CommonName}}},
+		"Key Type":  "RSA",
+		"Key Usage": 5, // digitalSignature(1) | keyEncipherment(4)
+		"Keysize":   size,
+		"Challenge": e.Challenge,
+		// The key never leaves the device, not even into a backup.
+		"KeyIsExtractable": false,
+		"Retries":          3,
+		"RetryDelay":       10,
+	}
+	if e.Name != "" {
+		content["Name"] = e.Name
+	}
+	if e.Email != "" {
+		content["SubjectAltName"] = map[string]any{"rfc822Name": e.Email}
+	}
+	return map[string]any{
+		"PayloadType":        "com.apple.security.scep",
+		"PayloadVersion":     1,
+		"PayloadIdentifier":  identifier,
+		"PayloadUUID":        uuid,
+		"PayloadDisplayName": displayName,
+		"PayloadContent":     content,
+	}
+}
+
 // IKEv2Identity is the per-device part of an IKEv2 profile.
 type IKEv2Identity struct {
 	DeviceID string // enrollment ID; keeps payload UUIDs stable per device
@@ -216,15 +264,11 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 	}
 	k := s.IKEv2
 	if k.UsesCertificate() {
-		switch {
-		case id.SCEP == nil:
+		if id.SCEP == nil {
 			return nil, errors.New("vpn: certificate sign-in needs a SCEP enrollment")
-		case !strings.HasPrefix(id.SCEP.URL, "https://") && !strings.HasPrefix(id.SCEP.URL, "http://"):
-			return nil, errors.New("vpn: SCEP URL must be http or https")
-		case id.SCEP.Challenge == "":
-			return nil, errors.New("vpn: SCEP enrollment needs a challenge")
-		case id.SCEP.CommonName != id.Username:
-			return nil, fmt.Errorf("vpn: certificate name %q does not match username %q", id.SCEP.CommonName, id.Username)
+		}
+		if err := id.SCEP.check(id.Username); err != nil {
+			return nil, err
 		}
 	} else if id.SCEP != nil {
 		return nil, errors.New("vpn: password sign-in takes no SCEP enrollment")
@@ -324,36 +368,7 @@ func RenderIKEv2(org string, s Server, id IKEv2Identity) ([]byte, error) {
 
 	payloads := []any{vpn}
 	if k.UsesCertificate() {
-		size := id.SCEP.KeySize
-		if size == 0 {
-			size = 2048
-		}
-		content := map[string]any{
-			"URL":       id.SCEP.URL,
-			"Subject":   []any{[]any{[]any{"CN", id.SCEP.CommonName}}},
-			"Key Type":  "RSA",
-			"Key Usage": 5, // digitalSignature(1) | keyEncipherment(4)
-			"Keysize":   size,
-			"Challenge": id.SCEP.Challenge,
-			// The key never leaves the device, not even into a backup.
-			"KeyIsExtractable": false,
-			"Retries":          3,
-			"RetryDelay":       10,
-		}
-		if id.SCEP.Name != "" {
-			content["Name"] = id.SCEP.Name
-		}
-		if id.SCEP.Email != "" {
-			content["SubjectAltName"] = map[string]any{"rfc822Name": id.SCEP.Email}
-		}
-		payloads = append(payloads, map[string]any{
-			"PayloadType":        "com.apple.security.scep",
-			"PayloadVersion":     1,
-			"PayloadIdentifier":  identifier + ".identity",
-			"PayloadUUID":        payloadUUID("scep"),
-			"PayloadDisplayName": "VPN certificate for " + id.Username,
-			"PayloadContent":     content,
-		})
+		payloads = append(payloads, scepPayload(identifier+".identity", payloadUUID("scep"), "VPN certificate for "+id.Username, id.SCEP))
 	}
 	var chain []*x509.Certificate
 	if k.InstallCA {

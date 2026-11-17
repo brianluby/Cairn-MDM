@@ -327,6 +327,59 @@ certificates. Give the chain to have the issuer name checked against it, and
 tick "Install this chain with every profile" only when the VPN server's CA is
 not one the devices trust yet.
 
+## Wi-Fi networks
+
+A Wi-Fi network record lets a device join a WPA2 or WPA3 Enterprise network
+with a certificate and no password (EAP-TLS). Networks have their own page,
+"Wi-Fi", and their own card on a device's page. They are set up with `[vpn]`
+because they use the same certificates: one per device, named for a directory
+account, from the CA in `[vpn.issuer]` or Cairn's own. Sending, replacing,
+revoking and renewal before expiry work as they do for a VPN server.
+
+The record holds:
+
+- The network name (SSID), exactly as the access points announce it.
+- WPA2 Enterprise or WPA3 Enterprise. Choose WPA3 only when the network accepts
+  nothing older.
+- The name in each RADIUS server's certificate. A device refuses a server that
+  presents any other name, and does not ask the user. Wildcards are refused.
+- The CA certificates those server certificates chain to. They go into every
+  profile, because a Wi-Fi setting can only trust certificates from its own
+  profile.
+
+"Send profile" on a device's page queues one profile holding the CA
+certificates, the identity and the Wi-Fi settings. The certificate has the
+account name as its common name and the account's UPN as an email SAN. It is
+always a new one; a VPN certificate already on the device is not reused and is
+not affected.
+
+The device makes the key. The profile carries a SCEP request with a one-time
+challenge for `<public_url>/scep/vpn`, as an IKEv2 certificate profile does
+(see "Certificate sign-in" above), so the key never leaves the device and
+nothing is asked of the CA until the device asks. Devices must be able to
+reach that address from wherever they install the profile.
+
+The device announces the certificate's common name as its user name, so the
+RADIUS server must accept a client certificate whose common name is an account
+name, and should check that the account is enabled. Cairn checks the account
+when it issues; after that, refusing a disabled account or a revoked
+certificate is the RADIUS server's job.
+
+A device that already knows the network, from an older profile or a saved
+password, may keep using those settings. Remove the older profile first: the
+device page's "Installed on the device" card lists what the device reports,
+including profiles an earlier MDM server installed, and removes any that MDM
+installed.
+
+Limits:
+
+- iPhone and iPad only. A Mac is refused.
+- The certificate names an account, not a device. A certificate named for the
+  device, with the owner in a SAN, needs the device-owner binding that
+  enrollment through Cairn's own CA or the broker gives; it is not built for
+  Wi-Fi.
+- Not yet run on a device or against a RADIUS server.
+
 ## Not built or not proven yet
 
 - A recorded device connection with an OpenVPN profile.
@@ -342,6 +395,8 @@ not one the devices trust yet.
 - More than one value for an option such as `route` or `dhcp-option`; the
   server form refuses a repeat and the importer keeps the first.
 - macOS: a keychain identity pushed by MDM plus a Viscosity connection.
+- A Wi-Fi profile on a real device: install, join, and refusal of a RADIUS
+  server with another certificate.
 - Renewal before expiry on a real device.
 - Certificate classes that keep a VPN certificate from being accepted where a
   device identity certificate is expected. VPN and device certificates from the

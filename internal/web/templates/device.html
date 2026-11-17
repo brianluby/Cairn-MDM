@@ -117,15 +117,15 @@
       {{end}}
     </div>
 
-    {{if .VPN}}
-    <h2>VPN</h2>
+    {{range $section := .Access}}
+    <h2>{{$section.Title}}</h2>
     <div class="card">
       <table>
-        <thead><tr><th>Server</th><th>Profile on this device</th>{{if .User.Role.AtLeast "admin"}}<th>Actions</th>{{end}}</tr></thead>
+        <thead><tr><th>{{if $section.WiFi}}Network{{else}}Server{{end}}</th><th>Profile on this device</th>{{if $.User.Role.AtLeast "admin"}}<th>Actions</th>{{end}}</tr></thead>
         <tbody>
-          {{range .VPN}}
+          {{range $section.Rows}}
           <tr>
-            <td>{{.Server.Name}}<div class="sub mono">{{.Server.Slug}}</div></td>
+            <td>{{.Server.Name}}<div class="sub mono">{{.Server.Slug}}</div>{{if .Server.IsWiFi}}<div class="sub">Joins {{.Server.WiFi.SSID}}</div>{{end}}</td>
             <td>
               {{if .Offered}}<div><span class="dot wait"></span> Profile sent for {{.Offered}}; waiting for the device to ask for its certificate</div>{{end}}
               {{with .Latest}}
@@ -140,6 +140,7 @@
                 {{else if eq .State "SUPERSEDED"}}<span class="dot off"></span> Replaced
                 {{else}}<span class="dot wait"></span> Requesting a certificate{{end}}
               {{else}}{{if and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password")}}<span class="sub">Password sign-in: {{if .Server.IKEv2.KeepPassword}}on trial as a pushed profile; a sent profile shows in the command history. It can also be downloaded{{else}}installed by hand. Download a profile for the user{{end}} from <a href="/admin/vpn/{{.Server.ID}}">this server's page</a>.</span>
+              {{else if .Server.IsWiFi}}<span class="sub">No Wi-Fi profile sent.</span>
               {{else if not .Offered}}<span class="sub">No VPN profile sent.</span>{{end}}{{end}}
             </td>
             {{if $.User.Role.AtLeast "admin"}}
@@ -160,7 +161,7 @@
               {{end}}
               {{if and .Server.IsIKEv2 (not .Latest) (not .Server.IKEv2.UsesCertificate)}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/remove" style="display:inline"
-                    onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
+                    onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this connection.')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
                 <button class="btn" type="submit">Remove pushed profile</button>
               </form>
@@ -168,7 +169,7 @@
               {{with .Latest}}{{if eq .State "ISSUED"}}
               {{if eq .DeployStatus "installed"}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.ServerID}}/remove" style="display:inline"
-                    onsubmit="return confirm('Remove the {{.ServerName}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
+                    onsubmit="return confirm('Remove the {{.ServerName}} profile from {{$.Device.DisplayName}}? The device loses this connection.')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
                 <button class="btn" type="submit">Remove profile</button>
               </form>
@@ -186,8 +187,8 @@
           {{end}}
         </tbody>
       </table>
-      <p class="sub" style="margin:8px 16px 16px">{{if .Owner}}The certificate is issued to this device's verified owner.{{else}}This device has no verified owner, so name the directory account the certificate is for. {{end}}
-      Sending needs an MFA code verified in the last five minutes. For an OpenVPN server on an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app. An IKEv2 server needs no app.</p>
+      <p class="sub" style="margin:8px 16px 16px">{{if $.Owner}}The certificate is issued to this device's verified owner.{{else}}This device has no verified owner, so name the directory account the certificate is for. {{end}}
+      Sending needs an MFA code verified in the last five minutes.{{if $section.WiFi}} The device joins the network by itself once the profile is installed. If it already knows the network from another profile or a saved password, remove that first.{{else}} For an OpenVPN server on an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app. An IKEv2 server needs no app.{{end}}</p>
     </div>
     {{end}}
 
@@ -237,6 +238,53 @@
         {{range .Library}}<option value="{{.ID}}">{{.Name}} ({{.Identifier}})</option>{{end}}
       </select>
       <button class="btn" type="submit">Install</button>
+    </form>
+    {{end}}
+
+    {{if .CanListProfiles}}
+    <h2>Installed on the device</h2>
+    <div class="card">
+      {{if .Installed}}
+      <table>
+        <thead>
+          <tr><th>Profile</th><th>Holds</th><th></th></tr>
+        </thead>
+        <tbody>
+          {{range $i, $p := .Installed}}
+          <tr>
+            <td>
+              {{if $p.Name}}{{$p.Name}}{{else}}(no name){{end}}
+              <div class="sub mono">{{$p.Identifier}}</div>
+              {{if $p.Organization}}<div class="sub">{{$p.Organization}}</div>{{end}}
+            </td>
+            <td class="sub mono">{{range $p.PayloadTypes}}{{.}}<br>{{end}}</td>
+            <td style="text-align:right">
+              {{if $p.HasPayload "com.apple.mdm"}}<span class="sub">Enrollment profile</span>
+              {{else if not $p.Managed}}<span class="sub">Installed by hand; remove it on the device</span>
+              {{else}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/remove"
+                    onsubmit="return confirm('Remove {{$p.Name}} ({{$p.Identifier}}) from {{$.Device.DisplayName}}? The device loses every setting in that profile.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="intent" value="{{$.Intent}}-installed-{{$i}}">
+                <input type="hidden" name="identifier" value="{{$p.Identifier}}">
+                <button class="btn link" type="submit">Remove</button>
+              </form>
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">As the device reported at {{.InstalledAt}} UTC. This includes profiles Cairn did not install, such as those an earlier MDM server left.
+      If Cairn assigns a profile through a group, removing it here lasts only until the group installs it again.</p>
+      {{else}}
+      <div class="empty">The device has not been asked for its profiles yet.</div>
+      {{end}}
+    </div>
+    <form method="post" action="/admin/devices/{{.Device.ID}}/profile-list" style="margin-top:12px">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="intent" value="{{.Intent}}-profile-list">
+      <button class="btn" type="submit">Ask the device for its profiles</button>
     </form>
     {{end}}
 

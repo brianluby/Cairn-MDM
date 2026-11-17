@@ -32,13 +32,15 @@ type Remote struct {
 
 // Server is an admin-managed VPN server definition. Kind says which protocol
 // it is; the OpenVPN fields below are unused for an IKEv2 server and IKEv2 is
-// unused for an OpenVPN one. Name, Slug, CAPEM and OnDemand apply to both.
+// unused for an OpenVPN one. Name, Slug, CAPEM and OnDemand apply to both. A
+// Wi-Fi network (KindWiFi) is kept here too and uses Name, Slug, CAPEM and WiFi.
 type Server struct {
 	ID             int64
 	Name           string
 	Slug           string // immutable; part of the profile's PayloadIdentifier
-	Kind           string // KindOpenVPN or KindIKEv2; empty means OpenVPN
+	Kind           string // KindOpenVPN, KindIKEv2 or KindWiFi; empty means OpenVPN
 	IKEv2          IKEv2
+	WiFi           WiFi
 	Remotes        []Remote
 	VerifyX509Name string // exact CN of the server certificate
 	CAPEM          string // chain that signs the server certificate
@@ -114,6 +116,8 @@ func (s Server) Validate() error {
 	case "", KindOpenVPN:
 	case KindIKEv2:
 		return s.validateIKEv2()
+	case KindWiFi:
+		return s.validateWiFi()
 	default:
 		return fmt.Errorf("unknown server kind %q", s.Kind)
 	}

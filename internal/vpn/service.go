@@ -123,8 +123,9 @@ var (
 	ErrDeviceGone      = errors.New("the device is not enrolled or cannot receive commands")
 	ErrAwaitingDevice  = errors.New("a profile is already waiting for this device and installs when it next connects; revoke that certificate first to send a new one")
 	ErrPlatform        = errors.New("OpenVPN profiles are built for iPhone and iPad; this device is a Mac")
+	ErrWiFiPlatform    = errors.New("Wi-Fi profiles are built for iPhone and iPad so far; this device is a Mac")
 	ErrDownloadOnly    = errors.New("this server signs in with a password, and a device cannot store a password for a VPN that MDM installed; download the profile from the VPN page and install it by hand")
-	ErrDeviceKeyed     = errors.New("this server signs devices in with a certificate, and Cairn's SCEP endpoint for VPN certificates is not set up")
+	ErrDeviceKeyed     = errors.New("this profile has the device make its own key, and Cairn's SCEP endpoint for those certificates is not set up")
 	ErrHeld            = errors.New("the certificate authority's answer could not be trusted; the request is held for review and no profile was sent")
 )
 
@@ -191,6 +192,9 @@ func (s *Service) target(ctx context.Context, deviceID string, serverID int64) (
 		return Server{}, fmt.Errorf("vpn: server: %w", err)
 	}
 	if !server.IsIKEv2() && (strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac")) {
+		if server.IsWiFi() {
+			return Server{}, ErrWiFiPlatform
+		}
 		return Server{}, ErrPlatform
 	}
 	return server, nil
@@ -205,6 +209,10 @@ func (s *Service) send(ctx context.Context, deviceID string, server Server, owne
 	}
 	if server.IsIKEv2() {
 		return s.sendIKEv2(ctx, deviceID, server, owner, actor)
+	}
+	// A device makes its own Wi-Fi key and asks Cairn for the certificate.
+	if server.IsWiFi() {
+		return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
 	}
 
 	// One undelivered key per device and server at a time.

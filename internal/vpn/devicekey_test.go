@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -464,5 +465,59 @@ func TestUntrustedCAAnswerForADeviceKeyIsHeld(t *testing.T) {
 	}
 	if rows, _ = f.db.DeviceVPNIdentities(ctx, "PHONE1"); len(rows) != 1 {
 		t.Fatalf("identity rows after the retry = %d", len(rows))
+	}
+}
+
+func TestWiFiProfileWithADeviceMadeKey(t *testing.T) {
+	ctx := context.Background()
+	f, svc, _ := deviceKeyFixture(t)
+	wifi := f.wifiNetwork(t)
+
+	if _, err := svc.Issue(ctx, "PHONE1", wifi, "alice", "nick"); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing is asked of the CA until the phone answers.
+	if list, _ := f.db.DeviceVPNIdentities(ctx, "PHONE1"); len(list) != 0 {
+		t.Fatalf("identities before the device asked = %d", len(list))
+	}
+	cmd := f.device(t, "PHONE1", "")
+	var c struct{ Command struct{ Payload []byte } }
+	if err := plist.Unmarshal(cmd.Raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	if err := vpn.CheckWiFi(c.Command.Payload); err != nil {
+		t.Fatalf("queued profile fails its checks: %v", err)
+	}
+	if bytes.Contains(c.Command.Payload, []byte("com.apple.security.pkcs12")) {
+		t.Fatal("queued profile carries a key")
+	}
+	challenge := queuedChallenge(t, f, cmd.CommandUUID)
+	if challenge == "" {
+		t.Fatal("queued profile has no SCEP challenge")
+	}
+
+	// A second send while the first waits is refused.
+	if _, err := svc.Issue(ctx, "PHONE1", wifi, "alice", "nick"); !errors.Is(err, vpn.ErrAwaitingDevice) {
+		t.Fatalf("second send: err = %v, want ErrAwaitingDevice", err)
+	}
+
+	leaf, err := svc.SignCSRContext(ctx, deviceRequest(t, "alice", challenge))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaf.Subject.CommonName != "alice" || len(leaf.EmailAddresses) != 1 || leaf.EmailAddresses[0] != "alice@example.org" {
+		t.Fatalf("leaf subject=%q SAN=%v", leaf.Subject.CommonName, leaf.EmailAddresses)
+	}
+	if _, err := svc.SignCSRContext(ctx, deviceRequest(t, "alice", challenge)); err == nil {
+		t.Fatal("the challenge worked for a second key")
+	}
+
+	f.device(t, "PHONE1", "Acknowledged")
+	list, _ := f.db.DeviceVPNIdentities(ctx, "PHONE1")
+	if len(list) != 1 || list[0].ServerID != wifi || list[0].State != sqlite.VPNIssued || list[0].DeployStatus != "installed" {
+		t.Fatalf("identities after install = %+v", list)
+	}
+	if queuedChallenge(t, f, cmd.CommandUUID) != "" {
+		t.Fatal("the challenge is still in the queue after the device acknowledged")
 	}
 }

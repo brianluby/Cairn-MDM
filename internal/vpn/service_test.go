@@ -717,3 +717,45 @@ func TestIKEv2PasswordProfileIsDownloadedNotPushed(t *testing.T) {
 		t.Fatal("an OpenVPN profile was offered as a download")
 	}
 }
+
+// wifiNetwork adds a Wi-Fi record that trusts the fixture's CA.
+func (f *fixture) wifiNetwork(t *testing.T) int64 {
+	t.Helper()
+	office, err := f.servers.Get(context.Background(), f.server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := f.servers.Create(context.Background(), vpn.Server{
+		Name: "Office Wi-Fi", Slug: "office-wifi", Kind: vpn.KindWiFi, CAPEM: office.CAPEM,
+		WiFi: vpn.WiFi{SSID: "Office Secure", Security: vpn.WiFiWPA2Enterprise, ServerNames: []string{"radius.example.org"}},
+	}, "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestWiFiProfileRefusals(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	svc := f.service(t, f.backend)
+	wifi := f.wifiNetwork(t)
+
+	if err := f.db.DeviceEnrolled(ctx, mdmcore.DeviceRecord{ID: "MAC1", UDID: "MAC1", Name: "MAC1", Model: "MacBookPro18,3", Product: "Mac14,5"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.DeviceTokenUpdated(ctx, "MAC1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Issue(ctx, "MAC1", wifi, "alice", "nick"); !errors.Is(err, vpn.ErrWiFiPlatform) {
+		t.Fatalf("Mac: err = %v, want ErrWiFiPlatform", err)
+	}
+
+	f.dir.disabled = true
+	if _, err := svc.Issue(ctx, "PHONE1", wifi, "alice", "nick"); !errors.Is(err, vpn.ErrOwnerIneligible) {
+		t.Fatalf("disabled owner: err = %v, want ErrOwnerIneligible", err)
+	}
+	if cmd := f.device(t, "PHONE1", ""); cmd != nil {
+		t.Fatal("a profile was queued for a disabled owner")
+	}
+}

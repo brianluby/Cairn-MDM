@@ -32,6 +32,11 @@ func PayloadIdentifier(org string, s Server) string {
 	if org == "" {
 		org = "cairn"
 	}
+	if s.IsWiFi() {
+		// "cert" keeps this apart from a Wi-Fi profile built in the profile
+		// library, whose identifier is org.wifi.<network>.
+		return org + ".wifi.cert." + s.Slug
+	}
 	return org + ".vpn." + s.Slug
 }
 

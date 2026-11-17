@@ -24,6 +24,12 @@ device OS versions and server configuration for every result.
   trust anchors. It rejects blank names, wildcards and URLs. This constrains
   which server certificates the generated profile names; hardware tests must
   still prove rejection of an unexpected server and an untrusted issuer.
+- A second route exists for a first device test: a Wi-Fi network record on the
+  Wi-Fi page sends a per-device profile with a certificate named for a directory
+  account (see [VPN profiles](vpn-profiles.md#wi-fi-networks)). The account is
+  checked in the directory at issuance by an administrator with a fresh second
+  factor. It is a user certificate, not the device certificate with a bound
+  owner that this document asks for, and it has not run on a device.
 - The renewal/lineage addendum remains unreviewed. Its identity anchor,
   rollback detection and retirement evidence must be reconciled before the
   sensitive lifecycle is implemented or trusted by RADIUS.

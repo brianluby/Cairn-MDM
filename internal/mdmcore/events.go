@@ -56,6 +56,12 @@ type DeviceProjector interface {
 	DeviceInventory(ctx context.Context, id string, inv DeviceInventory) error
 }
 
+// installedProfileKeeper is the optional part of a projector that keeps a
+// device's answer to a ProfileList command.
+type installedProfileKeeper interface {
+	SaveInstalledProfiles(ctx context.Context, id string, profiles []InstalledProfile) error
+}
+
 // EventService decorates a NanoMDM service: it delegates every call to the inner
 // service (which persists protocol state) and, on success, updates the device
 // projection. Embedding the interface means we inherit all methods and override
@@ -162,6 +168,13 @@ func (s *EventService) CommandAndReportResults(r *mdm.Request, m *mdm.CommandRes
 		if s.onProfileList != nil && m.Status == "Acknowledged" {
 			if profiles, ok := profileListFromRaw(m.Raw); ok {
 				s.onProfileList(r.Context(), r.ID, m.CommandUUID, profiles)
+			}
+		}
+		if keep, ok := s.proj.(installedProfileKeeper); ok && m.Status == "Acknowledged" {
+			if profiles, ok := profileListFromRaw(m.Raw); ok {
+				if err := keep.SaveInstalledProfiles(r.Context(), r.ID, profiles); err != nil {
+					s.log.Warn("record installed profiles", "id", r.ID, "err", err)
+				}
 			}
 		}
 	}
