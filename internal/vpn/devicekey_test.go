@@ -19,6 +19,7 @@ import (
 	scep "github.com/smallstep/scep"
 
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
+	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
 	"github.com/nickpdawson/cairn-mdm/internal/vpn"
 )
@@ -519,5 +520,37 @@ func TestWiFiProfileWithADeviceMadeKey(t *testing.T) {
 	}
 	if queuedChallenge(t, f, cmd.CommandUUID) != "" {
 		t.Fatal("the challenge is still in the queue after the device acknowledged")
+	}
+}
+
+func TestWiFiProfileForAMacIsSetUpForTheSystem(t *testing.T) {
+	ctx := context.Background()
+	f, svc, _ := deviceKeyFixture(t)
+	wifi := f.wifiNetwork(t)
+	if err := f.db.DeviceEnrolled(ctx, mdmcore.DeviceRecord{ID: "MAC1", UDID: "MAC1", Name: "MAC1", Model: "Mac16,8", Product: "Mac16,8"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.DeviceTokenUpdated(ctx, "MAC1"); err != nil {
+		t.Fatal(err)
+	}
+	system := func(device string) bool {
+		t.Helper()
+		if _, err := svc.Issue(ctx, device, wifi, "alice", "nick"); err != nil {
+			t.Fatal(err)
+		}
+		var c struct{ Command struct{ Payload []byte } }
+		if err := plist.Unmarshal(f.device(t, device, "").Raw, &c); err != nil {
+			t.Fatal(err)
+		}
+		if err := vpn.CheckWiFi(c.Command.Payload); err != nil {
+			t.Fatalf("queued profile fails its checks: %v", err)
+		}
+		return bytes.Contains(c.Command.Payload, []byte("SetupModes"))
+	}
+	if !system("MAC1") {
+		t.Fatal("a Mac's Wi-Fi profile is not set up for the system")
+	}
+	if system("PHONE1") {
+		t.Fatal("an iPhone's Wi-Fi profile carries a Mac-only setting")
 	}
 }

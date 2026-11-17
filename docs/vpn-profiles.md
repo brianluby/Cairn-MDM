@@ -373,12 +373,14 @@ installed.
 
 Limits:
 
-- iPhone and iPad only. A Mac is refused.
+- On a Mac the profile sets the network up for the system: the certificate is
+  in the System keychain and the Mac joins by itself, before and after login.
+  Not yet run on a Mac.
 - The certificate names an account, not a device. A certificate named for the
   device, with the owner in a SAN, needs the device-owner binding that
   enrollment through Cairn's own CA or the broker gives; it is not built for
   Wi-Fi.
-- Not yet run on a device or against a RADIUS server.
+- Run on an iPhone and an iPad against FreeRADIUS.
 
 ## Not built or not proven yet
 
@@ -395,8 +397,8 @@ Limits:
 - More than one value for an option such as `route` or `dhcp-option`; the
   server form refuses a repeat and the importer keeps the first.
 - macOS: a keychain identity pushed by MDM plus a Viscosity connection.
-- A Wi-Fi profile on a real device: install, join, and refusal of a RADIUS
-  server with another certificate.
+- A Wi-Fi profile on a Mac. On any device: a second send replacing the profile
+  in place, and refusal of a RADIUS server with another certificate.
 - Renewal before expiry on a real device.
 - Certificate classes that keep a VPN certificate from being accepted where a
   device identity certificate is expected. VPN and device certificates from the

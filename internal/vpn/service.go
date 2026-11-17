@@ -123,7 +123,6 @@ var (
 	ErrDeviceGone      = errors.New("the device is not enrolled or cannot receive commands")
 	ErrAwaitingDevice  = errors.New("a profile is already waiting for this device and installs when it next connects; revoke that certificate first to send a new one")
 	ErrPlatform        = errors.New("OpenVPN profiles are built for iPhone and iPad; this device is a Mac")
-	ErrWiFiPlatform    = errors.New("Wi-Fi profiles are built for iPhone and iPad so far; this device is a Mac")
 	ErrDownloadOnly    = errors.New("this server signs in with a password, and a device cannot store a password for a VPN that MDM installed; download the profile from the VPN page and install it by hand")
 	ErrDeviceKeyed     = errors.New("this profile has the device make its own key, and Cairn's SCEP endpoint for those certificates is not set up")
 	ErrHeld            = errors.New("the certificate authority's answer could not be trusted; the request is held for review and no profile was sent")
@@ -191,13 +190,14 @@ func (s *Service) target(ctx context.Context, deviceID string, serverID int64) (
 	if err != nil {
 		return Server{}, fmt.Errorf("vpn: server: %w", err)
 	}
-	if !server.IsIKEv2() && (strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac")) {
-		if server.IsWiFi() {
-			return Server{}, ErrWiFiPlatform
-		}
+	if !server.IsIKEv2() && !server.IsWiFi() && isMac(dev) {
 		return Server{}, ErrPlatform
 	}
 	return server, nil
+}
+
+func isMac(dev sqlite.Device) bool {
+	return strings.HasPrefix(dev.Model, "Mac") || strings.HasPrefix(dev.Product, "Mac")
 }
 
 // send issues for an owner the caller has already resolved in the directory.

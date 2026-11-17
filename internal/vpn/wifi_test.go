@@ -148,6 +148,37 @@ func TestRenderWiFiCarriesEveryRequiredKey(t *testing.T) {
 	}
 }
 
+func TestRenderWiFiForAMacJoinsAsTheSystem(t *testing.T) {
+	chain := wifiChain(t)
+	out, err := RenderWiFi("org.example", wifiRecord(chain), WiFiIdentity{DeviceID: "MAC1", SCEP: wifiEnrollment("alice"), Mac: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, by := payloadsOf(t, out)
+	modes, _ := by["com.apple.wifi.managed"][0]["SetupModes"].([]any)
+	if len(modes) != 1 || modes[0] != "System" {
+		t.Fatalf("SetupModes = %v, want System alone", modes)
+	}
+	// An iPhone's profile has no such key (asserted above); a login-window mode
+	// would hand the machine's certificate to whoever is at the keyboard.
+	var top map[string]any
+	if err := plist.Unmarshal(out, &top); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range top["PayloadContent"].([]any) {
+		if p := c.(map[string]any); p["PayloadType"] == "com.apple.wifi.managed" {
+			p["SetupModes"] = []any{"System", "Loginwindow"}
+		}
+	}
+	changed, err := plist.Marshal(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckWiFi(changed); err == nil {
+		t.Fatal("a profile with a login-window mode was accepted")
+	}
+}
+
 func TestRenderWiFiReplacesInPlaceAndDiffersByDevice(t *testing.T) {
 	chain := wifiChain(t)
 	uuids := func(device string) (string, string) {

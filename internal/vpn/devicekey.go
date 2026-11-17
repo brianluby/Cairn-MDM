@@ -60,7 +60,12 @@ func (s *Service) offerDeviceKey(ctx context.Context, deviceID string, server Se
 	enrollment := &SCEPEnrollment{URL: s.opts.DeviceSCEPURL, Challenge: challenge, CommonName: owner.AccountName, Email: owner.UPN}
 	var profile []byte
 	if server.IsWiFi() {
-		profile, err = RenderWiFi(s.opts.Organization, server, WiFiIdentity{DeviceID: deviceID, SCEP: enrollment})
+		dev, derr := s.store.GetDevice(ctx, deviceID)
+		if derr != nil {
+			err = ErrDeviceGone
+		} else {
+			profile, err = RenderWiFi(s.opts.Organization, server, WiFiIdentity{DeviceID: deviceID, SCEP: enrollment, Mac: isMac(dev)})
+		}
 	} else {
 		profile, err = RenderIKEv2(s.opts.Organization, server, IKEv2Identity{DeviceID: deviceID, Username: owner.AccountName, SCEP: enrollment})
 	}
