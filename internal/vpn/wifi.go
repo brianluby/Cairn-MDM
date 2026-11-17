@@ -79,6 +79,10 @@ func (s Server) validateWiFi() error {
 type WiFiIdentity struct {
 	DeviceID string // enrollment ID; keeps payload UUIDs stable per device
 	SCEP     *SCEPEnrollment
+	// Mac marks a profile for a Mac. There the certificate lands in the System
+	// keychain, which only the system may use, so the network is set up for the
+	// system to join by itself (before and after login) and not per user.
+	Mac bool
 }
 
 // RenderWiFi builds the profile that joins a device to an EAP-TLS network: the
@@ -142,7 +146,7 @@ func RenderWiFi(org string, s Server, id WiFiIdentity) ([]byte, error) {
 	for i, n := range s.WiFi.ServerNames {
 		serverNames[i] = n
 	}
-	payloads = append(payloads, map[string]any{
+	wifi := map[string]any{
 		"PayloadType":            "com.apple.wifi.managed",
 		"PayloadVersion":         1,
 		"PayloadIdentifier":      identifier + ".wifi",
@@ -163,7 +167,11 @@ func RenderWiFi(org string, s Server, id WiFiIdentity) ([]byte, error) {
 			"TLSAllowTrustExceptions":      false,
 			"TLSCertificateIsRequired":     true,
 		},
-	})
+	}
+	if id.Mac {
+		wifi["SetupModes"] = []any{"System"}
+	}
+	payloads = append(payloads, wifi)
 	prof := map[string]any{
 		"PayloadType":              "Configuration",
 		"PayloadVersion":           1,
@@ -251,6 +259,11 @@ func CheckWiFi(profile []byte) error {
 	}
 	if _, ok := wifi["Password"]; ok {
 		return errors.New("Wi-Fi payload holds a password")
+	}
+	if modes, ok := wifi["SetupModes"]; ok {
+		if list, _ := modes.([]any); len(list) != 1 || str(list[0]) != "System" {
+			return errors.New("SetupModes, when present, must be System alone: the certificate is the machine's, not a user's")
+		}
 	}
 	if str(wifi["PayloadCertificateUUID"]) != identity {
 		return errors.New("Wi-Fi payload does not refer to the identity in this profile")

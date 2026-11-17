@@ -747,8 +747,9 @@ func TestWiFiProfileRefusals(t *testing.T) {
 	if err := f.db.DeviceTokenUpdated(ctx, "MAC1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Issue(ctx, "MAC1", wifi, "alice", "nick"); !errors.Is(err, vpn.ErrWiFiPlatform) {
-		t.Fatalf("Mac: err = %v, want ErrWiFiPlatform", err)
+	// The plain fixture has no SCEP endpoint for device-made keys.
+	if _, err := svc.Issue(ctx, "MAC1", wifi, "alice", "nick"); !errors.Is(err, vpn.ErrDeviceKeyed) {
+		t.Fatalf("no SCEP endpoint: err = %v, want ErrDeviceKeyed", err)
 	}
 
 	f.dir.disabled = true

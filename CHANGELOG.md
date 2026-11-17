@@ -10,8 +10,8 @@
   profile from a device's page issues
   a new certificate for the account and installs it with the network's
   settings. The device makes its own key. Networks
-  have their own page and their own card on a device's page. iPhone and iPad
-  only, and not yet run on a device. See
+  have their own page and their own card on a device's page. Run on an iPhone,
+  an iPad and a Mac; on a Mac the network is set up for the system. See
   [VPN profiles](docs/vpn-profiles.md#wi-fi-networks).
 - A device's page lists the profiles the device reports as installed, on
   request, and can remove any that MDM installed, including ones an earlier

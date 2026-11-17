@@ -150,7 +150,7 @@
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/issue" style="display:inline">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
                 {{if not $.Owner}}<label>Account <input type="text" name="account" required size="16" placeholder="jsmith" autocomplete="off"></label>{{end}}
-                <button class="btn" type="submit">{{if .Latest}}Send new profile{{else}}Send profile{{end}}</button>
+                <button class="btn" type="submit">{{if .Latest}}Send new {{if $section.WiFi}}Wi-Fi{{else}}VPN{{end}} profile{{else}}Send {{if $section.WiFi}}Wi-Fi{{else}}VPN{{end}} profile{{end}}</button>
               </form>
               {{end}}
               {{if .Offered}}
