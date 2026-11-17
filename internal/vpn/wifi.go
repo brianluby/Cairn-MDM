@@ -2,17 +2,13 @@ package vpn
 
 import (
 	"bytes"
-	"crypto"
-	"crypto/rand"
 	"crypto/x509"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/micromdm/plist"
-	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
 // KindWiFi is a Wi-Fi network that devices join with a certificate (EAP-TLS).
@@ -78,22 +74,18 @@ func (s Server) validateWiFi() error {
 	return nil
 }
 
-// WiFiIdentity is how one device gets the certificate its Wi-Fi profile signs
-// in with. With SCEP set, the device makes the key and asks for the
-// certificate, and the profile holds no key. Otherwise Leaf and Key are
-// rendered into the profile, and the key must not be kept afterwards.
+// WiFiIdentity is the per-device part of a Wi-Fi profile: where the device
+// asks for the certificate it signs in with. The device makes the key.
 type WiFiIdentity struct {
 	DeviceID string // enrollment ID; keeps payload UUIDs stable per device
 	SCEP     *SCEPEnrollment
-	Leaf     *x509.Certificate
-	Key      crypto.PrivateKey
 }
 
 // RenderWiFi builds the profile that joins a device to an EAP-TLS network: the
-// CA certificates, the identity (a SCEP request, or a certificate and key as
-// PKCS#12), and the Wi-Fi payload that refers to both. A Wi-Fi payload can only
-// use certificates from its own profile, so the CA certificates are always
-// included. The result has passed CheckWiFi.
+// CA certificates, a SCEP request for the identity, and the Wi-Fi payload that
+// refers to both. No private key is ever part of the profile. A Wi-Fi payload
+// can only use certificates from its own profile, so the CA certificates are
+// always included. The result has passed CheckWiFi.
 func RenderWiFi(org string, s Server, id WiFiIdentity) ([]byte, error) {
 	if !s.IsWiFi() {
 		return nil, errors.New("vpn: not a Wi-Fi network record")
@@ -101,8 +93,18 @@ func RenderWiFi(org string, s Server, id WiFiIdentity) ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("vpn: Wi-Fi record: %w", err)
 	}
-	if id.DeviceID == "" {
-		return nil, errors.New("vpn: device is required")
+	if id.DeviceID == "" || id.SCEP == nil {
+		return nil, errors.New("vpn: device and SCEP enrollment are required")
+	}
+	// The RADIUS server compares the name the device announces with the
+	// certificate's common name, so the profile announces the name the device
+	// is told to ask for. Cairn issues under that name or not at all.
+	username := id.SCEP.CommonName
+	if !accountRE.MatchString(username) {
+		return nil, errors.New("vpn: the certificate name must be a directory account name")
+	}
+	if err := id.SCEP.check(username); err != nil {
+		return nil, err
 	}
 	anchors, err := parseCertificates(s.CAPEM)
 	if err != nil {
@@ -111,52 +113,7 @@ func RenderWiFi(org string, s Server, id WiFiIdentity) ([]byte, error) {
 	identifier := PayloadIdentifier(org, s)
 	ns := uuid5(nsDNS, identifier+"."+id.DeviceID)
 	payloadUUID := func(tag string) string { return strings.ToUpper(uuid5(ns, tag).String()) }
-
-	// The RADIUS server compares the name the device announces with the
-	// certificate's common name, so the profile uses the name in the
-	// certificate, or the one the device is told to ask for.
-	var username string
-	var identity map[string]any
-	switch {
-	case id.SCEP != nil && (id.Leaf != nil || id.Key != nil):
-		return nil, errors.New("vpn: a profile takes a SCEP request or a certificate and key, not both")
-	case id.SCEP != nil:
-		username = id.SCEP.CommonName
-		if !accountRE.MatchString(username) {
-			return nil, errors.New("vpn: the certificate name must be a directory account name")
-		}
-		if err := id.SCEP.check(username); err != nil {
-			return nil, err
-		}
-		identity = scepPayload(identifier+".identity", payloadUUID("identity"), "Wi-Fi certificate for "+username, id.SCEP)
-	case id.Leaf != nil && id.Key != nil:
-		if username = id.Leaf.Subject.CommonName; username == "" {
-			return nil, errors.New("vpn: certificate has no common name to sign in with")
-		}
-		raw := make([]byte, 24)
-		if _, err := rand.Read(raw); err != nil {
-			return nil, err
-		}
-		password := base64.RawURLEncoding.EncodeToString(raw)
-		// Triple-DES and SHA-1 are what every iOS and macOS release imports. The
-		// password sits in the same profile, so this encryption protects nothing;
-		// the profile itself is what has to stay private.
-		p12, err := pkcs12.LegacyDES.Encode(id.Key, id.Leaf, nil, password)
-		if err != nil {
-			return nil, fmt.Errorf("vpn: encode identity: %w", err)
-		}
-		identity = map[string]any{
-			"PayloadType":        "com.apple.security.pkcs12",
-			"PayloadVersion":     1,
-			"PayloadIdentifier":  identifier + ".identity",
-			"PayloadUUID":        payloadUUID("identity"),
-			"PayloadDisplayName": "Wi-Fi certificate for " + username,
-			"PayloadContent":     p12,
-			"Password":           password,
-		}
-	default:
-		return nil, errors.New("vpn: a SCEP request or a certificate and key is required")
-	}
+	identity := scepPayload(identifier+".identity", payloadUUID("identity"), "Wi-Fi certificate for "+username, id.SCEP)
 
 	var payloads, anchorUUIDs []any
 	for i, c := range anchors {
@@ -262,14 +219,6 @@ func CheckWiFi(profile []byte) error {
 				return fmt.Errorf("%s is in the wrong payload type for a root or an intermediate", cert.Subject.CommonName)
 			}
 			anchors[id] = true
-		case "com.apple.security.pkcs12":
-			if identity != "" {
-				return errors.New("profile holds more than one identity")
-			}
-			if der, _ := c["PayloadContent"].([]byte); len(der) == 0 || str(c["Password"]) == "" {
-				return errors.New("identity payload needs its content and password")
-			}
-			identity = id
 		case "com.apple.security.scep":
 			if identity != "" {
 				return errors.New("profile holds more than one identity")

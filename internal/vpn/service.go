@@ -125,7 +125,7 @@ var (
 	ErrPlatform        = errors.New("OpenVPN profiles are built for iPhone and iPad; this device is a Mac")
 	ErrWiFiPlatform    = errors.New("Wi-Fi profiles are built for iPhone and iPad so far; this device is a Mac")
 	ErrDownloadOnly    = errors.New("this server signs in with a password, and a device cannot store a password for a VPN that MDM installed; download the profile from the VPN page and install it by hand")
-	ErrDeviceKeyed     = errors.New("this server signs devices in with a certificate, and Cairn's SCEP endpoint for VPN certificates is not set up")
+	ErrDeviceKeyed     = errors.New("this profile has the device make its own key, and Cairn's SCEP endpoint for those certificates is not set up")
 	ErrHeld            = errors.New("the certificate authority's answer could not be trusted; the request is held for review and no profile was sent")
 )
 
@@ -210,9 +210,8 @@ func (s *Service) send(ctx context.Context, deviceID string, server Server, owne
 	if server.IsIKEv2() {
 		return s.sendIKEv2(ctx, deviceID, server, owner, actor)
 	}
-	// With Cairn's SCEP endpoint set up, the device makes its own Wi-Fi key.
-	// Without it, Cairn makes the key and sends it inside the profile.
-	if server.IsWiFi() && s.opts.DeviceSCEPURL != "" {
+	// A device makes its own Wi-Fi key and asks Cairn for the certificate.
+	if server.IsWiFi() {
 		return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
 	}
 
@@ -290,21 +289,17 @@ func (s *Service) send(ctx context.Context, deviceID string, server Server, owne
 		return none, err
 	}
 
-	var profile []byte
-	if server.IsWiFi() {
-		profile, err = RenderWiFi(s.opts.Organization, server, WiFiIdentity{DeviceID: deviceID, Leaf: res.Leaf, Key: key})
-	} else {
-		var keyDER []byte
-		if keyDER, err = x509.MarshalPKCS8PrivateKey(key); err == nil {
-			profile, err = RenderMobileconfig(s.opts.Organization, server, Identity{
-				DeviceID: deviceID, Username: owner.AccountName,
-				CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: res.Leaf.Raw}),
-				KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
-			})
-		}
-	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err == nil {
-		err = s.cmd.SendInstallProfileAs(ctx, commandUUID, profile, deviceID)
+		var profile []byte
+		profile, err = RenderMobileconfig(s.opts.Organization, server, Identity{
+			DeviceID: deviceID, Username: owner.AccountName,
+			CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: res.Leaf.Raw}),
+			KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
+		})
+		if err == nil {
+			err = s.cmd.SendInstallProfileAs(ctx, commandUUID, profile, deviceID)
+		}
 	}
 	if err != nil {
 		s.record(id, s.store.MarkVPNDeployFailed(ctx, id, "Profile not queued: "+err.Error()))

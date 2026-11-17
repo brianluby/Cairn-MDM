@@ -6,11 +6,17 @@
   administrator: `[vpn] renew_before_days` (off by default). The owner's
   account is checked in the directory first. See
   [VPN profiles](docs/vpn-profiles.md).
-- Wi-Fi networks that sign in with a certificate (EAP-TLS). A network record
-  sits beside the VPN servers; sending its profile from a device's page issues
+- Wi-Fi networks that sign in with a certificate (EAP-TLS). Sending a network's
+  profile from a device's page issues
   a new certificate for the account and installs it with the network's
-  settings. iPhone and iPad only, and not yet run on a device. See
+  settings. The device makes its own key. Networks
+  have their own page and their own card on a device's page. iPhone and iPad
+  only, and not yet run on a device. See
   [VPN profiles](docs/vpn-profiles.md#wi-fi-networks).
+- A device's page lists the profiles the device reports as installed, on
+  request, and can remove any that MDM installed, including ones an earlier
+  MDM server left. The enrollment profile cannot be removed there. Adds
+  migration 39.
 
 ## v0.2.0-beta.1 (November 16, 2026)
 

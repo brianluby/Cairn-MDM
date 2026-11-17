@@ -117,15 +117,15 @@
       {{end}}
     </div>
 
-    {{if .VPN}}
-    <h2>VPN</h2>
+    {{range $section := .Access}}
+    <h2>{{$section.Title}}</h2>
     <div class="card">
       <table>
-        <thead><tr><th>Server or network</th><th>Profile on this device</th>{{if .User.Role.AtLeast "admin"}}<th>Actions</th>{{end}}</tr></thead>
+        <thead><tr><th>{{if $section.WiFi}}Network{{else}}Server{{end}}</th><th>Profile on this device</th>{{if $.User.Role.AtLeast "admin"}}<th>Actions</th>{{end}}</tr></thead>
         <tbody>
-          {{range .VPN}}
+          {{range $section.Rows}}
           <tr>
-            <td>{{.Server.Name}}<div class="sub mono">{{.Server.Slug}}</div>{{if .Server.IsWiFi}}<div class="sub">Wi-Fi network {{.Server.WiFi.SSID}}</div>{{end}}</td>
+            <td>{{.Server.Name}}<div class="sub mono">{{.Server.Slug}}</div>{{if .Server.IsWiFi}}<div class="sub">Joins {{.Server.WiFi.SSID}}</div>{{end}}</td>
             <td>
               {{if .Offered}}<div><span class="dot wait"></span> Profile sent for {{.Offered}}; waiting for the device to ask for its certificate</div>{{end}}
               {{with .Latest}}
@@ -161,7 +161,7 @@
               {{end}}
               {{if and .Server.IsIKEv2 (not .Latest) (not .Server.IKEv2.UsesCertificate)}}
               <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/remove" style="display:inline"
-                    onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
+                    onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this connection.')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
                 <button class="btn" type="submit">Remove pushed profile</button>
               </form>
@@ -187,8 +187,8 @@
           {{end}}
         </tbody>
       </table>
-      <p class="sub" style="margin:8px 16px 16px">{{if .Owner}}The certificate is issued to this device's verified owner.{{else}}This device has no verified owner, so name the directory account the certificate is for. {{end}}
-      Sending needs an MFA code verified in the last five minutes. For an OpenVPN server on an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app. An IKEv2 server or a Wi-Fi network needs no app.</p>
+      <p class="sub" style="margin:8px 16px 16px">{{if $.Owner}}The certificate is issued to this device's verified owner.{{else}}This device has no verified owner, so name the directory account the certificate is for. {{end}}
+      Sending needs an MFA code verified in the last five minutes.{{if $section.WiFi}} The device joins the network by itself once the profile is installed. If it already knows the network from another profile or a saved password, remove that first.{{else}} For an OpenVPN server on an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app. An IKEv2 server needs no app.{{end}}</p>
     </div>
     {{end}}
 

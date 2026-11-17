@@ -330,10 +330,11 @@ not one the devices trust yet.
 ## Wi-Fi networks
 
 A Wi-Fi network record lets a device join a WPA2 or WPA3 Enterprise network
-with a certificate and no password (EAP-TLS). It is kept on the VPN page
-because it uses the same certificates: one per device, named for a directory
+with a certificate and no password (EAP-TLS). Networks have their own page,
+"Wi-Fi", and their own card on a device's page. They are set up with `[vpn]`
+because they use the same certificates: one per device, named for a directory
 account, from the CA in `[vpn.issuer]` or Cairn's own. Sending, replacing,
-revoking and renewal before expiry work as they do for an OpenVPN server.
+revoking and renewal before expiry work as they do for a VPN server.
 
 The record holds:
 
@@ -346,11 +347,17 @@ The record holds:
   profile, because a Wi-Fi setting can only trust certificates from its own
   profile.
 
-"Send profile" on a device's page makes a new key, gets a certificate with the
-account name as its common name and the account's UPN as an email SAN, and
-queues one profile holding the CA certificates, the identity as PKCS#12 and
-the Wi-Fi settings. The certificate is always a new one; a VPN certificate
-already on the device is not reused and is not affected.
+"Send profile" on a device's page queues one profile holding the CA
+certificates, the identity and the Wi-Fi settings. The certificate has the
+account name as its common name and the account's UPN as an email SAN. It is
+always a new one; a VPN certificate already on the device is not reused and is
+not affected.
+
+The device makes the key. The profile carries a SCEP request with a one-time
+challenge for `<public_url>/scep/vpn`, as an IKEv2 certificate profile does
+(see "Certificate sign-in" above), so the key never leaves the device and
+nothing is asked of the CA until the device asks. Devices must be able to
+reach that address from wherever they install the profile.
 
 The device announces the certificate's common name as its user name, so the
 RADIUS server must accept a client certificate whose common name is an account
@@ -358,10 +365,11 @@ name, and should check that the account is enabled. Cairn checks the account
 when it issues; after that, refusing a disabled account or a revoked
 certificate is the RADIUS server's job.
 
-Key custody is the same as for OpenVPN: the key exists in memory while the
-profile is built and inside the queued command, and the queued copy is removed
-when the device confirms or refuses the install. The PKCS#12 password is in
-the same profile, so the profile is the secret, not the PKCS#12 encryption.
+A device that already knows the network, from an older profile or a saved
+password, may keep using those settings. Remove the older profile first: the
+device page's "Installed on the device" card lists what the device reports,
+including profiles an earlier MDM server installed, and removes any that MDM
+installed.
 
 Limits:
 

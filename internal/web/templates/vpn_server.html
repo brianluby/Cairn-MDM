@@ -4,7 +4,7 @@
 <body>
   {{template "topbar" .}}
   <main>
-    <p><a href="/admin/vpn">← VPN</a></p>
+    <p>{{if .Form.WiFi}}<a href="/admin/wifi">← Wi-Fi</a>{{else}}<a href="/admin/vpn">← VPN</a>{{end}}</p>
     <h1>{{if .New}}{{if .Form.IKEv2}}Add IKEv2 server{{else if .Form.WiFi}}Add Wi-Fi network{{else}}Add OpenVPN server{{end}}{{else}}{{.Form.Name}}{{end}}</h1>
 
     {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
@@ -33,7 +33,7 @@
     {{end}}
 
     <div class="card" style="padding:24px">
-      <form method="post" action="{{if .New}}/admin/vpn/new{{else}}/admin/vpn/{{.Form.ID}}{{end}}">
+      <form method="post" action="/admin/{{if .Form.WiFi}}wifi{{else}}vpn{{end}}/{{if .New}}new{{else}}{{.Form.ID}}{{end}}">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
 
         <h2 style="margin-top:0">{{if .Form.WiFi}}Network{{else}}Server{{end}}</h2>
@@ -123,9 +123,8 @@
           <span class="sub">These go into every profile; a Wi-Fi setting can only trust certificates from its own profile.</span></p>
 
         <h2>Sign-in</h2>
-        <p class="sub">Devices sign in with a certificate (EAP-TLS) and no password. Cairn makes a key and gets a certificate named for the directory account, the same kind it issues for a VPN.
-        The device announces the account name, so the RADIUS server must accept a certificate whose common name is that account.
-        The key travels to the device inside the profile and is removed from Cairn when the device confirms the install.</p>
+        <p class="sub">Devices sign in with a certificate (EAP-TLS) and no password. The device makes its own key and asks Cairn for a certificate named for the directory account, the same kind Cairn issues for a VPN. The key never leaves the device.
+        The device announces the account name, so the RADIUS server must accept a certificate whose common name is that account.</p>
 
         {{else}}
         <p><label>Addresses, one per line: host port udp or tcp<br>
@@ -187,7 +186,7 @@
     {{if not .New}}
     <h2>Delete</h2>
     <div class="card" style="padding:24px">
-      <form method="post" action="/admin/vpn/{{.Form.ID}}/delete">
+      <form method="post" action="/admin/{{if .Form.WiFi}}wifi{{else}}vpn{{end}}/{{.Form.ID}}/delete">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <p>Deleting this record stops new profiles from being issued for it. Profiles already on devices stay installed and keep working.</p>
         <p><button class="btn danger" type="submit">Delete</button></p>

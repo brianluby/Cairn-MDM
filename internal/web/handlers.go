@@ -382,7 +382,7 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if a.vpn != nil {
-		data["VPN"] = a.deviceVPNRows(r.Context(), d.ID)
+		data["Access"] = a.deviceAccess(r.Context(), d.ID)
 		data["VPNIssuerMissing"] = a.vpnIssuerMissing
 		data["VPNCanIssue"] = a.vpnIssuer != nil
 	}

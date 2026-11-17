@@ -25,7 +25,7 @@ device OS versions and server configuration for every result.
   which server certificates the generated profile names; hardware tests must
   still prove rejection of an unexpected server and an untrusted issuer.
 - A second route exists for a first device test: a Wi-Fi network record on the
-  VPN page sends a per-device profile with a certificate named for a directory
+  Wi-Fi page sends a per-device profile with a certificate named for a directory
   account (see [VPN profiles](vpn-profiles.md#wi-fi-networks)). The account is
   checked in the directory at issuance by an administrator with a fresh second
   factor. It is a user certificate, not the device certificate with a bound

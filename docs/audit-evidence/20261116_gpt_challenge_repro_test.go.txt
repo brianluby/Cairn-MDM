@@ -1,0 +1,11 @@
+package challenge
+import("context";"testing";"time")
+func TestGPTUsedChallengeSurvivesExpiryAndClose(t *testing.T){
+ now:=time.Now().UTC();s,db,h:=testService(t,Options{Now:func()time.Time{return now}})
+ c,e:=s.ForRenewal(context.Background(),"DEVICE1","DEVICE1.devices.example.org");if e!=nil{t.Fatal(e)}
+ if code,_:=ask(h,secret,"","DEVICE1.devices.example.org",keyA,c);code!=200{t.Fatal(code)}
+ now=now.Add(8*24*time.Hour);s.Prune(context.Background())
+ if e=db.CloseSCEPChallenges(context.Background(),"DEVICE1");e!=nil{t.Fatal(e)}
+ if code,_:=ask(h,secret,"","DEVICE1.devices.example.org",keyA,c);code!=200{t.Fatalf("counterexample not reproduced: %d",code)}
+ t.Log("USED challenge returns 200 after eight days, pruning, and explicit closure")
+}

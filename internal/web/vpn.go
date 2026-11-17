@@ -61,6 +61,13 @@ func (a *App) SetVPNIssuer(issuer VPNIssuer, identities VPNIdentityStore, why st
 
 func (a *App) registerVPN(mux *http.ServeMux) {
 	mux.Handle("GET /admin/vpn", a.requireRole(auth.RoleAdmin, a.handleVPN))
+	// Wi-Fi networks are the same records under their own page and addresses.
+	mux.Handle("GET /admin/wifi", a.requireRole(auth.RoleAdmin, a.handleWiFi))
+	mux.Handle("GET /admin/wifi/new", a.requireRole(auth.RoleAdmin, a.handleWiFiNew))
+	mux.Handle("POST /admin/wifi/new", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerCreate)))
+	mux.Handle("GET /admin/wifi/{id}", a.requireRole(auth.RoleAdmin, a.handleVPNServerEdit))
+	mux.Handle("POST /admin/wifi/{id}", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerUpdate)))
+	mux.Handle("POST /admin/wifi/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerDelete)))
 	mux.Handle("GET /admin/vpn/new", a.requireRole(auth.RoleAdmin, a.handleVPNServerNew))
 	mux.Handle("POST /admin/vpn/new", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerCreate)))
 	mux.Handle("POST /admin/vpn/import", a.audited(a.requireRole(auth.RoleAdmin, a.handleVPNServerImport)))
@@ -324,18 +331,45 @@ func (f vpnServerForm) server() (vpn.Server, error) {
 	return s, nil
 }
 
-func (a *App) handleVPN(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleVPN(w http.ResponseWriter, r *http.Request) { a.accessPage(w, r, false) }
+
+func (a *App) handleWiFi(w http.ResponseWriter, r *http.Request) { a.accessPage(w, r, true) }
+
+// accessHome is the list page a record belongs on.
+func accessHome(s vpn.Server) string {
+	if s.IsWiFi() {
+		return "/admin/wifi"
+	}
+	return "/admin/vpn"
+}
+
+// accessPage lists VPN servers or Wi-Fi networks with their certificates. The
+// two are the same kind of record and are kept on separate pages.
+func (a *App) accessPage(w http.ResponseWriter, r *http.Request, wifi bool) {
 	if !a.vpnAvailable(w) {
 		return
 	}
-	servers, err := a.vpn.List(r.Context())
+	all, err := a.vpn.List(r.Context())
 	if err != nil {
 		a.log.Error("list vpn servers", "err", err)
 		http.Error(w, "Cannot read VPN servers. Check that the VPN key file matches this database.", http.StatusServiceUnavailable)
 		return
 	}
+	servers := make([]vpn.Server, 0, len(all))
+	other := map[int64]bool{} // records that belong on the other page
+	for _, s := range all {
+		if s.IsWiFi() == wifi {
+			servers = append(servers, s)
+		} else {
+			other[s.ID] = true
+		}
+	}
+	title := "VPN"
+	if wifi {
+		title = "Wi-Fi"
+	}
 	data := map[string]any{
-		"Title": "VPN", "Servers": servers, "Flash": r.URL.Query().Get("flash"),
+		"Title": title, "WiFiPage": wifi, "Servers": servers, "Flash": r.URL.Query().Get("flash"),
 		"IssuerMissing": a.vpnIssuerMissing, "CanRevoke": a.vpnIssuer != nil && a.vpnIssuer.CanRevoke(),
 	}
 	if a.vpnIdentities != nil {
@@ -355,6 +389,10 @@ func (a *App) handleVPN(w http.ResponseWriter, r *http.Request) {
 			}
 			out := make([]vpnIdentityRow, 0, len(list))
 			for _, v := range list {
+				// A certificate whose record was deleted stays on the VPN page.
+				if other[v.ServerID] || (wifi && serverNames[v.ServerID] == "") {
+					continue
+				}
 				out = append(out, vpnIdentityRow{VPNIdentity: v, DeviceName: names[v.DeviceID], ServerName: serverNames[v.ServerID],
 					Manual: a.vpnIssuer == nil || !a.vpnIssuer.CanRevokeIdentity(v)})
 			}
@@ -390,6 +428,34 @@ type vpnDeviceRow struct {
 	// Offered is the account a profile was sent for when the device has not
 	// yet asked for its certificate.
 	Offered string
+}
+
+// accessSection is one card on a device page: its VPN servers or its Wi-Fi
+// networks.
+type accessSection struct {
+	Title string
+	WiFi  bool
+	Rows  []vpnDeviceRow
+}
+
+// deviceAccess splits a device's rows into a VPN card and a Wi-Fi card,
+// leaving out a card with nothing in it.
+func (a *App) deviceAccess(ctx context.Context, deviceID string) []accessSection {
+	sections := []accessSection{{Title: "VPN"}, {Title: "Wi-Fi", WiFi: true}}
+	for _, row := range a.deviceVPNRows(ctx, deviceID) {
+		i := 0
+		if row.Server.IsWiFi() {
+			i = 1
+		}
+		sections[i].Rows = append(sections[i].Rows, row)
+	}
+	var out []accessSection
+	for _, s := range sections {
+		if len(s.Rows) > 0 {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (a *App) deviceVPNRows(ctx context.Context, deviceID string) []vpnDeviceRow {
@@ -471,10 +537,7 @@ func (a *App) handleVPNIssue(w http.ResponseWriter, r *http.Request) {
 		if s, serr := a.vpn.Get(r.Context(), serverID); serr == nil && s.IsIKEv2() && s.IKEv2.UsesCertificate() {
 			msg = "VPN profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
 		} else if serr == nil && s.IsWiFi() {
-			msg = "Wi-Fi profile for " + v.Owner.AccountName + " queued. It installs when the device next connects."
-			if v.ID == 0 { // an offer: no certificate exists until the device asks
-				msg = "Wi-Fi profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
-			}
+			msg = "Wi-Fi profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
 		}
 	}
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)
@@ -595,13 +658,17 @@ func (a *App) handleVPNRevokedAtCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.log.Info("vpn certificate confirmed revoked at the CA", "identity", v.ID, "serial", v.CertSerial, "user", sessionFrom(r).Identity.Username)
-	http.Redirect(w, r, "/admin/vpn?flash="+url.QueryEscape("Recorded: "+v.CertSerial+" is revoked at the certificate authority."), http.StatusSeeOther)
+	home := "/admin/vpn"
+	if s, err := a.vpn.Get(r.Context(), v.ServerID); err == nil {
+		home = accessHome(s)
+	}
+	http.Redirect(w, r, home+"?flash="+url.QueryEscape("Recorded: "+v.CertSerial+" is revoked at the certificate authority."), http.StatusSeeOther)
 }
 
 func (a *App) renderVPNServer(w http.ResponseWriter, r *http.Request, status int, f vpnServerForm, message string, skipped []string) {
 	w.Header().Set("Cache-Control", "no-store")
 	a.render(w, r, status, "vpn_server.html", map[string]any{
-		"Title": "VPN", "Form": f, "Error": message, "Skipped": skipped, "New": f.ID == 0,
+		"Title": map[bool]string{false: "VPN", true: "Wi-Fi"}[f.WiFi()], "Form": f, "Error": message, "Skipped": skipped, "New": f.ID == 0,
 		"Options": vpn.IKEv2Options(), "KnownCAs": a.knownCANames(),
 		"Flash": r.URL.Query().Get("flash"), "CanIssue": a.vpnIssuer != nil,
 	})
@@ -641,16 +708,19 @@ func (a *App) handleVPNServerNew(w http.ResponseWriter, r *http.Request) {
 		a.renderVPNServer(w, r, http.StatusOK, f, "", nil)
 		return
 	}
-	if r.URL.Query().Get("kind") == vpn.KindWiFi {
-		f := vpnServerForm{Kind: vpn.KindWiFi, Security: vpn.WiFiWPA2Enterprise}
-		// RADIUS servers usually hold certificates from the same PKI as the devices.
-		for _, der := range a.cfg.CAAnchorsDER {
-			f.CAPEM += string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-		}
-		a.renderVPNServer(w, r, http.StatusOK, f, "", nil)
+	a.renderVPNServer(w, r, http.StatusOK, vpnServerForm{KeyDirection: "1", TLSKeyMode: vpn.TLSKeyAuth}, "", nil)
+}
+
+func (a *App) handleWiFiNew(w http.ResponseWriter, r *http.Request) {
+	if !a.vpnAvailable(w) {
 		return
 	}
-	a.renderVPNServer(w, r, http.StatusOK, vpnServerForm{KeyDirection: "1", TLSKeyMode: vpn.TLSKeyAuth}, "", nil)
+	f := vpnServerForm{Kind: vpn.KindWiFi, Security: vpn.WiFiWPA2Enterprise}
+	// RADIUS servers usually hold certificates from the same PKI as the devices.
+	for _, der := range a.cfg.CAAnchorsDER {
+		f.CAPEM += string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	}
+	a.renderVPNServer(w, r, http.StatusOK, f, "", nil)
 }
 
 // handleVPNServerImport reads a client .ovpn file into the new-server form. It
@@ -688,7 +758,7 @@ func (a *App) handleVPNServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.log.Info("vpn server created", "slug", s.Slug, "user", sessionFrom(r).Identity.Username)
-	http.Redirect(w, r, "/admin/vpn?flash="+url.QueryEscape("Server saved."), http.StatusSeeOther)
+	http.Redirect(w, r, accessHome(s)+"?flash="+url.QueryEscape("Saved."), http.StatusSeeOther)
 }
 
 func (a *App) vpnServerFromPath(w http.ResponseWriter, r *http.Request) (vpn.Server, bool) {
@@ -742,7 +812,7 @@ func (a *App) handleVPNServerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.log.Info("vpn server updated", "slug", current.Slug, "user", sessionFrom(r).Identity.Username)
-	http.Redirect(w, r, "/admin/vpn?flash="+url.QueryEscape("Server saved. Profiles already on devices keep their old settings until they are issued again."), http.StatusSeeOther)
+	http.Redirect(w, r, accessHome(current)+"?flash="+url.QueryEscape("Saved. Profiles already on devices keep their old settings until they are issued again."), http.StatusSeeOther)
 }
 
 func (a *App) handleVPNServerDelete(w http.ResponseWriter, r *http.Request) {
@@ -759,7 +829,7 @@ func (a *App) handleVPNServerDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.log.Info("vpn server deleted", "slug", s.Slug, "user", sessionFrom(r).Identity.Username)
-	http.Redirect(w, r, "/admin/vpn?flash="+url.QueryEscape("Server deleted. Profiles already on devices are not removed."), http.StatusSeeOther)
+	http.Redirect(w, r, accessHome(s)+"?flash="+url.QueryEscape("Deleted. Profiles already on devices are not removed."), http.StatusSeeOther)
 }
 
 func vpnFormError(err error) string {
