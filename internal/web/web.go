@@ -335,6 +335,7 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("GET /admin/devices/{id}", a.requireRole(auth.RoleOperator, a.handleDeviceDetail))
 	mux.Handle("POST /admin/devices/{id}/renew", a.audited(a.requireRole(auth.RoleAdmin, a.handleDeviceRenew)))
 	mux.Handle("POST /admin/devices/{id}/refresh", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceRefresh)))
+	mux.Handle("POST /admin/devices/{id}/profile-list", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceProfileList)))
 	mux.Handle("POST /admin/devices/{id}/install", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceInstall)))
 	mux.Handle("POST /admin/devices/{id}/remove", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceRemove)))
 

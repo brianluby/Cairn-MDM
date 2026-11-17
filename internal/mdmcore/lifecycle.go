@@ -34,6 +34,7 @@ type InstalledProfile struct {
 	DisplayName  string
 	Organization string
 	PayloadTypes []string
+	Managed      bool // installed by MDM, so a RemoveProfile command can remove it
 }
 
 // HasPayload reports whether the profile carries a payload of the given type.
@@ -71,6 +72,7 @@ func profileListFromRaw(raw []byte) ([]InstalledProfile, bool) {
 			continue
 		}
 		p := InstalledProfile{Identifier: str(m, "PayloadIdentifier"), DisplayName: str(m, "PayloadDisplayName"), Organization: str(m, "PayloadOrganization")}
+		p.Managed, _ = m["IsManaged"].(bool)
 		content, _ := m["PayloadContent"].([]any)
 		for _, c := range content {
 			if cm, ok := c.(map[string]any); ok {

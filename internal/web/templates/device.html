@@ -241,6 +241,53 @@
     </form>
     {{end}}
 
+    {{if .CanListProfiles}}
+    <h2>Installed on the device</h2>
+    <div class="card">
+      {{if .Installed}}
+      <table>
+        <thead>
+          <tr><th>Profile</th><th>Holds</th><th></th></tr>
+        </thead>
+        <tbody>
+          {{range $i, $p := .Installed}}
+          <tr>
+            <td>
+              {{if $p.Name}}{{$p.Name}}{{else}}(no name){{end}}
+              <div class="sub mono">{{$p.Identifier}}</div>
+              {{if $p.Organization}}<div class="sub">{{$p.Organization}}</div>{{end}}
+            </td>
+            <td class="sub mono">{{range $p.PayloadTypes}}{{.}}<br>{{end}}</td>
+            <td style="text-align:right">
+              {{if $p.HasPayload "com.apple.mdm"}}<span class="sub">Enrollment profile</span>
+              {{else if not $p.Managed}}<span class="sub">Installed by hand; remove it on the device</span>
+              {{else}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/remove"
+                    onsubmit="return confirm('Remove {{$p.Name}} ({{$p.Identifier}}) from {{$.Device.DisplayName}}? The device loses every setting in that profile.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="intent" value="{{$.Intent}}-installed-{{$i}}">
+                <input type="hidden" name="identifier" value="{{$p.Identifier}}">
+                <button class="btn link" type="submit">Remove</button>
+              </form>
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">As the device reported at {{.InstalledAt}} UTC. This includes profiles Cairn did not install, such as those an earlier MDM server left.
+      If Cairn assigns a profile through a group, removing it here lasts only until the group installs it again.</p>
+      {{else}}
+      <div class="empty">The device has not been asked for its profiles yet.</div>
+      {{end}}
+    </div>
+    <form method="post" action="/admin/devices/{{.Device.ID}}/profile-list" style="margin-top:12px">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="intent" value="{{.Intent}}-profile-list">
+      <button class="btn" type="submit">Ask the device for its profiles</button>
+    </form>
+    {{end}}
+
     <h2>Command history</h2>
     <div class="card">
       {{if .Commands}}

@@ -238,6 +238,15 @@ func (c *Commander) SendProfileListAs(ctx context.Context, uuid, id string) erro
 	return c.enqueue(ctx, []string{id}, cmd)
 }
 
+// SendProfileList asks devices which profiles they have installed.
+func (c *Commander) SendProfileList(ctx context.Context, ids ...string) error {
+	cmd, err := commandAs(newCommandUUID(), map[string]any{"RequestType": "ProfileList"})
+	if err != nil {
+		return err
+	}
+	return c.enqueue(ctx, ids, cmd)
+}
+
 // SendRemoveProfile removes the profile with the given PayloadIdentifier.
 func (c *Commander) SendRemoveProfile(ctx context.Context, identifier string, ids ...string) error {
 	cmd, err := RemoveProfileCommand(identifier)

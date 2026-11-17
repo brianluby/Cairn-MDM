@@ -370,6 +370,17 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		data["Certificates"] = mine
 	}
+	if lister, ok := a.devices.(installedProfileSource); ok {
+		installed, err := lister.InstalledProfiles(r.Context(), d.ID)
+		if err != nil {
+			a.log.Error("installed profiles", "id", d.ID, "err", err)
+		}
+		data["Installed"] = installed
+		data["CanListProfiles"] = true
+		if len(installed) > 0 {
+			data["InstalledAt"] = installed[0].SeenAt
+		}
+	}
 	if a.vpn != nil {
 		data["VPN"] = a.deviceVPNRows(r.Context(), d.ID)
 		data["VPNIssuerMissing"] = a.vpnIssuerMissing
@@ -496,6 +507,16 @@ func (a *App) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("No profile identifier given."), http.StatusSeeOther)
 		return
 	}
+	// Removing the profile that holds the management settings ends management.
+	if lister, ok := a.devices.(installedProfileSource); ok {
+		installed, _ := lister.InstalledProfiles(r.Context(), id)
+		for _, p := range installed {
+			if p.Identifier == identifier && p.HasPayload("com.apple.mdm") {
+				http.Redirect(w, r, back+"?flash="+url.QueryEscape("That is the enrollment profile. Removing it would end management of this device, so it is not removed from here."), http.StatusSeeOther)
+				return
+			}
+		}
+	}
 	if err := a.cmd.SendRemoveProfile(ctx, identifier, id); err != nil {
 		a.log.Error("send remove profile", "id", id, "identifier", identifier, "err", err)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Failed to queue removal."), http.StatusSeeOther)
@@ -503,6 +524,40 @@ func (a *App) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	a.log.Info("remove profile queued", "id", id, "identifier", identifier, "user", sessionFrom(r).Identity.Username)
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape("Remove queued."), http.StatusSeeOther)
+}
+
+// installedProfileSource reads the profiles a device last reported; *sqlite.DB
+// provides it.
+type installedProfileSource interface {
+	InstalledProfiles(ctx context.Context, deviceID string) ([]sqlite.DeviceProfile, error)
+}
+
+// handleDeviceProfileList asks the device which profiles it has installed. The
+// answer is stored when the device next connects.
+func (a *App) handleDeviceProfileList(w http.ResponseWriter, r *http.Request) {
+	if !a.checkCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	ctx, ok := a.deviceCommandIntent(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	back := "/admin/devices/" + id
+	asker, ok := a.cmd.(interface {
+		SendProfileList(ctx context.Context, ids ...string) error
+	})
+	if !ok {
+		http.Redirect(w, r, back+"?flash="+url.QueryEscape("This server cannot ask a device for its profiles."), http.StatusSeeOther)
+		return
+	}
+	if err := asker.SendProfileList(ctx, id); err != nil {
+		a.log.Error("send profile list", "id", id, "err", err)
+		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Failed to queue the request."), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape("Asked the device for its profiles. Reload this page after it next connects."), http.StatusSeeOther)
 }
 
 func (a *App) handleDeviceRefresh(w http.ResponseWriter, r *http.Request) {
