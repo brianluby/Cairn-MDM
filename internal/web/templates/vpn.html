@@ -13,7 +13,7 @@
       {{if .Servers}}
       <table>
         <thead>
-          <tr><th>Server</th><th>Type</th><th>Addresses</th><th>Certificate name</th><th>Sign-in</th></tr>
+          <tr><th>Server</th><th>Type</th><th>Addresses or network</th><th>Certificate name</th><th>Sign-in</th></tr>
         </thead>
         <tbody>
           {{range .Servers}}
@@ -29,6 +29,11 @@
             <td class="sub">
               {{if eq .IKEv2.SignIn "password"}}Account name and password{{else if eq .IKEv2.SignIn "eap-tls"}}Certificate (EAP-TLS){{else}}Certificate{{end}}{{if .OnDemand}}, connects on demand{{end}}
             </td>
+            {{else if .IsWiFi}}
+            <td>Wi-Fi network</td>
+            <td class="mono">{{.WiFi.SSID}}</td>
+            <td class="mono">{{range .WiFi.ServerNames}}{{.}}<br>{{end}}</td>
+            <td class="sub">Certificate (EAP-TLS)</td>
             {{else}}
             <td>OpenVPN</td>
             <td class="mono">{{range .Remotes}}{{.Host}} {{.Port}} {{.Proto}}<br>{{end}}</td>
@@ -42,10 +47,10 @@
         </tbody>
       </table>
       {{else}}
-      <div class="empty">No servers yet. Add one to issue VPN profiles to devices.</div>
+      <div class="empty">No servers yet. Add one to issue VPN or Wi-Fi profiles to devices.</div>
       {{end}}
     </div>
-    <p style="margin-top:12px"><a class="btn" href="/admin/vpn/new">Add OpenVPN server</a> <a class="btn" href="/admin/vpn/new?kind=ikev2">Add IKEv2 server</a></p>
+    <p style="margin-top:12px"><a class="btn" href="/admin/vpn/new">Add OpenVPN server</a> <a class="btn" href="/admin/vpn/new?kind=ikev2">Add IKEv2 server</a> <a class="btn" href="/admin/vpn/new?kind=wifi">Add Wi-Fi network</a></p>
     <p class="sub">Send a profile from a device's page.</p>
 
     {{if .IssuerMissing}}<div class="card callout error">VPN certificates cannot be issued yet: {{.IssuerMissing}}</div>{{end}}

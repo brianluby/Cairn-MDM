@@ -717,3 +717,159 @@ func TestIKEv2PasswordProfileIsDownloadedNotPushed(t *testing.T) {
 		t.Fatal("an OpenVPN profile was offered as a download")
 	}
 }
+
+// wifiNetwork adds a Wi-Fi record that trusts the fixture's CA.
+func (f *fixture) wifiNetwork(t *testing.T) int64 {
+	t.Helper()
+	office, err := f.servers.Get(context.Background(), f.server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := f.servers.Create(context.Background(), vpn.Server{
+		Name: "Office Wi-Fi", Slug: "office-wifi", Kind: vpn.KindWiFi, CAPEM: office.CAPEM,
+		WiFi: vpn.WiFi{SSID: "Office Secure", Security: vpn.WiFiWPA2Enterprise, ServerNames: []string{"radius.example.org"}},
+	}, "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func wifiProfileOf(t *testing.T, cmd *mdm.Command) (identifier string, identity, eap map[string]any) {
+	t.Helper()
+	var c struct {
+		Command struct {
+			RequestType string
+			Payload     []byte
+		}
+	}
+	if err := plist.Unmarshal(cmd.Raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Command.RequestType != "InstallProfile" {
+		t.Fatalf("command is %s, want InstallProfile", c.Command.RequestType)
+	}
+	if err := vpn.CheckWiFi(c.Command.Payload); err != nil {
+		t.Fatalf("queued profile fails the install rules: %v", err)
+	}
+	var top map[string]any
+	if err := plist.Unmarshal(c.Command.Payload, &top); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range top["PayloadContent"].([]any) {
+		switch p := p.(map[string]any); p["PayloadType"] {
+		case "com.apple.security.pkcs12":
+			identity = p
+		case "com.apple.wifi.managed":
+			eap = p["EAPClientConfiguration"].(map[string]any)
+		}
+	}
+	return top["PayloadIdentifier"].(string), identity, eap
+}
+
+func TestWiFiProfileGetsItsOwnCertificateAndLeavesNoKeyBehind(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	svc := f.service(t, f.backend)
+	wifi := f.wifiNetwork(t)
+
+	// The device already has a VPN certificate for the same account.
+	vpnIdentity, err := svc.Issue(ctx, "PHONE1", f.server, "alice", "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.device(t, "PHONE1", "Acknowledged")
+
+	v, err := svc.Issue(ctx, "PHONE1", wifi, "alice", "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ServerID != wifi || v.State != sqlite.VPNIssued || v.DeployStatus != "sent" || v.CertSerial == vpnIdentity.CertSerial || v.SPKISHA256 == vpnIdentity.SPKISHA256 {
+		t.Fatalf("Wi-Fi identity = %+v; it must be a new key and certificate", v)
+	}
+	leaf, err := x509.ParseCertificate(v.LeafDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := f.device(t, "PHONE1", "")
+	identifier, identity, eap := wifiProfileOf(t, cmd)
+	if identifier != "org.example.wifi.cert.office-wifi" {
+		t.Fatalf("profile identifier = %q", identifier)
+	}
+	if eap["UserName"] != leaf.Subject.CommonName || eap["UserName"] != "alice" {
+		t.Fatalf("UserName = %v, certificate common name = %q", eap["UserName"], leaf.Subject.CommonName)
+	}
+	p12 := identity["PayloadContent"].([]byte)
+	var queued []byte
+	f.db.SQL().QueryRow(`SELECT v FROM nano_kv WHERE bucket='queue' AND k=?`, cmd.CommandUUID+".raw").Scan(&queued)
+	var body struct{ Command struct{ Payload []byte } }
+	if err := plist.Unmarshal(queued, &body); err != nil || !bytes.Contains(body.Command.Payload, []byte(identity["Password"].(string))) {
+		t.Fatal("expected the identity inside the queued command before the device answers")
+	}
+
+	f.device(t, "PHONE1", "Acknowledged")
+	if v, _ = f.db.GetVPNIdentity(ctx, v.ID); v.DeployStatus != "installed" {
+		t.Fatalf("deploy status after the device answered = %q", v.DeployStatus)
+	}
+	rows, err := f.db.SQL().Query(`SELECT v FROM nano_kv`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var val []byte
+		if err := rows.Scan(&val); err != nil {
+			t.Fatal(err)
+		}
+		var c struct{ Command struct{ Payload []byte } }
+		if bytes.Contains(val, p12) || bytes.Contains(val, []byte(identity["Password"].(string))) ||
+			(plist.Unmarshal(val, &c) == nil && bytes.Contains(c.Command.Payload, []byte("com.apple.security.pkcs12"))) {
+			t.Fatal("the identity is still in the database after the device acknowledged")
+		}
+	}
+
+	// The VPN certificate is another record's and stays in use.
+	if got, _ := f.db.GetVPNIdentity(ctx, vpnIdentity.ID); got.State != sqlite.VPNIssued || got.DeployStatus != "installed" {
+		t.Fatalf("VPN identity after the Wi-Fi profile = %s/%s", got.State, got.DeployStatus)
+	}
+
+	// A second send replaces the profile in place and retires the first certificate.
+	second, err := svc.Issue(ctx, "PHONE1", wifi, "alice", "nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _, _ := wifiProfileOf(t, f.device(t, "PHONE1", "Acknowledged")); again != identifier {
+		t.Fatalf("second profile identifier = %q; it would not replace the first", again)
+	}
+	first, _ := f.db.GetVPNIdentity(ctx, v.ID)
+	second, _ = f.db.GetVPNIdentity(ctx, second.ID)
+	if first.State != sqlite.VPNSuperseded || second.State != sqlite.VPNIssued || second.DeployStatus != "installed" {
+		t.Fatalf("after the second send: first=%s second=%s/%s", first.State, second.State, second.DeployStatus)
+	}
+}
+
+func TestWiFiProfileRefusals(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	svc := f.service(t, f.backend)
+	wifi := f.wifiNetwork(t)
+
+	if err := f.db.DeviceEnrolled(ctx, mdmcore.DeviceRecord{ID: "MAC1", UDID: "MAC1", Name: "MAC1", Model: "MacBookPro18,3", Product: "Mac14,5"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.DeviceTokenUpdated(ctx, "MAC1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Issue(ctx, "MAC1", wifi, "alice", "nick"); !errors.Is(err, vpn.ErrWiFiPlatform) {
+		t.Fatalf("Mac: err = %v, want ErrWiFiPlatform", err)
+	}
+
+	f.dir.disabled = true
+	if _, err := svc.Issue(ctx, "PHONE1", wifi, "alice", "nick"); !errors.Is(err, vpn.ErrOwnerIneligible) {
+		t.Fatalf("disabled owner: err = %v, want ErrOwnerIneligible", err)
+	}
+	if cmd := f.device(t, "PHONE1", ""); cmd != nil {
+		t.Fatal("a profile was queued for a disabled owner")
+	}
+}

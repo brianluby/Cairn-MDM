@@ -6,6 +6,11 @@
   administrator: `[vpn] renew_before_days` (off by default). The owner's
   account is checked in the directory first. See
   [VPN profiles](docs/vpn-profiles.md).
+- Wi-Fi networks that sign in with a certificate (EAP-TLS). A network record
+  sits beside the VPN servers; sending its profile from a device's page issues
+  a new certificate for the account and installs it with the network's
+  settings. iPhone and iPad only, and not yet run on a device. See
+  [VPN profiles](docs/vpn-profiles.md#wi-fi-networks).
 
 ## v0.2.0-beta.1 (November 16, 2026)
 

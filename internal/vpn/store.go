@@ -49,6 +49,7 @@ func NewServers(rows RowStore, key []byte) (*Servers, error) {
 type storedConfig struct {
 	Kind           string      `json:"kind,omitempty"` // absent on OpenVPN records
 	IKEv2          *IKEv2      `json:"ikev2,omitempty"`
+	WiFi           *WiFi       `json:"wifi,omitempty"`
 	Remotes        []Remote    `json:"remotes"`
 	VerifyX509Name string      `json:"verify_x509_name"`
 	CAPEM          string      `json:"ca_pem"`
@@ -102,6 +103,9 @@ func (c *Servers) fromRow(r sqlite.VPNServerRow) (Server, error) {
 	if cfg.Kind == KindIKEv2 && cfg.IKEv2 != nil {
 		s.Kind, s.IKEv2 = KindIKEv2, *cfg.IKEv2
 	}
+	if cfg.Kind == KindWiFi && cfg.WiFi != nil {
+		s.Kind, s.WiFi = KindWiFi, *cfg.WiFi
+	}
 	if len(r.SealedKey) > 0 {
 		key, err := c.openKey(r.Slug, r.SealedKey)
 		if err != nil {
@@ -115,6 +119,9 @@ func (c *Servers) fromRow(r sqlite.VPNServerRow) (Server, error) {
 func toConfig(s Server) ([]byte, error) {
 	if s.IsIKEv2() {
 		return json.Marshal(storedConfig{Kind: KindIKEv2, IKEv2: &s.IKEv2, CAPEM: s.CAPEM, OnDemand: s.OnDemand})
+	}
+	if s.IsWiFi() {
+		return json.Marshal(storedConfig{Kind: KindWiFi, WiFi: &s.WiFi, CAPEM: s.CAPEM})
 	}
 	return json.Marshal(storedConfig{
 		Remotes: s.Remotes, VerifyX509Name: s.VerifyX509Name, CAPEM: s.CAPEM,
@@ -172,7 +179,7 @@ func (c *Servers) Update(ctx context.Context, s Server, actor string) error {
 	}
 	// The kind decides which profile replaces the one on a device; it stays.
 	s.Slug, s.Kind = current.Slug, current.Kind
-	if s.IsIKEv2() {
+	if s.IsIKEv2() || s.IsWiFi() {
 		s.TLSKeyMode, s.TLSKey = TLSKeyNone, ""
 	}
 	if s.TLSKeyMode != TLSKeyNone && s.TLSKey == "" {
@@ -202,7 +209,7 @@ func (c *Servers) toRow(s Server) (sqlite.VPNServerRow, error) {
 		return sqlite.VPNServerRow{}, err
 	}
 	row := sqlite.VPNServerRow{ID: s.ID, Name: s.Name, Slug: s.Slug, Config: cfg}
-	if s.TLSKeyMode != TLSKeyNone && !s.IsIKEv2() {
+	if s.TLSKeyMode != TLSKeyNone && !s.IsIKEv2() && !s.IsWiFi() {
 		if row.SealedKey, err = c.sealKey(s.Slug, s.TLSKey); err != nil {
 			return sqlite.VPNServerRow{}, err
 		}

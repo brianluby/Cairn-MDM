@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -165,10 +166,18 @@ type vpnServerForm struct {
 	InstallCA          bool
 	KeepPassword       bool
 	SplitTunnel        bool
+
+	// Wi-Fi networks.
+	SSID        string
+	Security    string
+	ServerNames string
 }
 
 // IKEv2 reports whether the form is for a native IKEv2 server.
 func (f vpnServerForm) IKEv2() bool { return f.Kind == vpn.KindIKEv2 }
+
+// WiFi reports whether the form is for a Wi-Fi network.
+func (f vpnServerForm) WiFi() bool { return f.Kind == vpn.KindWiFi }
 
 func formFromServer(s vpn.Server, showKey bool) vpnServerForm {
 	f := vpnServerForm{
@@ -176,6 +185,11 @@ func formFromServer(s vpn.Server, showKey bool) vpnServerForm {
 		TLSKeyMode: s.TLSKeyMode, KeyDirection: strconv.Itoa(s.KeyDirection),
 		HasStoredKey: s.ID != 0 && s.TLSKey != "", Cipher: s.Cipher, Auth: s.Auth,
 		UserAuth: s.UserAuth, OnDemand: s.OnDemand,
+	}
+	if s.IsWiFi() {
+		f.Kind, f.SSID, f.Security = vpn.KindWiFi, s.WiFi.SSID, s.WiFi.Security
+		f.ServerNames = strings.Join(s.WiFi.ServerNames, "\n")
+		return f
 	}
 	if s.IsIKEv2() {
 		k := s.IKEv2
@@ -225,6 +239,9 @@ func formFromRequest(r *http.Request) vpnServerForm {
 		PFS: r.PostFormValue("pfs") == "on", TrustedSSIDs: r.PostFormValue("trusted_ssids"),
 		LockOnDemand: r.PostFormValue("lock_on_demand") == "on", InstallCA: r.PostFormValue("install_ca") == "on",
 		KeepPassword: r.PostFormValue("keep_password") == "on", SplitTunnel: r.PostFormValue("split_tunnel") == "on",
+
+		// A network name may begin or end with a space, so it is not trimmed.
+		SSID: r.PostFormValue("ssid"), Security: v("security"), ServerNames: r.PostFormValue("server_names"),
 	}
 }
 
@@ -252,6 +269,10 @@ func (f vpnServerForm) ikev2Server() (vpn.Server, error) {
 func (f vpnServerForm) server() (vpn.Server, error) {
 	if f.IKEv2() {
 		return f.ikev2Server()
+	}
+	if f.WiFi() {
+		return vpn.Server{ID: f.ID, Name: f.Name, Slug: f.Slug, Kind: vpn.KindWiFi, CAPEM: f.CAPEM,
+			WiFi: vpn.WiFi{SSID: f.SSID, Security: f.Security, ServerNames: strings.Fields(f.ServerNames)}}, nil
 	}
 	s := vpn.Server{
 		ID: f.ID, Name: f.Name, Slug: f.Slug, VerifyX509Name: f.VerifyX509Name, CAPEM: f.CAPEM,
@@ -449,6 +470,8 @@ func (a *App) handleVPNIssue(w http.ResponseWriter, r *http.Request) {
 	if a.vpn != nil {
 		if s, serr := a.vpn.Get(r.Context(), serverID); serr == nil && s.IsIKEv2() && s.IKEv2.UsesCertificate() {
 			msg = "VPN profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
+		} else if serr == nil && s.IsWiFi() {
+			msg = "Wi-Fi profile for " + v.Owner.AccountName + " queued. It installs when the device next connects."
 		}
 	}
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)
@@ -611,6 +634,15 @@ func (a *App) handleVPNServerNew(w http.ResponseWriter, r *http.Request) {
 		// Most servers hold a certificate from the same PKI as the devices.
 		if known := a.knownCANames(); len(known) > 0 {
 			f.ServerCertIssuerCN = known[0]
+		}
+		a.renderVPNServer(w, r, http.StatusOK, f, "", nil)
+		return
+	}
+	if r.URL.Query().Get("kind") == vpn.KindWiFi {
+		f := vpnServerForm{Kind: vpn.KindWiFi, Security: vpn.WiFiWPA2Enterprise}
+		// RADIUS servers usually hold certificates from the same PKI as the devices.
+		for _, der := range a.cfg.CAAnchorsDER {
+			f.CAPEM += string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 		}
 		a.renderVPNServer(w, r, http.StatusOK, f, "", nil)
 		return

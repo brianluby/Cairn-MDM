@@ -20,6 +20,7 @@ require (
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/term v0.47.0
 	modernc.org/sqlite v1.34.5
+	software.sslmate.com/src/go-pkcs12 v0.7.4
 )
 
 require (
