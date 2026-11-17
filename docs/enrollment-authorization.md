@@ -1,10 +1,23 @@
 # Enrollment authorization — design (v1.0 security gate)
 
-**Status: design, pre-implementation.** This is the design for the v1.0 roadmap
-item "one-time SCEP challenges" and the security gate recorded in `STATUS.md` and
-`SECURITY.md`. It extends `enrollment-grants-design.md` (Stage 1). Nothing here is
-implemented yet; a device identity certificate must **not** be trusted as a
-network-access credential (e.g. EAP-TLS) until it is.
+**Status: implementation in progress (Phase A/B) on branch
+`feat/enrollment-authorization`.** This is the design for the v1.0 roadmap item and the
+security gate recorded in `STATUS.md` and `SECURITY.md`; it extends
+`enrollment-grants-design.md` (Stage 1). A device identity certificate must still **not**
+be trusted as a network-access credential (e.g. EAP-TLS) until the full gate (below) is
+met and independently verified.
+
+**Implemented so far (branch, not released):** the `internal/issue` package — the
+CA-backend capability interface, `Reconstruct` (reconstruct-don't-validate), and the
+`Broker` (implements SCEP's `CSRSignerContext`): it resolves the grant from the
+per-enrollment SCEP challenge, reconstructs the certificate from server policy + grant,
+takes an atomic single-use claim (`cert_issuance`), delegates signing to a backend, and
+**fails closed to quarantine** on any ambiguity. The **embedded** backend (Cairn signs)
+is the first backend, wired into the embedded SCEP endpoint; the returned leaf is verified
+against the reconstructed intent (raw SAN/EKU/keyusage/validity/public-key checks). The
+issuance state machine (schema 016 + 019) records `ISSUING → ISSUED | FAILED |
+QUARANTINED` and caches the issued leaf for idempotent retries. **Not yet:** the external
+(broker) backend, renewal/replacement, and the operational controls below.
 
 ## The problem it solves
 
@@ -54,6 +67,17 @@ on the same grant fails; a CA timeout keeps the transaction recoverable (poll by
 transaction id) rather than lost. `ISSUED` records the certificate serial,
 closing a **grant → CSR → certificate** audit chain.
 
+Per-grant idempotency is necessary but **not sufficient**: two grants for the same
+device (different keypairs) could each pass their own check and both be signed. The
+durable no-double-issue guarantee is anchored on a **canonical device identity**
+(a stable, immutable identifier — not a mutable UPN or a device-asserted serial)
+and enforced by an **atomic claim-and-issue at the CA**: the CA serializes at most
+one active certificate per identity and consumes the authorization in the *same*
+step. A preflight "does a cert already exist?" query followed by a separate issue
+is a race and must not be used. Ambiguous outcomes (a response lost after the CA
+may have signed) are **quarantined** — never relabeled a definitive failure, and
+never retried as a fresh issuance.
+
 ### 2a. Renewal
 Short lifetimes demand a reliable renewal path — and short lifetimes cannot
 compensate for an unreliable one. Renewal authenticates with the **existing
@@ -81,12 +105,17 @@ dedicated profile + issuing CA, `clientAuth`-only EKU, `basicConstraints
 CA:FALSE`, short fixed validity, namespace/name constraints, and a **policy OID**
 so consumers can *require* "broker-issued" — and verify the relying party
 (e.g. RADIUS) actually **enforces** the OID, not merely the issuer. The issued
-certificate carries **exactly one canonical `rfc822Name`**; the device's requested
+certificate's identity is constructed from policy: a **user** certificate carries
+**exactly one canonical `rfc822Name`** (its owner), while a **user-less device**
+certificate carries **none**; either way the device's requested
 SANs/subject/extensions are dropped. The backend must independently refuse a
 double/unauthorized issuance — e.g. a Cairn-signed, short-TTL, key-bound
 authorization token validated at the CA (stateless, with strict canonical
 encoding + an HSM-protected signing key + a nonce ledger), or a per-transaction
-record the CA atomically creates-and-burns. Both **prevent replay and constrain
+record the CA atomically creates-and-burns. Whichever is chosen, it must
+**atomically claim the canonical device-identity slot** as part of issuing — merely
+burning one token/transaction is not enough, since a second token for the *same*
+identity would still be honored. Both **prevent replay and constrain
 issuance but do not make the CA independent of a *fully compromised* Cairn** — a
 compromised broker can still authorize arbitrary in-namespace identities, which is
 why the operational controls below are mandatory, not optional.
@@ -110,11 +139,42 @@ constructing fields from policy (rule 1). CA key custody is the crux:
   unaffected.
 - Same reconstruct-don't-validate and short-validity rules apply.
 
-Prefer **broker over embedded** wherever a PKI exists — don't put a signing key on
-an internet-adjacent MDM host. The embedded CA is a deliberate, security-load-
-bearing choice, not a frictionless default.
+### The CA backend is a capability interface — no CA is required
+Cairn is **CA-agnostic**. The no-double-issue guarantee is defined over *required
+backend capabilities* (an atomic identity-slot reservation, and a **terminal,
+mutually-exclusive "signed / not-signed" outcome** from the authority that controls
+signing), never over any specific product. Backends provide these to differing
+degrees, and Cairn **fails closed** when a capability is missing — if a backend
+cannot prove a request was *not* signed, the affected enrollment is held
+(quarantined) rather than risk a second certificate.
 
-## Who authorizes the identity — self-service (primary model)
+- **Embedded (`generate`/`import`) is the reference — and the *most capable* — backend:**
+  Cairn is the signer, so "signed / not-signed" is a single local atomic fact. The
+  strongest guarantee is available with **no external PKI at all** (the zero-PKI
+  default).
+- **External SCEP/PKI backends (OpenXPKI, NDES, …) are optional integrations,** each
+  with a capability level discovered per backend and the same fail-closed fallback.
+  None is required.
+
+The tradeoff, not a blanket rule: **embedded** gives the strongest guarantee but you
+operate a CA key (offline root, above); **external** keeps the signing key in your
+existing PKI (nothing on the MDM host) at the cost of a backend-dependent guarantee
+that degrades to quarantine. Choose per deployment; the embedded CA remains a
+deliberate, security-load-bearing choice, not a frictionless default.
+
+## November 2 product decision: administrator-assisted enrollment
+
+Administrator-assisted enrollment is now a first-class supported route, alongside
+self-service. An administrator uses their own authentication, fresh MFA and
+permission to assign a device to a verified directory owner. The owner does not
+need to sign in, register MFA or disclose credentials. Actor and owner remain
+separate, and owner eligibility is rechecked at issuance. The historical
+self-service-primary wording below does not make owner sign-in mandatory for
+this route. See [enrollment and recovery](enrollment-onboarding.md).
+
+This decision does not relax the issuance, audit, revocation or lifecycle gates.
+
+## Earlier rationale: self-service and operator assignment
 
 The name on the certificate is decided when the **grant** is created; the device
 can never assert its own. The strongest way to decide "who gets a grant for owner

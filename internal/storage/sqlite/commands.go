@@ -9,17 +9,22 @@ import (
 
 // CommandEntry is a row of a device's command history.
 type CommandEntry struct {
-	CommandUUID string
-	DeviceID    string
-	RequestType string
-	Status      string
-	Error       string
-	SentAt      string
-	ResultAt    sql.NullString
+	CommandUUID          string
+	DeviceID             string
+	RequestType          string
+	Status               string
+	Error                string
+	SentAt               string
+	ResultAt             sql.NullString
+	NotificationStatus   string
+	NotificationAttempts int
+	NotificationError    string
 }
 
 // Pending reports whether the device has not yet answered.
-func (c CommandEntry) Pending() bool { return c.Status == "Sent" || c.Status == "NotNow" }
+func (c CommandEntry) Pending() bool {
+	return c.Status == "Queued" || c.Status == "Sent" || c.Status == "NotNow"
+}
 
 // compile-time check that DB records command history.
 var _ mdmcore.CommandRecorder = (*DB)(nil)
@@ -39,11 +44,16 @@ func (db *DB) CommandSent(ctx context.Context, deviceID, commandUUID, requestTyp
 // InstallProfile results also resolve the matching profile_deploys row, which
 // is how the reconciler learns a deploy landed (or failed) without polling.
 func (db *DB) CommandResult(ctx context.Context, deviceID, commandUUID, status, errDesc string) error {
-	if _, err := db.sql.ExecContext(ctx,
+	return recordCommandResult(ctx, db.sql, deviceID, commandUUID, status, errDesc)
+}
+
+func recordCommandResult(ctx context.Context, executor sqlExecutor, deviceID, commandUUID, status, errDesc string) error {
+	_, err := executor.ExecContext(ctx,
 		`UPDATE command_history
 		 SET status = ?, error = ?, result_at = datetime('now')
-		 WHERE command_uuid = ? AND device_id = ?`,
-		status, errDesc, commandUUID, deviceID); err != nil {
+		 WHERE command_uuid = ? AND device_id = ? AND status IN ('Sent','Queued','NotNow')`,
+		status, errDesc, commandUUID, deviceID)
+	if err != nil {
 		return err
 	}
 	var deployStatus string
@@ -58,10 +68,18 @@ func (db *DB) CommandResult(ctx context.Context, deviceID, commandUUID, status, 
 	// profile_deploys is keyed (device_id, profile_id) with command_uuid stored;
 	// an InstallProfile UUID is per-device, so command_uuid alone resolves the
 	// right row. Scope by device_id too as a belt-and-suspenders guard.
-	_, err := db.sql.ExecContext(ctx,
+	if _, err = executor.ExecContext(ctx,
 		`UPDATE profile_deploys SET status = ?, updated_at = datetime('now')
-		 WHERE command_uuid = ? AND device_id = ?`, deployStatus, commandUUID, deviceID)
-	return err
+		 WHERE command_uuid = ? AND device_id = ? AND status = 'sent'`, deployStatus, commandUUID, deviceID); err != nil {
+		return err
+	}
+	if err = renewalCommandResult(ctx, executor, deviceID, commandUUID, deployStatus, errDesc); err != nil {
+		return err
+	}
+	if err = vpnOfferCommandResult(ctx, executor, deviceID, commandUUID, deployStatus); err != nil {
+		return err
+	}
+	return vpnCommandResult(ctx, executor, deviceID, commandUUID, deployStatus)
 }
 
 // ListCommands returns the most recent history for a device.
@@ -70,9 +88,8 @@ func (db *DB) ListCommands(ctx context.Context, deviceID string, limit int) ([]C
 		limit = 25
 	}
 	rows, err := db.sql.QueryContext(ctx,
-		`SELECT command_uuid, device_id, request_type, status, error, sent_at, result_at
-		 FROM command_history WHERE device_id = ?
-		 ORDER BY sent_at DESC, command_uuid LIMIT ?`, deviceID, limit)
+		`SELECT h.command_uuid,h.device_id,h.request_type,h.status,h.error,h.sent_at,h.result_at,COALESCE(o.state,''),COALESCE(o.attempts,0),COALESCE(o.last_error,'')
+ FROM command_history h LEFT JOIN push_outbox o ON o.command_uuid=h.command_uuid AND o.device_id=h.device_id WHERE h.device_id=? ORDER BY h.sent_at DESC,h.command_uuid LIMIT ?`, deviceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +98,7 @@ func (db *DB) ListCommands(ctx context.Context, deviceID string, limit int) ([]C
 	for rows.Next() {
 		var c CommandEntry
 		if err := rows.Scan(&c.CommandUUID, &c.DeviceID, &c.RequestType, &c.Status,
-			&c.Error, &c.SentAt, &c.ResultAt); err != nil {
+			&c.Error, &c.SentAt, &c.ResultAt, &c.NotificationStatus, &c.NotificationAttempts, &c.NotificationError); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

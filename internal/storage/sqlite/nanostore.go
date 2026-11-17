@@ -17,7 +17,9 @@ import (
 // earlier certs on migration; the override keeps them all.
 type nanoStore struct {
 	*nanokv.KV
-	ca *certAuthStore
+	ca  *certAuthStore
+	db  *DB
+	log *slog.Logger
 }
 
 func (s *nanoStore) HasCertHash(r *mdm.Request, hash string) (bool, error) {
@@ -41,17 +43,19 @@ func (s *nanoStore) EnrollmentFromHash(ctx context.Context, hash string) (string
 // each wrapped in kvtxn for the (best-effort) transaction semantics NanoMDM's
 // kv layer expects.
 //
-// The transaction wrapper does not provide crash-atomicity across multiple keys
-// — the same caveat NanoMDM's own inmem and diskv backends carry. With a
-// single-writer SQLite pool the operations serialize, which is sufficient at
-// the scale Cairn targets. A future backend can implement native SQLite
-// transactions if a larger deployment needs stronger guarantees.
+// Queue operations override the KV wrapper with native SQLite transactions,
+// including the command history written at enqueue. Other KV operations retain
+// the upstream best-effort transaction behavior.
 func (db *DB) NanoStorage(log *slog.Logger) storage.AllStorage {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	return &nanoStore{KV: newNanoKV(db.sql, log), ca: &certAuthStore{db: db.sql}, db: db, log: log}
+}
+
+func newNanoKV(executor sqlExecutor, log *slog.Logger) *nanokv.KV {
 	bucket := func(name string) *kvBucket {
-		return &kvBucket{db: db.sql, name: name, log: log}
+		return &kvBucket{db: executor, name: name, log: log}
 	}
 	kv := nanokv.New(
 		kvtxn.New(bucket("users")),
@@ -61,7 +65,7 @@ func (db *DB) NanoStorage(log *slog.Logger) storage.AllStorage {
 		kvtxn.New(bucket("devices")),
 		kvtxn.New(bucket("enrollments")),
 	)
-	return &nanoStore{KV: kv, ca: &certAuthStore{db: db.sql}}
+	return kv
 }
 
 // ensure the wrapper still satisfies AllStorage.

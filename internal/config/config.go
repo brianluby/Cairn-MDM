@@ -10,6 +10,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -55,6 +56,11 @@ const (
 	// CAExternal points enrollment profiles at a third-party SCEP server (OpenXPKI,
 	// Microsoft NDES) and never issues certificates itself.
 	CAExternal CAMode = "external"
+	// CABroker runs Cairn's own device-facing SCEP endpoint through the enrollment-
+	// authorization Broker, which relays to a backend SCEP CA (OpenXPKI/NDES) over a
+	// restricted path signed by an RA identity. The backend SCEP is never exposed to
+	// devices; Cairn owns authorization and reconstructs the certificate.
+	CABroker CAMode = "broker"
 )
 
 // Embedded reports whether the mode runs Cairn's own SCEP endpoint (generate or
@@ -70,7 +76,157 @@ type Config struct {
 	Auth       Auth       `toml:"auth"`
 	Enrollment Enrollment `toml:"enrollment"`
 	Profile    Profile    `toml:"profile"`
+	Alerts     Alerts     `toml:"alerts"`
+	RADIUS     RADIUS     `toml:"radius"`
+	Issuance   Issuance   `toml:"issuance"`
+	VPN        VPN        `toml:"vpn"`
+	Renewal    Renewal    `toml:"renewal"`
 	Log        Log        `toml:"log"`
+}
+
+// Renewal controls what happens to the identity certificate a device checks in
+// with as it nears and passes its expiry.
+type Renewal struct {
+	// Enabled makes Cairn push each device its enrollment profile again before
+	// the certificate expires, so the device gets a new one without anyone
+	// touching it. Built for ca.mode external.
+	Enabled bool `toml:"enabled"`
+	// RenewBeforeDays is how long before expiry a renewal starts. Default 60.
+	RenewBeforeDays int `toml:"renew_before_days"`
+	// ExpiredGraceDays lets a device whose certificate expired no longer ago
+	// than this keep checking in, for renewal and nothing else. Default 0: an
+	// expired certificate is refused and the device has to enroll again.
+	ExpiredGraceDays int `toml:"expired_grace_days"`
+	// ServerHosts are further host names (host or host:port) devices check in
+	// through, besides the one in server.public_url. A renewed profile keeps
+	// the name the device already uses, and only names listed here are trusted
+	// for that.
+	ServerHosts []string `toml:"server_hosts"`
+	// ManualOnly starts renewals only from a device's page, never on the
+	// schedule. Use it to try renewal on one device before the rest.
+	ManualOnly bool `toml:"manual_only"`
+}
+
+// WithDefaults fills zero fields.
+func (r Renewal) WithDefaults() Renewal {
+	if r.RenewBeforeDays <= 0 {
+		r.RenewBeforeDays = 60
+	}
+	return r
+}
+
+// VPN turns on per-device OpenVPN profiles: admin-managed server records and
+// profiles rendered from them. Off by default.
+type VPN struct {
+	Enabled bool `toml:"enabled"`
+	// LeafValidityDays is the VPN certificate lifetime when Cairn's own CA signs
+	// it. Default 365: there is no automatic re-issue yet, so an administrator
+	// issues the profile again before expiry.
+	LeafValidityDays int `toml:"leaf_validity_days"`
+	// KeyType is the key Cairn generates for each VPN certificate: "rsa2048"
+	// (default) or "p256".
+	KeyType string    `toml:"key_type"`
+	Issuer  VPNIssuer `toml:"issuer"`
+}
+
+// VPNIssuer selects the CA that signs VPN certificates. It is separate from
+// ca.mode because a VPN server usually trusts one particular CA, which need not
+// be the one that signs device identities.
+type VPNIssuer struct {
+	// Backend is "embedded" (Cairn's own CA; the default) or "scep" (a SCEP CA
+	// that accepts requests signed by Cairn's RA certificate).
+	Backend    string `toml:"backend"`
+	SCEPURL    string `toml:"scep_url"`
+	RACertFile string `toml:"ra_cert_file"`
+	RAKeyFile  string `toml:"ra_key_file"`
+	// CAChainFile pins the SCEP CA: PEM certificates the endpoint's own
+	// certificates and every issued certificate must chain to.
+	CAChainFile string `toml:"ca_chain_file"`
+	// MaxLeafValidityDays is the longest lifetime Cairn accepts from the SCEP CA,
+	// which sets the real one. Default 400.
+	MaxLeafValidityDays int `toml:"max_leaf_validity_days"`
+}
+
+// WithDefaults fills zero fields.
+func (v VPN) WithDefaults() VPN {
+	if v.Issuer.Backend == "" {
+		v.Issuer.Backend = "embedded"
+	}
+	if v.Issuer.MaxLeafValidityDays <= 0 {
+		v.Issuer.MaxLeafValidityDays = 400
+	}
+	if v.LeafValidityDays <= 0 {
+		v.LeafValidityDays = 365
+	}
+	if v.KeyType == "" {
+		v.KeyType = "rsa2048"
+	}
+	return v
+}
+
+// Issuance tunes certificates the embedded CA signs for devices.
+type Issuance struct {
+	// LeafValidityDays is the device certificate lifetime. Default 365: this
+	// release has no renewal path, so a device must be re-enrolled before its
+	// certificate expires, and a shorter life only brings that forward.
+	LeafValidityDays int `toml:"leaf_validity_days"`
+}
+
+// WithDefaults fills zero fields.
+func (i Issuance) WithDefaults() Issuance {
+	if i.LeafValidityDays <= 0 {
+		i.LeafValidityDays = 365
+	}
+	return i
+}
+
+// RADIUS names the network-access acceptance points that rely on Cairn-issued
+// certificates and the token they use to report observed Access-Rejects. The
+// quarantine release gate requires an ingested rejection for every enumerated
+// serial from every acceptance point listed here; with none listed, release
+// covers MDM only and the console says so.
+type RADIUS struct {
+	AcceptancePoints []string `toml:"acceptance_points"`
+	IngestTokenFile  string   `toml:"ingest_token_file"`
+	IngestTokenEnv   string   `toml:"ingest_token_env"`
+	// resolved:
+	IngestToken string `toml:"-"`
+}
+
+// Alerts configures the out-of-band notification path: a webhook (ntfy-style
+// POST with Title/Priority headers, but any URL that accepts a text body works)
+// that receives certificate-expiry, quarantine, backup-freshness and backup
+// outcome messages plus a periodic heartbeat, so silence is not mistaken for
+// health. Disabled unless a webhook URL is configured.
+type Alerts struct {
+	WebhookURL     string `toml:"webhook_url"`
+	WebhookURLFile string `toml:"webhook_url_file"`
+	WebhookURLEnv  string `toml:"webhook_url_env"`
+	// HeartbeatHours is how often a heartbeat is sent (default 24).
+	HeartbeatHours int `toml:"heartbeat_hours"`
+	// APNSWarnDays is the expiry warning horizon (default 30).
+	APNSWarnDays int `toml:"apns_warn_days"`
+	// BackupDir, when set, is watched for bundles; none newer than
+	// BackupMaxAgeHours (default 36) raises an alert.
+	BackupDir         string `toml:"backup_dir"`
+	BackupMaxAgeHours int    `toml:"backup_max_age_hours"`
+}
+
+// Enabled reports whether a webhook is configured.
+func (a Alerts) Enabled() bool { return a.WebhookURL != "" }
+
+// WithDefaults fills zero fields with the documented defaults.
+func (a Alerts) WithDefaults() Alerts {
+	if a.HeartbeatHours <= 0 {
+		a.HeartbeatHours = 24
+	}
+	if a.APNSWarnDays <= 0 {
+		a.APNSWarnDays = 30
+	}
+	if a.BackupMaxAgeHours <= 0 {
+		a.BackupMaxAgeHours = 36
+	}
+	return a
 }
 
 // Enrollment configures device-enrollment access.
@@ -79,6 +235,14 @@ type Enrollment struct {
 	// enrollment requires a single-use grant link (/e/{token}). Set true only
 	// for a low-stakes homelab that accepts an open enrollment endpoint.
 	AllowOpen bool `toml:"allow_open"`
+	// CheckOutWhenRemoved makes a device tell Cairn when its enrollment
+	// profile is removed, so the device shows as gone. Default false.
+	CheckOutWhenRemoved bool `toml:"check_out_when_removed"`
+	// BootstrapToken declares that Cairn keeps a Mac's bootstrap token.
+	// Default false. Both settings also go into the profile that renews a
+	// device's certificate: set them to what the devices' current enrollment
+	// profiles carry, or a renewal changes how those devices are managed.
+	BootstrapToken bool `toml:"bootstrap_token"`
 }
 
 // Profile configures configuration-profile handling.
@@ -163,7 +327,10 @@ func (p LoginPolicy) WithDefaults() LoginPolicy {
 // an authenticated user matching no mapped group gets default_role. There is
 // deliberately no code path where "authenticated" implies "admin".
 type LDAPCfg struct {
-	Enabled bool `toml:"enabled"`
+	// DirectoryID is a stable operator-assigned namespace for AD objectGUIDs.
+	// Leave empty for legacy console-only LDAP; owner resolution then fails closed.
+	DirectoryID string `toml:"directory_id"`
+	Enabled     bool   `toml:"enabled"`
 	// Servers are tried in order (failover), e.g. "ldaps://dc1.example.org:636".
 	// Schemes: ldaps:// (TLS) or ldap:// (plaintext; combine with start_tls).
 	Servers  []string `toml:"servers"`
@@ -177,7 +344,7 @@ type LDAPCfg struct {
 	BindPasswordFile string `toml:"bind_password_file"`
 	BindPasswordEnv  string `toml:"bind_password_env"`
 	// UserFilter locates the login account; %s is the escaped username.
-	// Default matches Active Directory sAMAccountName.
+	// Default matches Active Directory sAMAccountName or userPrincipalName.
 	UserFilter string `toml:"user_filter"`
 	// GroupRoles maps group DNs (case-insensitive) to "admin", "operator", or
 	// "user". Membership is matched against the user's memberOf values.
@@ -293,12 +460,17 @@ type CA struct {
 	Mode     CAMode        `toml:"mode"`
 	Import   CAImportCfg   `toml:"import"`
 	External CAExternalCfg `toml:"external"`
+	Broker   CABrokerCfg   `toml:"broker"`
 }
 
-// CAImportCfg supplies an existing CA cert+key for import mode.
+// CAImportCfg supplies an existing CA cert+key for import mode. When RootCertFile is
+// also set, Cairn runs TWO-TIER: cert_file/key_file are the online ISSUING CA and
+// root_cert_file is the OFFLINE ROOT's certificate (public only — its key never
+// touches this host). The issuer must be signed by the root.
 type CAImportCfg struct {
-	CertFile string `toml:"cert_file"`
-	KeyFile  string `toml:"key_file"`
+	CertFile     string `toml:"cert_file"`
+	KeyFile      string `toml:"key_file"`
+	RootCertFile string `toml:"root_cert_file"` // set → two-tier (cert/key = issuer)
 }
 
 // CAExternalCfg describes an external SCEP server (external mode only).
@@ -308,6 +480,50 @@ type CAExternalCfg struct {
 	CRLURL        string `toml:"crl_url"`
 	ChallengeEnv  string `toml:"challenge_env"`
 	ChallengeFile string `toml:"challenge_file"`
+	// Lookup replaces the static challenge with one-time challenges the CA
+	// checks with Cairn before it issues.
+	Lookup CAChallengeLookupCfg `toml:"challenge_lookup"`
+	// resolved:
+	Challenge string `toml:"-"`
+}
+
+// CAChallengeLookupCfg turns on one-time SCEP challenges for an external CA
+// that can ask another system whether a challenge is good (OpenXPKI with a
+// connector, for one). The CA calls GET <cairn>/scep-challenge/<certificate
+// name>/<request key identifier>/<presented challenge> with the secret as a
+// bearer token.
+type CAChallengeLookupCfg struct {
+	Enabled    bool   `toml:"enabled"`
+	SecretFile string `toml:"secret_file"`
+	SecretEnv  string `toml:"secret_env"`
+	// AllowedSources limits lookups to these addresses or networks, judged by
+	// the connection's own address.
+	AllowedSources []string `toml:"allowed_sources"`
+	// resolved:
+	Secret string `toml:"-"`
+}
+
+// CABrokerCfg describes the backend SCEP CA that Cairn brokers to (broker mode).
+// The device does grant-gated SCEP to Cairn; Cairn relays the device CSR to this
+// backend over a restricted path, signing the SCEP envelope with the RA identity
+// (an authorized signer at the backend). The backend SCEP is never exposed to
+// devices. The optional service challenge is loaded from env/file, never inline.
+type CABrokerCfg struct {
+	SCEPURL       string `toml:"backend_scep_url"`
+	RACertFile    string `toml:"ra_cert_file"`
+	RAKeyFile     string `toml:"ra_key_file"`
+	CAChainFile   string `toml:"backend_ca_chain_file"` // trust anchor for enrollment profiles + reply parsing
+	CRLURL        string `toml:"crl_url"`
+	ChallengeEnv  string `toml:"challenge_env"`
+	ChallengeFile string `toml:"challenge_file"`
+	PollSeconds   int    `toml:"poll_seconds"` // reconciler poll cadence for PENDING/quarantined (default 3600)
+	// MaxLeafValidityDays is the accepted ceiling (in days) on the validity span of a
+	// certificate the backend CA returns. The backend sets the actual lifetime; a
+	// longer-but-bounded value is a policy choice, not an escalation, so this lets an
+	// operator accept the backend's validity without per-deployment profile tuning.
+	// 0 uses the default (brokerDefaultMaxLeafValidityDays). All other verify checks are
+	// unaffected.
+	MaxLeafValidityDays int `toml:"max_leaf_validity_days"`
 	// resolved:
 	Challenge string `toml:"-"`
 }
@@ -402,6 +618,13 @@ func resolveSecrets(cfg *Config) error {
 		return err
 	}
 	cfg.CA.External.Challenge = ch
+	if cfg.CA.External.Lookup.Enabled {
+		secret, err := readSecret("ca.external.challenge_lookup.secret", "", cfg.CA.External.Lookup.SecretFile, cfg.CA.External.Lookup.SecretEnv)
+		if err != nil {
+			return err
+		}
+		cfg.CA.External.Lookup.Secret = secret
+	}
 
 	// LDAP bind password.
 	if cfg.Auth.LDAP.Enabled {
@@ -411,6 +634,20 @@ func resolveSecrets(cfg *Config) error {
 		}
 		cfg.Auth.LDAP.BindPassword = pw
 	}
+
+	// Alert webhook URL (treated as a secret: ntfy topics are bearer-like).
+	hook, err := readSecret("alerts.webhook_url", cfg.Alerts.WebhookURL, cfg.Alerts.WebhookURLFile, cfg.Alerts.WebhookURLEnv)
+	if err != nil {
+		return err
+	}
+	cfg.Alerts.WebhookURL = hook
+
+	// RADIUS rejection-ingest token.
+	tok, err := readSecret("radius.ingest_token", "", cfg.RADIUS.IngestTokenFile, cfg.RADIUS.IngestTokenEnv)
+	if err != nil {
+		return err
+	}
+	cfg.RADIUS.IngestToken = tok
 
 	// OIDC client secret.
 	if cfg.Auth.OIDC.Enabled {
@@ -444,9 +681,68 @@ func readSecret(name, inline, file, env string) (string, error) {
 	return inline, nil
 }
 
+// ParseSource reads an address or a network in CIDR form.
+func ParseSource(s string) (netip.Prefix, error) {
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p.Masked(), nil
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.PrefixFrom(a, a.BitLen()), nil
+}
+
 // Validate checks that the resolved config is internally consistent.
 func (c Config) Validate() error {
 	var errs []error
+
+	if c.Issuance.LeafValidityDays < 0 || c.Issuance.LeafValidityDays > 825 {
+		errs = append(errs, errors.New("issuance.leaf_validity_days must be between 1 and 825"))
+	}
+	if c.VPN.LeafValidityDays < 0 || c.VPN.LeafValidityDays > 825 {
+		errs = append(errs, errors.New("vpn.leaf_validity_days must be between 1 and 825"))
+	}
+	if k := c.VPN.KeyType; k != "" && k != "rsa2048" && k != "p256" {
+		errs = append(errs, fmt.Errorf("vpn.key_type must be rsa2048 or p256, got %q", k))
+	}
+	switch is := c.VPN.Issuer; is.Backend {
+	case "", "embedded":
+	case "scep":
+		if is.SCEPURL == "" || is.RACertFile == "" || is.RAKeyFile == "" || is.CAChainFile == "" {
+			errs = append(errs, errors.New("vpn.issuer backend scep needs scep_url, ra_cert_file, ra_key_file and ca_chain_file"))
+		}
+		if is.MaxLeafValidityDays < 0 || is.MaxLeafValidityDays > 825 {
+			errs = append(errs, errors.New("vpn.issuer.max_leaf_validity_days must be between 1 and 825"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("vpn.issuer.backend must be embedded or scep, got %q", is.Backend))
+	}
+	if c.Renewal.RenewBeforeDays < 0 || c.Renewal.RenewBeforeDays > 365 {
+		errs = append(errs, errors.New("renewal.renew_before_days must be between 1 and 365"))
+	}
+	if c.Renewal.ExpiredGraceDays < 0 || c.Renewal.ExpiredGraceDays > 365 {
+		errs = append(errs, errors.New("renewal.expired_grace_days must be between 0 and 365"))
+	}
+	if c.Renewal.Enabled && c.CA.Mode != CAExternal {
+		errs = append(errs, fmt.Errorf("renewal.enabled needs ca.mode external; in mode %q devices are re-enrolled before expiry (see docs/certificate-lifecycle.md)", c.CA.Mode))
+	}
+	for _, h := range c.Renewal.ServerHosts {
+		if u, err := url.Parse("https://" + h); err != nil || u.Host != h || strings.ContainsAny(h, "/ ") {
+			errs = append(errs, fmt.Errorf("renewal.server_hosts entry %q must be a host name, optionally with a port", h))
+		}
+	}
+	if len(c.RADIUS.AcceptancePoints) > 0 && c.RADIUS.IngestToken == "" {
+		errs = append(errs, errors.New("radius.acceptance_points set but no radius.ingest_token_file/_env; rejections could not be ingested"))
+	}
+	if len(c.RADIUS.AcceptancePoints) == 0 && c.RADIUS.IngestToken != "" {
+		errs = append(errs, errors.New("radius.ingest_token configured but radius.acceptance_points is empty"))
+	}
+	if c.Alerts.WebhookURL != "" {
+		if u, err := url.Parse(c.Alerts.WebhookURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			errs = append(errs, errors.New("alerts.webhook_url must be an absolute http(s) URL"))
+		}
+	}
 
 	if c.Server.PublicURL == "" {
 		errs = append(errs, errors.New("server.public_url is required"))
@@ -502,8 +798,28 @@ func (c Config) Validate() error {
 		if c.CA.External.CAChainFile == "" {
 			errs = append(errs, errors.New("ca.external.ca_chain_file is required when ca.mode=external (trust anchor for the enrollment profile)"))
 		}
+		if l := c.CA.External.Lookup; l.Enabled {
+			if len(l.Secret) < 32 {
+				errs = append(errs, errors.New("ca.external.challenge_lookup needs secret_file or secret_env holding at least 32 characters"))
+			}
+			for _, src := range l.AllowedSources {
+				if _, err := ParseSource(src); err != nil {
+					errs = append(errs, fmt.Errorf("ca.external.challenge_lookup.allowed_sources: %q is not an address or network", src))
+				}
+			}
+		}
+	case CABroker:
+		if c.CA.Broker.SCEPURL == "" {
+			errs = append(errs, errors.New("ca.broker.backend_scep_url is required when ca.mode=broker"))
+		}
+		if c.CA.Broker.RACertFile == "" || c.CA.Broker.RAKeyFile == "" {
+			errs = append(errs, errors.New("ca.broker.ra_cert_file and ra_key_file are required when ca.mode=broker (the RA identity that signs the backend SCEP envelope)"))
+		}
+		if c.CA.Broker.CAChainFile == "" {
+			errs = append(errs, errors.New("ca.broker.backend_ca_chain_file is required when ca.mode=broker (trust anchor for enrollment profiles + reply parsing)"))
+		}
 	default:
-		errs = append(errs, fmt.Errorf("ca.mode must be generate|import|external, got %q", c.CA.Mode))
+		errs = append(errs, fmt.Errorf("ca.mode must be generate|import|external|broker, got %q", c.CA.Mode))
 	}
 
 	if s := c.Profile.Signing; s.Enabled() {
@@ -513,6 +829,11 @@ func (c Config) Validate() error {
 	}
 
 	if l := c.Auth.LDAP; l.Enabled {
+		if l.DirectoryID != "" && (len(l.DirectoryID) > 128 || strings.ContainsFunc(l.DirectoryID, func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.' || r == '_')
+		})) {
+			errs = append(errs, errors.New("auth.ldap.directory_id must be at most 128 lowercase letters, digits, dots, underscores or hyphens"))
+		}
 		if len(l.Servers) == 0 {
 			errs = append(errs, errors.New("auth.ldap.servers is required when ldap is enabled"))
 		}

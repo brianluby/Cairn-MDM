@@ -2,6 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/assets/app.css">
 <title>{{if .Title}}{{.Title}} · {{end}}Cairn</title>
 {{end}}
@@ -15,10 +16,16 @@
     <a href="/admin/profiles"{{if eq .Title "Profiles"}} class="active"{{end}}>Profiles</a>
     <a href="/admin/groups"{{if eq .Title "Groups"}} class="active"{{end}}>Groups</a>
     <a href="/admin/enrollment"{{if eq .Title "Enrollment"}} class="active"{{end}}>Enrollment</a>
+    {{if .User.Role.AtLeast "admin"}}<a href="/admin/quarantine"{{if eq .Title "Quarantine"}} class="active"{{end}}>Quarantine</a>{{end}}
     <a href="/admin/activity"{{if eq .Title "Activity"}} class="active"{{end}}>Activity</a>
+    {{if .User.Role.AtLeast "admin"}}<a href="/admin/users"{{if eq .Title "Users"}} class="active"{{end}}>Users</a>
+    {{if vpnEnabled}}<a href="/admin/vpn"{{if eq .Title "VPN"}} class="active"{{end}}>VPN</a>{{end}}
+    <a href="/admin/apns"{{if eq .Title "APNs certificates"}} class="active"{{end}}>APNs</a>
+    <a href="/admin/settings"{{if eq .Title "Settings"}} class="active"{{end}}>Settings</a>{{end}}
   </nav>
   <span class="spacer"></span>
   <span class="user">
+ <a href="/account/mfa">Account security</a>
     {{with .User}}{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}} · {{.Role}}{{end}}
     <form method="post" action="/logout" style="display:inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">

@@ -1,0 +1,314 @@
+package vpn
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/micromdm/plist"
+)
+
+func testIKEv2Server(caPEM string) Server {
+	return Server{
+		Name: "Office IKEv2", Slug: "office-ikev2", Kind: KindIKEv2, CAPEM: caPEM,
+		IKEv2: IKEv2{
+			RemoteAddress: "vpn.example.org", ServerCertIssuerCN: "Test CA", SignIn: IKEv2Password,
+			Encryption: "AES-256-GCM", Integrity: "SHA2-256", DHGroup: 20, PFS: true,
+		},
+	}
+}
+
+// ikev2Of returns the IKEv2 dictionary and the payloads by type.
+func ikev2Of(t *testing.T, profile []byte) (map[string]any, map[string][]map[string]any) {
+	t.Helper()
+	var top map[string]any
+	if err := plist.Unmarshal(profile, &top); err != nil {
+		t.Fatal(err)
+	}
+	byType := map[string][]map[string]any{}
+	for _, raw := range top["PayloadContent"].([]any) {
+		p := raw.(map[string]any)
+		kind := p["PayloadType"].(string)
+		byType[kind] = append(byType[kind], p)
+	}
+	vpn := byType["com.apple.vpn.managed"]
+	if len(vpn) != 1 {
+		t.Fatalf("VPN payloads = %d", len(vpn))
+	}
+	return vpn[0]["IKEv2"].(map[string]any), byType
+}
+
+func TestIKEv2PasswordProfile(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	out, err := RenderIKEv2("org.example", testIKEv2Server(caPEM), IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ike, byType := ikev2Of(t, out)
+	for key, want := range map[string]any{
+		"RemoteAddress": "vpn.example.org", "RemoteIdentifier": "vpn.example.org", "ServerCertificateCommonName": "vpn.example.org",
+		"ServerCertificateIssuerCommonName": "Test CA", "LocalIdentifier": "alice", "AuthName": "alice", "AuthenticationMethod": "None",
+	} {
+		if ike[key] != want {
+			t.Errorf("%s = %v, want %v", key, ike[key], want)
+		}
+	}
+	if _, has := ike["AuthPassword"]; has {
+		t.Error("profile carries a password key")
+	}
+	if _, has := ike["PayloadCertificateUUID"]; has || len(byType["com.apple.security.scep"]) != 0 {
+		t.Error("password sign-in carries a certificate request")
+	}
+	if len(byType["com.apple.security.root"]) != 0 {
+		t.Error("CA chain installed although the record does not ask for it")
+	}
+	withCA := testIKEv2Server(caPEM)
+	withCA.IKEv2.InstallCA = true
+	installed, err := RenderIKEv2("org.example", withCA, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, with := ikev2Of(t, installed); len(with["com.apple.security.root"]) != 1 {
+		t.Errorf("root CA payloads = %d, want 1", len(with["com.apple.security.root"]))
+	}
+	// Devices that already trust the CA need no chain in the record at all.
+	bare := testIKEv2Server("")
+	if _, err = RenderIKEv2("org.example", bare, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"}); err != nil {
+		t.Errorf("record without a CA chain: %v", err)
+	}
+	child := ike["ChildSecurityAssociationParameters"].(map[string]any)
+	if child["EncryptionAlgorithm"] != "AES-256-GCM" || child["IntegrityAlgorithm"] != "SHA2-256" || child["DiffieHellmanGroup"] != uint64(20) {
+		t.Errorf("child proposal = %v", child)
+	}
+
+	// The same device and server render the same identifiers, so a new profile
+	// replaces the installed one.
+	again, _ := RenderIKEv2("org.example", testIKEv2Server(caPEM), IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if string(again) != string(out) {
+		t.Error("rendering is not repeatable")
+	}
+	other, _ := RenderIKEv2("org.example", testIKEv2Server(caPEM), IKEv2Identity{DeviceID: "PHONE2", Username: "alice"})
+	if string(other) == string(out) {
+		t.Error("two devices share payload UUIDs")
+	}
+}
+
+func TestIKEv2CertificateProfilePointsAtTheSCEPPayload(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	s.IKEv2.SignIn = IKEv2EAPTLS
+	s.OnDemand = true
+	s.IKEv2.TrustedSSIDs = []string{"Office", "Home Net"}
+	enrollment := &SCEPEnrollment{URL: "https://mdm.example.org/scep/vpn", Challenge: "one-time", CommonName: "alice", Email: "alice@example.org"}
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice", SCEP: enrollment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "PRIVATE KEY") {
+		t.Fatal("profile carries a private key")
+	}
+	ike, byType := ikev2Of(t, out)
+	scep := byType["com.apple.security.scep"]
+	if len(scep) != 1 || ike["PayloadCertificateUUID"] != scep[0]["PayloadUUID"] {
+		t.Fatalf("VPN payload does not point at the SCEP payload: %v", ike["PayloadCertificateUUID"])
+	}
+	content := scep[0]["PayloadContent"].(map[string]any)
+	if content["KeyIsExtractable"] != false || content["Challenge"] != "one-time" {
+		t.Errorf("SCEP content = %v", content)
+	}
+	if san := content["SubjectAltName"].(map[string]any); san["rfc822Name"] != "alice@example.org" {
+		t.Errorf("SAN = %v", san)
+	}
+	if ike["AuthenticationMethod"] != "Certificate" || ike["ExtendedAuthEnabled"] != uint64(1) {
+		t.Errorf("EAP-TLS sign-in = %v / %v", ike["AuthenticationMethod"], ike["ExtendedAuthEnabled"])
+	}
+	vpn := byType["com.apple.vpn.managed"][0]
+	if _, inside := ike["OnDemandRules"]; inside || vpn["OnDemandEnabled"] != uint64(1) {
+		t.Fatal("On Demand keys must sit at the top of the VPN payload")
+	}
+	rules := vpn["OnDemandRules"].([]any)
+	first, last := rules[0].(map[string]any), rules[len(rules)-1].(map[string]any)
+	if first["Action"] != "Disconnect" || len(first["SSIDMatch"].([]any)) != 2 {
+		t.Errorf("first rule = %v", first)
+	}
+	if len(last) != 1 || last["Action"] != "Disconnect" {
+		t.Errorf("last rule = %v", last)
+	}
+	if vpn["OnDemandUserOverrideDisabled"] != uint64(0) {
+		t.Error("user cannot switch On Demand off although the record allows it")
+	}
+
+	// IKE certificate authentication is the same profile without EAP.
+	s.IKEv2.SignIn = IKEv2Certificate
+	out, err = RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice", SCEP: enrollment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ike, _ = ikev2Of(t, out); ike["ExtendedAuthEnabled"] != uint64(0) {
+		t.Error("certificate sign-in still asks for EAP")
+	}
+}
+
+func TestIKEv2Refusals(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	enrollment := &SCEPEnrollment{URL: "https://mdm.example.org/scep/vpn", Challenge: "one-time", CommonName: "alice"}
+	cases := []struct {
+		name   string
+		change func(*Server, *IKEv2Identity)
+		want   string
+	}{
+		{"issuer not in the chain", func(s *Server, _ *IKEv2Identity) { s.IKEv2.ServerCertIssuerCN = "Some Other CA" }, "issuer"},
+		{"chain to install but none given", func(s *Server, _ *IKEv2Identity) { s.CAPEM, s.IKEv2.InstallCA = "", true }, "chain"},
+		{"trusted networks without on demand", func(s *Server, _ *IKEv2Identity) { s.IKEv2.TrustedSSIDs = []string{"Office"} }, "on demand"},
+		{"weak group", func(s *Server, _ *IKEv2Identity) { s.IKEv2.DHGroup = 2 }, "group"},
+		{"identifier with spaces", func(s *Server, _ *IKEv2Identity) { s.IKEv2.RemoteIdentifier = "Office VPN" }, "host name"},
+		{"unknown cipher", func(s *Server, _ *IKEv2Identity) { s.IKEv2.Encryption = "3DES" }, "encryption"},
+		{"no sign-in", func(s *Server, _ *IKEv2Identity) { s.IKEv2.SignIn = "" }, "sign in"},
+		{"certificate without a request", func(s *Server, _ *IKEv2Identity) { s.IKEv2.SignIn = IKEv2EAPTLS }, "SCEP"},
+		{"certificate for another name", func(s *Server, id *IKEv2Identity) {
+			s.IKEv2.SignIn = IKEv2EAPTLS
+			other := *enrollment
+			other.CommonName = "administrator"
+			id.SCEP = &other
+		}, "does not match"},
+		{"request without a challenge", func(s *Server, id *IKEv2Identity) {
+			s.IKEv2.SignIn = IKEv2EAPTLS
+			open := *enrollment
+			open.Challenge = ""
+			id.SCEP = &open
+		}, "challenge"},
+		{"password with a request", func(_ *Server, id *IKEv2Identity) { id.SCEP = enrollment }, "no SCEP"},
+		{"account name with markup", func(_ *Server, id *IKEv2Identity) { id.Username = "alice<x>" }, "username"},
+	}
+	for _, c := range cases {
+		s := testIKEv2Server(caPEM)
+		id := IKEv2Identity{DeviceID: "PHONE1", Username: "alice"}
+		c.change(&s, &id)
+		_, err := RenderIKEv2("org.example", s, id)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(c.want)) {
+			t.Errorf("%s: err = %v, want mention of %q", c.name, err, c.want)
+		}
+	}
+	if _, err := RenderIKEv2("org.example", testServer(caPEM), IKEv2Identity{DeviceID: "PHONE1", Username: "alice"}); err == nil {
+		t.Error("an OpenVPN record rendered as IKEv2")
+	}
+}
+
+func TestCheckIKEv2RejectsSecrets(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	out, err := RenderIKEv2("org.example", testIKEv2Server(caPEM), IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPassword := strings.Replace(string(out), "<key>AuthName</key>", "<key>AuthPassword</key>\n\t\t\t\t<string>hunter2</string>\n\t\t\t\t<key>AuthName</key>", 1)
+	if withPassword == string(out) {
+		t.Fatal("test did not change the profile")
+	}
+	if err := CheckIKEv2([]byte(withPassword)); err == nil || !strings.Contains(err.Error(), "password") {
+		t.Errorf("profile with a password passed: %v", err)
+	}
+	unpinned := strings.Replace(string(out), "<string>Test CA</string>", "<string></string>", 1)
+	if err := CheckIKEv2([]byte(unpinned)); err == nil {
+		t.Error("profile without a pinned issuer passed")
+	}
+}
+
+// A password record may connect on demand: the device keeps the password the
+// user types, so the profile still holds no secret.
+func TestIKEv2PasswordOnDemand(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	s.OnDemand = true
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ike, byType := ikev2Of(t, out)
+	if _, has := ike["AuthPassword"]; has || byType["com.apple.vpn.managed"][0]["OnDemandEnabled"] != uint64(1) {
+		t.Fatalf("password On Demand profile: %v", ike)
+	}
+	misplaced := strings.Replace(string(out), "<key>AuthName</key>", "<key>OnDemandEnabled</key>\n\t\t\t\t<integer>1</integer>\n\t\t\t\t<key>AuthName</key>", 1)
+	if err := CheckIKEv2([]byte(misplaced)); err == nil || !strings.Contains(err.Error(), "top of the VPN payload") {
+		t.Errorf("On Demand inside IKEv2 passed: %v", err)
+	}
+}
+
+// A certificate common name may hold spaces; the identifier may not.
+func TestIKEv2CertificateNameWithSpaces(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	s.IKEv2.ServerCertCN = "Office VPN Gateway 1"
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ike, _ := ikev2Of(t, out); ike["ServerCertificateCommonName"] != "Office VPN Gateway 1" || ike["RemoteIdentifier"] != "vpn.example.org" {
+		t.Fatalf("names = %v / %v", ike["ServerCertificateCommonName"], ike["RemoteIdentifier"])
+	}
+}
+
+// Keeping the password puts an empty password key in the profile and nothing
+// else; a key with a value is still refused.
+func TestIKEv2KeepPassword(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	s.OnDemand, s.IKEv2.KeepPassword = true, true
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ike, _ := ikev2Of(t, out)
+	if pw, has := ike["AuthPassword"]; !has || pw != "" {
+		t.Fatalf("AuthPassword = %v (present %v), want an empty string", pw, has)
+	}
+	filled := strings.Replace(string(out), "<key>AuthPassword</key>\n\t\t\t\t<string></string>", "<key>AuthPassword</key>\n\t\t\t\t<string>hunter2</string>", 1)
+	if filled == string(out) {
+		t.Fatal("test did not change the profile")
+	}
+	if err := CheckIKEv2([]byte(filled)); err == nil {
+		t.Fatal("a profile with a password in it passed")
+	}
+	s.IKEv2.SignIn = IKEv2EAPTLS
+	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "password sign-in") {
+		t.Fatalf("keep-password on a certificate record: %v", err)
+	}
+}
+
+// Every IKEv2 profile sends all traffic into the tunnel unless the record is
+// set to split it, and the keys sit beside the On Demand keys.
+func TestIKEv2SendsAllTrafficThroughTheTunnel(t *testing.T) {
+	caPEM, _, _ := testPKI(t, "alice")
+	s := testIKEv2Server(caPEM)
+	out, err := RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ike, byType := ikev2Of(t, out)
+	vpn := byType["com.apple.vpn.managed"][0]
+	for key, want := range map[string]uint64{"IncludeAllNetworks": 1, "ExcludeLocalNetworks": 0,
+		"ExcludeCellularServices": 1, "ExcludeDeviceCommunication": 1, "ExcludeAPNs": 0} {
+		if vpn[key] != want {
+			t.Errorf("%s = %v, want %d", key, vpn[key], want)
+		}
+		if _, has := ike[key]; has {
+			t.Errorf("%s is inside the IKEv2 dictionary", key)
+		}
+	}
+	local := strings.Replace(string(out), "<key>ExcludeLocalNetworks</key>\n\t\t\t<integer>0</integer>", "<key>ExcludeLocalNetworks</key>\n\t\t\t<integer>1</integer>", 1)
+	if local == string(out) {
+		t.Fatal("test did not change the profile")
+	}
+	if err := CheckIKEv2([]byte(local)); err == nil || !strings.Contains(err.Error(), "ExcludeLocalNetworks") {
+		t.Errorf("a profile that excludes local networks passed: %v", err)
+	}
+
+	s.IKEv2.SplitTunnel = true
+	if out, err = RenderIKEv2("org.example", s, IKEv2Identity{DeviceID: "PHONE1", Username: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	_, byType = ikev2Of(t, out)
+	for _, key := range []string{"IncludeAllNetworks", "ExcludeLocalNetworks", "ExcludeCellularServices", "ExcludeDeviceCommunication", "ExcludeAPNs"} {
+		if _, has := byType["com.apple.vpn.managed"][0][key]; has {
+			t.Errorf("a split-tunnel profile carries %s", key)
+		}
+	}
+}

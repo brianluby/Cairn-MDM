@@ -2,6 +2,7 @@ package profile
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -27,8 +28,10 @@ type WiFiParams struct {
 	SubjectCN          string   // CN the device requests for its Wi-Fi identity
 	KeySize            int      // default 2048
 	CAAnchorsDER       [][]byte // RADIUS server CA chain (DER)
-	TrustedServerNames []string // e.g. "radius.example.org" (optional but recommended)
+	TrustedServerNames []string // e.g. "radius.example.org" (required, exact names; no wildcards)
 }
+
+var radiusServerName = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
 
 // BuildWiFi assembles a Wi-Fi configuration profile.
 func BuildWiFi(p WiFiParams) (map[string]any, error) {
@@ -63,6 +66,14 @@ func BuildWiFi(p WiFiParams) (map[string]any, error) {
 		}
 		if len(p.CAAnchorsDER) == 0 {
 			return nil, fmt.Errorf("profile: EAP-TLS Wi-Fi needs at least one RADIUS CA anchor")
+		}
+		if len(p.TrustedServerNames) == 0 {
+			return nil, fmt.Errorf("profile: EAP-TLS Wi-Fi needs explicit RADIUS server certificate names")
+		}
+		for _, name := range p.TrustedServerNames {
+			if len(name) > 253 || !radiusServerName.MatchString(name) {
+				return nil, fmt.Errorf("profile: RADIUS server names must be exact DNS names without wildcards, spaces or URLs")
+			}
 		}
 		if p.KeySize == 0 {
 			p.KeySize = 2048

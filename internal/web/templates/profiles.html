@@ -40,7 +40,7 @@
       <form method="post" action="/admin/profiles/upload" enctype="multipart/form-data">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <p>
-          <input type="file" name="profile" accept=".mobileconfig,application/x-apple-aspen-config" required>
+          <input type="file" name="profile" accept=".mobileconfig,application/x-apple-aspen-config" required aria-label="Configuration profile file">
           <button class="btn" type="submit">Upload</button>
         </p>
         <p class="sub">Re-uploading a profile with the same PayloadIdentifier replaces it in place.</p>

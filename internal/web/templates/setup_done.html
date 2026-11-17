@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <h1>Administrator created</h1>
+    <p>You are signed in as <strong>{{.Username}}</strong>. The setup token has been removed and this page will not be offered again.</p>
+
+    <h2>Register your authenticator now</h2>
+    <div class="card" style="padding:24px">
+      {{if .Approval}}
+      <p>This approval code is shown once and expires in 15 minutes. Copy it, open <a href="/account/mfa">Account security</a>, paste it under "Register an authenticator" and confirm a code from your app.</p>
+      <textarea readonly rows="3" aria-label="Registration approval code" style="width:100%">{{.Approval}}</textarea>
+      <p><a class="btn" href="/account/mfa">Open Account security</a></p>
+      {{else}}
+      <p class="callout error" role="alert">{{.MFAError}}</p>
+      {{end}}
+      <p class="sub">Creating enrollment links and other certificate actions require a confirmed authenticator and a fresh code.</p>
+    </div>
+
+    <h2>What is left</h2>
+    <div class="card">
+      <table class="kv">
+        <tbody>
+          {{range .Checks}}
+          <tr>
+            <th style="width:220px">{{if .Link}}<a href="{{.Link}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</th>
+            <td><span class="dot {{if eq .Status "ok"}}on{{else if eq .Status "warn"}}off{{else}}wait{{end}}"></span> {{.Detail}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    <p>Then load the push certificate under <a href="/admin/apns">APNs</a>, add a profile under <a href="/admin/profiles">Profiles</a>, and enroll a first device from <a href="/admin/enrollment">Enrollment</a>.</p>
+  </main>
+</body>
+</html>

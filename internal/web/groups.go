@@ -69,6 +69,22 @@ func (a *App) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 	for _, s := range deployStatus {
 		statusByProfile[s.ProfileID] = s
 	}
+	outcomes := map[int64][]sqlite.GroupProfileOutcome{}
+	if os, ok := a.groups.(groupOutcomeSource); ok {
+		for _, p := range assigned {
+			if list, err := os.GroupProfileOutcomes(ctx, g.ID, p.ID); err == nil {
+				outcomes[p.ID] = list
+			} else {
+				a.log.Error("group profile outcomes", "group", g.ID, "profile", p.ID, "err", err)
+			}
+		}
+	}
+	var directoryMembers []sqlite.Device
+	if a.ownership != nil {
+		if directoryMembers, err = a.ownership.GroupDirectoryDevices(ctx, g.ID); err != nil {
+			a.log.Error("group directory devices", "id", g.ID, "err", err)
+		}
+	}
 
 	// Options for the add-device / assign-profile selects: everything not
 	// already in the group.
@@ -96,15 +112,17 @@ func (a *App) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.render(w, r, http.StatusOK, "group.html", map[string]any{
-		"Title":           g.Name,
-		"Group":           g,
-		"Members":         members,
-		"Assigned":        assigned,
-		"DeployStatus":    statusByProfile,
-		"AddableDevices":  addableDevices,
-		"AddableProfiles": addableProfiles,
-		"Flash":           r.URL.Query().Get("flash"),
-		"Error":           r.URL.Query().Get("error"),
+		"Title":            g.Name,
+		"Group":            g,
+		"Members":          members,
+		"DirectoryMembers": directoryMembers,
+		"Assigned":         assigned,
+		"DeployStatus":     statusByProfile,
+		"Outcomes":         outcomes,
+		"AddableDevices":   addableDevices,
+		"AddableProfiles":  addableProfiles,
+		"Flash":            r.URL.Query().Get("flash"),
+		"Error":            r.URL.Query().Get("error"),
 	})
 }
 
@@ -204,6 +222,11 @@ func (a *App) handleGroupProfileChange(w http.ResponseWriter, r *http.Request) {
 		a.reconcileGroupAsync(g.ID)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Profile assigned — pushing to enrolled devices."), http.StatusSeeOther)
 	}
+}
+
+// groupOutcomeSource is the optional capability behind per-device outcomes.
+type groupOutcomeSource interface {
+	GroupProfileOutcomes(ctx context.Context, groupID, profileID int64) ([]sqlite.GroupProfileOutcome, error)
 }
 
 // groupFromPath loads the {id} group or renders a 404.

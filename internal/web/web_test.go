@@ -240,7 +240,7 @@ func TestDeviceInstallProfileAndDeployStatus(t *testing.T) {
 	}
 
 	// POST install: library profile pushed to the device → redirect + flash.
-	form := strings.NewReader("csrf=" + csrf + "&profile_id=" + itoa64(pid))
+	form := strings.NewReader("csrf=" + csrf + "&intent=0123456789abcdef0123456789abcdef&profile_id=" + itoa64(pid))
 	req := httptest.NewRequest(http.MethodPost, "/admin/devices/UDID-RIDGE/install", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
@@ -289,5 +289,62 @@ func TestLoginRejectsBadPassword(t *testing.T) {
 	mux(app).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("bad login = %d, want 401", rr.Code)
+	}
+}
+
+func TestNotificationRetryRouteAuthorizationAndReplay(t *testing.T) {
+	app, sessions, db := testApp(t)
+	ctx := context.Background()
+	for _, statement := range []string{
+		`INSERT INTO command_history(command_uuid,device_id,request_type,status) VALUES('retry-command','device','DeviceInformation','Queued')`,
+		`INSERT INTO push_outbox(command_uuid,device_id,state,attempts) VALUES('retry-command','device','exhausted',6)`,
+	} {
+		if _, err := db.SQL().Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := mux(app)
+	for _, tc := range []struct {
+		name      string
+		role      auth.Role
+		validCSRF bool
+		want      int
+	}{
+		{"user denied", auth.RoleUser, true, 403}, {"csrf denied", auth.RoleOperator, false, 403},
+		{"operator accepted", auth.RoleOperator, true, 303},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := sessions.Create(ctx, auth.Identity{Username: "tester", Provider: "local", Role: tc.role})
+			if err != nil {
+				t.Fatal(err)
+			}
+			csrf := session.CSRF
+			if !tc.validCSRF {
+				csrf = "wrong"
+			}
+			post := func() *httptest.ResponseRecorder {
+				req := httptest.NewRequest("POST", "/admin/devices/device/commands/retry-command/retry-push", strings.NewReader("csrf="+csrf+"&intent=0123456789abcdef0123456789abcdef"))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req.AddCookie(&http.Cookie{Name: SessionCookie, Value: session.Token})
+				rr := httptest.NewRecorder()
+				m.ServeHTTP(rr, req)
+				return rr
+			}
+			if rr := post(); rr.Code != tc.want {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			if tc.want == 303 {
+				if rr := post(); rr.Code != 303 {
+					t.Fatalf("replay status %d", rr.Code)
+				}
+			}
+		})
+	}
+	var count int
+	if err := db.SQL().QueryRow(`SELECT count(*) FROM command_history`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("commands %d: %v", count, err)
+	}
+	if err := db.SQL().QueryRow(`SELECT count(*) FROM push_retry_actions`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("retry actions %d: %v", count, err)
 	}
 }

@@ -57,6 +57,10 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		sqldb.Close()
 		return nil, err
 	}
+	if err := db.backfillLeafHashes(ctx); err != nil {
+		sqldb.Close()
+		return nil, fmt.Errorf("backfill issued leaf hashes: %w", err)
+	}
 
 	restrictPerms(path)
 

@@ -12,7 +12,7 @@
     {{with .Created}}
     <div class="card" style="padding:24px">
       <h2 style="margin-top:0">Enrollment link created</h2>
-      <p class="sub">Shown once — copy it now. It works {{.MaxUses}} time(s) and expires in {{.ExpiresHours}} hour(s).</p>
+      <p class="sub">Shown once — copy it now. Single-use — it works once and expires in {{.ExpiresHours}} hour(s).</p>
       <p><input type="text" class="mono" style="width:100%" readonly value="{{.Link}}" onclick="this.select()"></p>
       {{if .QR}}<p><img src="{{.QR}}" alt="Enrollment QR code" width="256" height="256"></p>{{end}}
       <p class="sub">Open the link in Safari on the target device (or scan the QR) to install the enrollment profile.</p>
@@ -23,7 +23,7 @@
       {{if .Grants}}
       <table>
         <thead>
-          <tr><th>Label / owner</th><th>Platform</th><th>Uses</th><th>Status</th><th>Expires</th><th></th></tr>
+          <tr><th>Label / owner</th><th>Platform</th><th>Cairn group</th><th>Uses</th><th>Status</th><th>Expires</th><th></th></tr>
         </thead>
         <tbody>
           {{range .Grants}}
@@ -33,6 +33,7 @@
               {{if .Owner}}<div class="sub mono">{{.Owner}}</div>{{end}}
             </td>
             <td>{{.Platform}}</td>
+            <td>{{if .AssignGroupID}}<a href="/admin/groups/{{.AssignGroupID}}">{{.AssignGroupName}}</a>{{else}}<span class="sub">—</span>{{end}}</td>
             <td>{{.UseCount}}/{{.MaxUses}}</td>
             <td>
               <span class="dot {{if eq .Status "active"}}on{{else if eq .Status "used"}}wait{{else}}off{{end}}"></span>
@@ -57,27 +58,34 @@
       {{end}}
     </div>
 
-    <h2>New enrollment link</h2>
+    <h2>Add a device for a user</h2>
+    <p>Verify your MFA in <a href="/account/mfa">Account security</a>, then choose an AD owner. They do not need to sign in. The preview shows which <a href="/admin/directory">directory rules</a> match the owner and the profiles the device will receive; an explicit Cairn group adds a site-specific exception without changing AD.</p>
     <div class="card">
-      <form method="post" action="/admin/enrollment">
+      <form method="post" action="/admin/enrollment/preview">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <p>
           <input type="text" name="label" placeholder="Label (e.g. Nick's MacBook)" size="30">
-          <input type="text" name="owner" placeholder="Owner email (optional, for Wi-Fi binding)" size="34">
+          <input type="text" name="owner" required placeholder="AD account name or UPN" size="34">
         </p>
         <p>
           <label>Platform
             <select name="platform">
-              <option value="any" selected>Any</option>
+
               <option value="macos">macOS</option>
               <option value="ios">iOS/iPadOS</option>
             </select>
           </label>
-          &nbsp;<label>Uses <input type="number" name="max_uses" value="1" min="1" max="100" style="width:5em"></label>
-          &nbsp;<label>Expires in (hours) <input type="number" name="expires_hours" value="24" min="1" max="8760" style="width:6em"></label>
+          &nbsp;<label>Expires in (hours) <input type="number" name="expires_hours" value="24" min="1" max="24" style="width:6em"></label>
         </p>
-        <p><input type="text" name="expected_serial" placeholder="Bind to serial (optional)" size="24" class="mono"></p>
-        <p><button class="btn" type="submit">Create link</button></p>
+        <p>
+          <label>Also add to Cairn group
+            <select name="group_id">
+              <option value="">None (directory rules only)</option>
+              {{range .Groups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+            </select>
+          </label>
+        </p>
+        <p><button class="btn" type="submit">Preview owner</button></p>
       </form>
     </div>
   </main>

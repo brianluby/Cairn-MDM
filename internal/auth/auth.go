@@ -47,6 +47,12 @@ func rank(r Role) int {
 
 // Identity is an authenticated principal.
 type Identity struct {
+	// localCredentialHash fences a completed password check against account changes
+	// before session creation. It never leaves this package or enters session JSON.
+	localCredentialHash string
+	// SubjectID is an immutable local account identifier; never a display name.
+	SubjectID   string
+	Directory   *DirectoryIdentity
 	Username    string
 	DisplayName string
 	Role        Role

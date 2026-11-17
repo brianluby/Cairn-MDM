@@ -11,29 +11,65 @@ Cairn manages macOS and iOS/iPadOS devices: over-the-air enrollment, an embedded
 polished, Apple-HIG-inspired web console — all in a single Go binary that runs
 natively on FreeBSD, Linux, and macOS, or in one container.
 
-**Status: public beta (v0.x).** MIT-licensed and running its author's own fleet,
-but pre-1.0 and at the operator's own risk — not production-ready for others yet
-(`SECURITY.md` treats v0 as experimental with best-effort fixes only). The
-config/API/schema may still change (migrations are provided), some features are
-unfinished, and there is a **known pre-1.0 security gate in enrollment issuance
-trust** — device certs are not yet authority-attested, so don't rely on them as a
-network-access credential (EAP-TLS) until issuance is Cairn-controlled. See
-`SECURITY.md`.
+**Status: public beta (v0.2).** MIT-licensed and running its author's own
+fleet. It is pre-1.0 and used at the operator's own risk: the config, API and
+schema may still change (migrations are provided), and `SECURITY.md` treats v0
+as experimental with best-effort fixes only.
+
+One security gate is still open. Do not rely on a device certificate as a
+network-access credential (EAP-TLS Wi-Fi) yet. Cairn decides who gets a
+certificate when it issues or relays the request itself (embedded CA and
+broker modes), and an external CA can be set to check a one-time challenge
+with Cairn before it issues. None of this has passed an independent review or
+the Wi-Fi hardware tests. See `SECURITY.md` and
+[completion requirements](docs/completion-prd.md).
+
+### What works today
+
+- **Enrollment.** Single-use, expiring links made by an administrator with a
+  fresh MFA code, for an owner looked up in LDAP/AD. Signed profiles. No Apple
+  Business Manager account needed. See
+  [enrollment and recovery](docs/enrollment-onboarding.md).
+- **Profiles.** A library (upload a `.mobileconfig` or build Wi-Fi and Kerberos
+  SSO profiles from forms), device groups, and rules that assign profiles by the
+  owner's AD group or OU. See
+  [directory profile targeting](docs/directory-profile-targeting.md).
+- **VPN profiles.** OpenVPN profiles with a certificate per device, and native
+  IKEv2 profiles: password sign-in as a download, certificate sign-in pushed by
+  MDM with a key the device makes and never gives up. See
+  [VPN profiles](docs/vpn-profiles.md).
+- **Certificates.** An embedded CA, your own CA's key (import), an external SCEP
+  CA (OpenXPKI, NDES), or Cairn as a broker in front of one. With an external
+  CA, Cairn renews device identity certificates before they expire and can hand
+  out one-time challenges the CA checks. See
+  [certificate lifecycle](docs/certificate-lifecycle.md).
+- **Sign-in.** Local accounts, LDAP/AD and OIDC, with authenticator-app MFA for
+  privileged actions. See [MFA](docs/mfa.md).
+- **Operations.** Verified backup bundles and restore rehearsal, webhook alerts
+  with a heartbeat, an audit log, and import from NanoMDM with no re-enrollment.
+  See [backup and restore](docs/backup-restore.md).
 
 ### Known limitations (beta)
 
-- **Auth**: local + LDAP/AD + OIDC work; MFA and Kerberos/SPNEGO are not built.
-- **Apple scope**: OTA enrollment, SCEP, and profile delivery are complete.
-  Declarative Device Management (DDM) and ABM/ADE automated enrollment are on the
-  roadmap, not yet implemented.
-- **Console**: functional and server-rendered; not yet audited for mobile
-  responsiveness or WCAG accessibility.
-- **Scale**: SQLite (WAL) suits homelab/SMB fleets; MySQL/Postgres backends are
-  planned. Command delivery is durable at this scale but the full outbox/retry
-  design is a follow-up.
+- **Hardware evidence is narrow.** What has run on real devices, and what has
+  only run in automated tests, is listed per requirement in
+  [completion requirements](docs/completion-prd.md).
+- **Renewal** of device identity certificates exists for an external CA only.
+  With the embedded CA or the broker, re-enroll a device before its certificate
+  expires.
+- **VPN**: no automatic re-issue before a VPN certificate expires; macOS
+  OpenVPN delivery is not built.
+- **Auth**: Kerberos/SPNEGO is not built. OIDC has not been verified against a
+  live provider.
+- **Apple scope**: Declarative Device Management (DDM) and ABM/ADE automated
+  enrollment are not implemented.
+- **Console**: server-rendered; checked in a headless browser at desktop and
+  phone widths. VoiceOver and measured contrast checks are pending.
+- **Scale**: SQLite (WAL) suits homelab and small-business fleets. MySQL and
+  Postgres backends are planned.
 
-See [the design plan](docs/) for the roadmap and [SECURITY.md](SECURITY.md) for
-the threat model and disclosure process.
+See [SECURITY.md](SECURITY.md) for the threat model and disclosure process, and
+[CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Why
 
@@ -51,6 +87,14 @@ first-class: you do not need an Apple Business Manager account to use Cairn.
 curl -fsSL https://raw.githubusercontent.com/nickpdawson/Cairn-MDM/main/packaging/install.sh | sh
 ```
 
+A beta is a GitHub prerelease, which "latest" skips. To install one, name it:
+`... | sh -s -- v0.2.0-beta.1`.
+
+**Which setup fits you depends on whether you have LDAP/AD and where your
+certificates come from. Read [the install guide](docs/install.md) first.** In
+this beta, enrolling devices needs an LDAP or Active Directory server unless you
+use an external SCEP CA with open enrollment.
+
 Or grab a release tarball / `.deb` / `.rpm` from the releases page, or run the
 container (`ghcr.io/nickpdawson/cairn-mdm`). Building from source: `go build ./cmd/cairn`
 (pure Go, `CGO_ENABLED=0`).
@@ -59,7 +103,8 @@ container (`ghcr.io/nickpdawson/cairn-mdm`). Building from source: `go build ./c
 
 ```sh
 # One command sets up config, a CA (self-signed by default), and the admin
-# account, and prints the enrollment URL. Note: running your own CA is a real
+# account. Enrollment links then need an LDAP/AD directory in the config
+# (docs/install.md). Note: running your own CA is a real
 # security decision (offline root, rollover — see SECURITY.md); if you already
 # have a PKI, prefer external mode so the signing key never lives on this host.
 cairn init --public-url https://mdm.example.org
@@ -68,6 +113,14 @@ cairn init --public-url https://mdm.example.org
 cairn pushcert request -email you@example.org      # → decrypt → identity.apple.com → import
 cairn serve
 ```
+
+Prefer the browser? Write a `cairn.toml` (see `packaging/cairn.example.toml`),
+run `cairn serve`, and open `https://<public_url>/setup`. While no administrator
+exists Cairn writes a one-time token to `<storage.path>.setup-token` (0600) on
+the host; entering it creates the first administrator, signs you in and hands you
+the authenticator approval code. The page lists what is still missing (push
+certificate, directory) and disappears once setup completes. The APNs request,
+decrypt and install steps are also available under the console's APNs page.
 
 `packaging/cairn.example.toml` documents the full config surface. Health
 endpoints: `GET /healthz` (liveness), `GET /readyz` (readiness), `GET /version`.
@@ -82,16 +135,16 @@ association intact before declaring success. See
 
 ## Roadmap
 
-- **v1.0** — redesigned OTA enrollment with Cairn as the enrollment authority
-  (one-time, key-bound issuance; reconstruct-don't-validate; broker in front of
-  an external CA or embedded-issue with an offline root — see
-  [docs/enrollment-authorization.md](docs/enrollment-authorization.md)), expiring
-  links, QR, signed profiles, APNs cert wizard, device inventory, profile
-  library, Kerberos SSO template.
-- **v1.1** — Declarative Device Management (software-update enforcement, status
-  subscriptions).
-- **v1.2** — ABM/ADE automated enrollment (optional module).
-- **v2.0** — account-driven enrollment, Platform SSO.
+Before 1.0:
+
+- Independent review of enrollment authorization and certificate renewal.
+- EAP-TLS Wi-Fi proven on real Macs and iPhones, with renewal and revocation.
+- Renewal for the embedded CA and broker modes.
+- Re-issue of VPN certificates before they expire.
+- A qualified release: fixed candidate, hardware matrix, recorded soak.
+
+Later: Declarative Device Management, ABM/ADE automated enrollment,
+account-driven enrollment and Platform SSO.
 
 ## License
 
@@ -101,3 +154,7 @@ upstream attributions.
 
 [nanomdm]: https://github.com/micromdm/nanomdm
 [nanohub]: https://github.com/micromdm/nanohub
+
+Current completion work and remaining acceptance gates are tracked in
+[completion requirements](docs/completion-prd.md). For the new admin workflow
+and explicit same-topic CLI renewal, see [APNs lifecycle](docs/apns-lifecycle.md).

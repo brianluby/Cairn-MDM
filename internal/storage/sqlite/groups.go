@@ -165,11 +165,18 @@ func (db *DB) DeviceGroups(ctx context.Context, deviceID string) ([]Group, error
 	return out, rows.Err()
 }
 
+// membershipUnion is the set of (device_id, group_id) pairs from both manual
+// membership and directory-rule membership. Deployment reads this union so a
+// rule-derived member receives the group's profiles exactly like a manual one.
+const membershipUnion = `(SELECT device_id, group_id FROM group_devices
+	UNION SELECT device_id, group_id FROM directory_memberships)`
+
 // GroupDeviceIDs returns the pushable devices in a group (enrolled with a
 // push token) — the reconciler's fan-out set after an assignment change.
+// Manual and directory-derived members are both included.
 func (db *DB) GroupDeviceIDs(ctx context.Context, groupID int64) ([]string, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		`SELECT d.id FROM devices d JOIN group_devices gd ON gd.device_id = d.id
+		`SELECT DISTINCT d.id FROM devices d JOIN `+membershipUnion+` gd ON gd.device_id = d.id
 		 WHERE gd.group_id = ? AND d.checked_out_at IS NULL AND d.token_updated_at IS NOT NULL`, groupID)
 	if err != nil {
 		return nil, err
@@ -194,7 +201,7 @@ func (db *DB) ProfilesToDeploy(ctx context.Context, deviceID string) ([]Profile,
 		`SELECT `+prefixedProfileCols("p")+`
 		 FROM profiles p
 		 JOIN group_profiles gp ON gp.profile_id = p.id
-		 JOIN group_devices  gd ON gd.group_id = gp.group_id
+		 JOIN `+membershipUnion+` gd ON gd.group_id = gp.group_id
 		 LEFT JOIN profile_deploys dep ON dep.profile_id = p.id AND dep.device_id = gd.device_id
 		 WHERE gd.device_id = ?
 		   AND (dep.profile_id IS NULL OR dep.profile_updated_at <> p.updated_at)
@@ -218,13 +225,13 @@ func (db *DB) ProfilesToDeploy(ctx context.Context, deviceID string) ([]Profile,
 func (db *DB) MarkDeploySent(ctx context.Context, deviceID string, profileID int64, commandUUID, profileUpdatedAt string) error {
 	_, err := db.sql.ExecContext(ctx,
 		`INSERT INTO profile_deploys (device_id, profile_id, command_uuid, profile_updated_at, status, updated_at)
-		 VALUES (?, ?, ?, ?, 'sent', datetime('now'))
+		 VALUES (?, ?, ?, ?, COALESCE((SELECT CASE status WHEN 'Acknowledged' THEN 'installed' WHEN 'Error' THEN 'failed' WHEN 'CommandFormatError' THEN 'failed' ELSE 'sent' END FROM command_history WHERE command_uuid=? AND device_id=?),'sent'), datetime('now'))
 		 ON CONFLICT (device_id, profile_id) DO UPDATE SET
 		   command_uuid = excluded.command_uuid,
 		   profile_updated_at = excluded.profile_updated_at,
-		   status = 'sent',
+		   status = excluded.status,
 		   updated_at = datetime('now')`,
-		deviceID, profileID, commandUUID, profileUpdatedAt)
+		deviceID, profileID, commandUUID, profileUpdatedAt, commandUUID, deviceID)
 	return err
 }
 

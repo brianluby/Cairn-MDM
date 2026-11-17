@@ -3,6 +3,7 @@ package mdmcore
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -72,8 +73,12 @@ func DeviceInformationCommand(queries ...string) (*mdm.Command, error) {
 // command marshals a command dict with a fresh CommandUUID and decodes it into
 // an mdm.Command (which also validates it and retains the raw plist).
 func command(inner map[string]any) (*mdm.Command, error) {
+	return commandAs(newCommandUUID(), inner)
+}
+
+func commandAs(uuid string, inner map[string]any) (*mdm.Command, error) {
 	raw, err := plist.Marshal(map[string]any{
-		"CommandUUID": newCommandUUID(),
+		"CommandUUID": uuid,
 		"Command":     inner,
 	})
 	if err != nil {
@@ -86,12 +91,48 @@ func command(inner map[string]any) (*mdm.Command, error) {
 // devices wake and check in. This is the in-process path the admin console and
 // CLI use — no HTTP round-trip, no API key.
 func Enqueue(ctx context.Context, store storage.CommandEnqueuer, pusher push.Pusher, ids []string, cmd *mdm.Command) error {
-	if _, err := store.EnqueueCommand(ctx, ids, cmd); err != nil {
+	if err := applyCommandIntent(ctx, cmd); err != nil {
+		return err
+	}
+	if durable, ok := store.(NotificationStore); ok {
+		if _, err := durable.EnqueueNotifiedCommand(ctx, ids, cmd, pusher != nil); err != nil {
+			return fmt.Errorf("mdmcore: enqueue: %w", err)
+		}
+		// Queue acceptance is success even if APNs is down. The durable worker
+		// resumes notifications; callers must not create a duplicate MDM command.
+		if pusher != nil {
+			_ = DispatchNotifications(ctx, durable, pusher, cmd.CommandUUID)
+		}
+		return nil
+	}
+	perTarget, err := store.EnqueueCommand(ctx, ids, cmd)
+	if err != nil {
 		return fmt.Errorf("mdmcore: enqueue: %w", err)
 	}
+	var failures []error
+	for target, err := range perTarget {
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", target, err))
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("mdmcore: enqueue incomplete: %w", errors.Join(failures...))
+	}
 	if pusher != nil {
-		if _, err := pusher.Push(ctx, ids); err != nil {
-			return fmt.Errorf("mdmcore: push: %w", err)
+		perTarget, err := pusher.Push(ctx, ids)
+		if err != nil {
+			failures = append(failures, err)
+		}
+		for _, target := range ids {
+			response := perTarget[target]
+			if response == nil {
+				failures = append(failures, fmt.Errorf("%s: no APNs result", target))
+			} else if response.Err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", target, response.Err))
+			}
+		}
+		if len(failures) > 0 {
+			return fmt.Errorf("command %s is queued; APNs notification failed (do not enqueue a duplicate): %w", cmd.CommandUUID, errors.Join(failures...))
 		}
 	}
 	return nil
@@ -163,6 +204,38 @@ func (c *Commander) SendInstallProfileUUID(ctx context.Context, profile []byte, 
 		return "", err
 	}
 	return cmd.CommandUUID, nil
+}
+
+// NewCommandUUID returns a CommandUUID for a caller that has to record it before
+// the command exists.
+func NewCommandUUID() string { return newCommandUUID() }
+
+// SendInstallProfileAs queues an InstallProfile for one device under a
+// CommandUUID the caller chose and has already recorded. A device can answer a
+// command the moment it is queued, so anything that must react to the answer
+// has to know the UUID first.
+func (c *Commander) SendInstallProfileAs(ctx context.Context, uuid string, profile []byte, id string) error {
+	if uuid == "" {
+		return errors.New("mdmcore: a CommandUUID is required")
+	}
+	cmd, err := commandAs(uuid, map[string]any{"RequestType": "InstallProfile", "Payload": profile})
+	if err != nil {
+		return err
+	}
+	return c.enqueue(ctx, []string{id}, cmd)
+}
+
+// SendProfileListAs asks one device which profiles it has installed, under a
+// CommandUUID the caller chose and has already recorded.
+func (c *Commander) SendProfileListAs(ctx context.Context, uuid, id string) error {
+	if uuid == "" {
+		return errors.New("mdmcore: a CommandUUID is required")
+	}
+	cmd, err := commandAs(uuid, map[string]any{"RequestType": "ProfileList"})
+	if err != nil {
+		return err
+	}
+	return c.enqueue(ctx, []string{id}, cmd)
 }
 
 // SendRemoveProfile removes the profile with the given PayloadIdentifier.

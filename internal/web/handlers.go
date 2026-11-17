@@ -2,6 +2,12 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -70,7 +76,7 @@ func sameOrigin(r *http.Request, publicURL string) bool {
 	if err != nil || got.Host == "" {
 		return false
 	}
-	return strings.EqualFold(got.Host, want.Host)
+	return strings.EqualFold(got.Scheme, want.Scheme) && strings.EqualFold(got.Host, want.Host)
 }
 
 // render executes a template as a full page. On error it logs and writes a 500.
@@ -95,7 +101,7 @@ func (a *App) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusFound)
 		return
 	}
-	a.render(w, r, http.StatusOK, "login.html", nil)
+	a.render(w, r, http.StatusOK, "login.html", map[string]any{"SetupOpen": a.setupOpen(r.Context())})
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -171,13 +177,36 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if len(recent) > 5 {
 		recent = recent[:5]
 	}
+	var alerts []sqlite.AlertState
+	var heartbeat string
+	if a.alerts != nil {
+		states, err := a.alerts.ListAlertStates(r.Context())
+		if err != nil {
+			a.log.Error("list alert states", "err", err)
+		}
+		for _, s := range states {
+			if s.Key == "heartbeat" {
+				if s.NotifiedAt.Valid {
+					heartbeat = s.NotifiedAt.String
+				}
+				continue
+			}
+			if s.Active {
+				alerts = append(alerts, s)
+			}
+		}
+	}
 	a.render(w, r, http.StatusOK, "dashboard.html", map[string]any{
-		"Title":         "Dashboard",
-		"Total":         total,
-		"Active":        active,
-		"Recent":        recent,
-		"EnrollmentURL": strings.TrimRight(a.cfg.PublicURL, "/") + "/enroll",
-		"APNs":          a.apnsStatus(r.Context()),
+		"Title":            "Dashboard",
+		"Total":            total,
+		"Active":           active,
+		"Recent":           recent,
+		"EnrollmentURL":    strings.TrimRight(a.cfg.PublicURL, "/") + "/enroll",
+		"OpenEnrollment":   a.cfg.OpenEnrollment,
+		"APNs":             a.apnsStatus(r.Context()),
+		"Alerts":           alerts,
+		"AlertsConfigured": a.cfg.AlertsConfigured,
+		"LastHeartbeat":    heartbeat,
 	})
 }
 
@@ -276,15 +305,140 @@ func (a *App) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("list profiles", "err", err)
 	}
-	a.render(w, r, http.StatusOK, "device.html", map[string]any{
-		"Title":    d.DisplayName(),
-		"Device":   d,
-		"Commands": commands,
-		"Groups":   groups,
-		"Deploys":  deploys,
-		"Library":  library,
-		"Flash":    r.URL.Query().Get("flash"),
-	})
+	// What each deployed profile takes away if removed, by identifier.
+	affects := map[string]string{}
+	for _, p := range library {
+		if list := p.Affects(); len(list) > 0 {
+			affects[p.Identifier] = strings.Join(list, "; ")
+		}
+	}
+	// The latest DeviceInformation request, so the page can say whether a refresh
+	// is still waiting on the device rather than leaving the operator to read the
+	// command table.
+	var refresh *sqlite.CommandEntry
+	for i := range commands {
+		if commands[i].RequestType == "DeviceInformation" {
+			refresh = &commands[i]
+			break
+		}
+	}
+	data := map[string]any{
+		"Refresh":          refresh,
+		"Affects":          affects,
+		"Title":            d.DisplayName(),
+		"Intent":           newCommandIntent(),
+		"Device":           d,
+		"Commands":         commands,
+		"Groups":           groups,
+		"Deploys":          deploys,
+		"Library":          library,
+		"Flash":            r.URL.Query().Get("flash"),
+		"DirectoryRefresh": a.targeting != nil,
+	}
+	if oc, ok := a.devices.(interface {
+		ObservedDeviceCertificates(context.Context) ([]sqlite.ObservedCertificate, error)
+	}); ok {
+		observed, err := oc.ObservedDeviceCertificates(r.Context())
+		if err != nil {
+			a.log.Error("observed device certificates", "id", d.ID, "err", err)
+		}
+		for _, c := range observed {
+			if c.DeviceID == d.ID {
+				data["Presented"] = c
+				data["PresentedExpired"] = !c.NotAfter.After(time.Now())
+				data["PresentedDays"] = int(time.Until(c.NotAfter).Hours() / 24)
+			}
+		}
+	}
+	identity, _ := a.identityView(r.Context(), d.ID)
+	data["Identity"] = identity
+	if lc, ok := a.devices.(lifecycleSource); ok {
+		attempts, err := lc.DeviceRenewalAttempts(r.Context(), d.ID, 10)
+		if err != nil {
+			a.log.Error("device renewal attempts", "id", d.ID, "err", err)
+		}
+		data["RenewalAttempts"] = attempts
+		certs, err := lc.DeviceCertificates(r.Context())
+		if err != nil {
+			a.log.Error("device certificates", "id", d.ID, "err", err)
+		}
+		var mine []sqlite.DeviceCertificate
+		for _, c := range certs {
+			if c.DeviceID == d.ID {
+				mine = append(mine, c)
+			}
+		}
+		data["Certificates"] = mine
+	}
+	if a.vpn != nil {
+		data["VPN"] = a.deviceVPNRows(r.Context(), d.ID)
+		data["VPNIssuerMissing"] = a.vpnIssuerMissing
+		data["VPNCanIssue"] = a.vpnIssuer != nil
+	}
+	if a.ownership != nil {
+		if owner, err := a.ownership.GetDeviceOwner(r.Context(), d.ID); err == nil {
+			data["Owner"] = owner
+		} else if !errors.Is(err, sqlite.ErrNoOwner) {
+			a.log.Error("device owner", "id", d.ID, "err", err)
+		}
+		memberships, err := a.ownership.DeviceDirectoryMemberships(r.Context(), d.ID)
+		if err != nil {
+			a.log.Error("device directory memberships", "id", d.ID, "err", err)
+		}
+		data["DirectoryMemberships"] = memberships
+		if ev, err := a.ownership.DeviceDirectoryEvaluation(r.Context(), d.ID); err == nil {
+			data["DirectoryEvaluation"] = ev
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			a.log.Error("device directory evaluation", "id", d.ID, "err", err)
+		}
+	}
+	a.render(w, r, http.StatusOK, "device.html", data)
+}
+
+// lifecycleSource is the optional store capability behind the device page's
+// certificate and renewal sections.
+type lifecycleSource interface {
+	DeviceRenewalAttempts(ctx context.Context, deviceID string, limit int) ([]sqlite.RenewalAttempt, error)
+	DeviceCertificates(ctx context.Context) ([]sqlite.DeviceCertificate, error)
+}
+
+// handleDeviceDirectoryRefresh re-binds the device's owner, re-evaluates the
+// directory rules and pushes newly entitled profiles. Admin-only: it changes the
+// device's desired profile set.
+func (a *App) handleDeviceDirectoryRefresh(w http.ResponseWriter, r *http.Request) {
+	limitForm(w, r)
+	if !a.checkCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	back := "/admin/devices/" + id
+	if a.targeting == nil {
+		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Directory targeting is not configured."), http.StatusSeeOther)
+		return
+	}
+	if _, err := a.devices.GetDevice(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	out, err := a.targeting.RefreshAndReconcile(ctx, id)
+	user := sessionFrom(r).Identity.Username
+	var flash string
+	switch {
+	case err != nil:
+		a.log.Error("directory refresh", "id", id, "user", user, "err", err)
+		flash = "Directory refresh failed; memberships were not changed."
+	case !out.Owned:
+		flash = "This device has no verified owner, so directory rules do not apply. " + out.Detail
+	case !out.Evaluated:
+		flash = "Directory unavailable; previous memberships were kept. " + out.Detail
+	default:
+		flash = fmt.Sprintf("Directory rules evaluated: %d matched, %d new group membership(s). Entitled profiles are being pushed.", out.Matched, len(out.Added))
+	}
+	a.log.Info("directory refresh", "id", id, "user", user, "owned", out.Owned, "evaluated", out.Evaluated, "matched", out.Matched)
+	http.Redirect(w, r, back+"?flash="+url.QueryEscape(flash), http.StatusSeeOther)
 }
 
 // handleDeviceInstall pushes a library profile to one device as a one-off
@@ -295,6 +449,10 @@ func (a *App) handleDeviceInstall(w http.ResponseWriter, r *http.Request) {
 	limitForm(w, r)
 	if !a.checkCSRF(r) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	ctx, ok := a.deviceCommandIntent(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -309,7 +467,7 @@ func (a *App) handleDeviceInstall(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("No such profile."), http.StatusSeeOther)
 		return
 	}
-	if err := a.cmd.SendInstallProfile(r.Context(), prof.Data, id); err != nil {
+	if err := a.cmd.SendInstallProfile(ctx, prof.Data, id); err != nil {
 		a.log.Error("send install profile", "id", id, "profile", pid, "err", err)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Failed to queue install."), http.StatusSeeOther)
 		return
@@ -327,6 +485,10 @@ func (a *App) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
+	ctx, ok := a.deviceCommandIntent(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	back := "/admin/devices/" + id
 	identifier := strings.TrimSpace(r.PostFormValue("identifier"))
@@ -334,7 +496,7 @@ func (a *App) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("No profile identifier given."), http.StatusSeeOther)
 		return
 	}
-	if err := a.cmd.SendRemoveProfile(r.Context(), identifier, id); err != nil {
+	if err := a.cmd.SendRemoveProfile(ctx, identifier, id); err != nil {
 		a.log.Error("send remove profile", "id", id, "identifier", identifier, "err", err)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Failed to queue removal."), http.StatusSeeOther)
 		return
@@ -348,8 +510,12 @@ func (a *App) handleDeviceRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
+	ctx, ok := a.deviceCommandIntent(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
-	if err := a.cmd.SendDeviceInformation(r.Context(), id); err != nil {
+	if err := a.cmd.SendDeviceInformation(ctx, id); err != nil {
 		a.log.Error("send device information", "id", id, "err", err)
 		http.Redirect(w, r, "/admin/devices/"+id+"?flash=Failed+to+queue+refresh", http.StatusSeeOther)
 		return
@@ -381,13 +547,32 @@ func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("list devices", "err", err)
 	}
+	var counts map[string]sqlite.DeployCounts
+	var owners map[string]string
+	if ls, ok := a.devices.(deviceListSource); ok {
+		if counts, err = ls.DeviceDeployCounts(r.Context()); err != nil {
+			a.log.Error("device deploy counts", "err", err)
+		}
+		if owners, err = ls.DeviceOwnerUPNs(r.Context()); err != nil {
+			a.log.Error("device owners", "err", err)
+		}
+	}
 	a.render(w, r, http.StatusOK, "devices.html", map[string]any{
 		"Title":    "Devices",
 		"Devices":  devices,
 		"Q":        q,
 		"Enrolled": enrolled,
 		"Count":    len(devices),
+		"Counts":   counts,
+		"Owners":   owners,
 	})
+}
+
+// deviceListSource is the optional capability behind the device list's owner
+// and profile-outcome columns.
+type deviceListSource interface {
+	DeviceDeployCounts(ctx context.Context) (map[string]sqlite.DeployCounts, error)
+	DeviceOwnerUPNs(ctx context.Context) (map[string]string, error)
 }
 
 // checkCSRF verifies the submitted token matches the session's for mutating
@@ -405,4 +590,20 @@ func (a *App) checkCSRF(r *http.Request) bool {
 		got = r.Header.Get("X-CSRF-Token")
 	}
 	return got != "" && got == sess.CSRF
+}
+
+func newCommandIntent() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b[:])
+}
+func (a *App) deviceCommandIntent(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
+	key := r.PostFormValue("intent")
+	if len(key) < 32 || len(key) > 128 || strings.ContainsAny(key, " \r\n\t") {
+		http.Error(w, "Reload the device page before sending this command", 400)
+		return r.Context(), false
+	}
+	return mdmcore.WithCommandIntent(r.Context(), sessionFrom(r).Token+"\x00"+r.URL.Path+"\x00"+key), true
 }

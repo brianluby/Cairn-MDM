@@ -2,22 +2,36 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
+	directoryldap "github.com/nickpdawson/cairn-mdm/internal/auth/ldap"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
+	scepserver "github.com/micromdm/scep/v2/server"
+
+	"github.com/nickpdawson/cairn-mdm/internal/alert"
 	"github.com/nickpdawson/cairn-mdm/internal/assign"
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
 	"github.com/nickpdawson/cairn-mdm/internal/config"
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
+	"github.com/nickpdawson/cairn-mdm/internal/issue"
+	"github.com/nickpdawson/cairn-mdm/internal/keyfile"
 	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
+	"github.com/nickpdawson/cairn-mdm/internal/quarantine"
+	"github.com/nickpdawson/cairn-mdm/internal/renew"
 	"github.com/nickpdawson/cairn-mdm/internal/server"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
+	"github.com/nickpdawson/cairn-mdm/internal/targeting"
 	"github.com/nickpdawson/cairn-mdm/internal/version"
+	"github.com/nickpdawson/cairn-mdm/internal/vpn"
 	"github.com/nickpdawson/cairn-mdm/internal/web"
 )
 
@@ -51,20 +65,97 @@ func runServe(ctx context.Context, args []string) error {
 	// the device-inventory projector — enrollments update the inventory as they
 	// happen (no polling).
 	nanoStore := db.NanoStorage(log)
-	core := mdmcore.New(nanoStore, mdmcore.NewLogAdapter(log), db, db, log)
+	renewalCfg := cfg.Renewal.WithDefaults()
+	expiredGrace := time.Duration(renewalCfg.ExpiredGraceDays) * 24 * time.Hour
+	core := mdmcore.New(nanoStore, mdmcore.NewLogAdapter(log), db, db, log, mdmcore.Options{ExpiredGrace: expiredGrace})
+	// Remember the certificate each device checks in with, so its expiry is
+	// known whichever CA issued it.
+	core.OnIdentity(func(cert *x509.Certificate, accepted bool) {
+		if err := db.ObserveIdentityCertificate(ctx, cert, accepted); err != nil {
+			log.Warn("record device identity certificate", "err", err)
+		}
+	})
 	log.Info("mdm service ready", "path", cfg.Server.MDMPath)
 
 	deps := server.Deps{MDM: core.Handler()}
 
+	// One verified-directory provider serves owner checks at redemption and
+	// issuance, console lookups and directory targeting. Absent a directory ID,
+	// owner-authorized grants fail closed everywhere.
+	var directoryProvider *directoryldap.Provider
+	if cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "" {
+		directoryProvider, err = directoryldap.New(cfg.Auth.LDAP, log)
+		if err != nil {
+			return err
+		}
+	}
+	resolver := grantResolver{db: db}
+	if directoryProvider != nil {
+		resolver.directory = directoryProvider
+	}
+
 	// Configure SCEP + enrollment per ca.mode (generate | import | external).
-	pki, err := wirePKI(ctx, cfg, db.SQL(), db, grantRedeemer{db}, log, &deps)
+	pki, err := wirePKI(ctx, cfg, db, db, resolver, log, &deps)
 	if err != nil {
 		return err
 	}
 
 	// Admin console.
 	pusher := push.NewPusher(nanoStore, mdmcore.NewLogAdapter(log))
+	notificationCtx, stopNotifications := context.WithCancel(ctx)
+	notificationDone := make(chan struct{})
+	go func() {
+		defer close(notificationDone)
+		mdmcore.RunNotifications(notificationCtx, nanoStore.(mdmcore.NotificationStore), pusher, log)
+	}()
+	defer func() { stopNotifications(); <-notificationDone }()
 	commander := mdmcore.NewCommander(nanoStore, pusher).WithRecorder(db, log)
+
+	// Identity certificate renewal: push each device its enrollment profile
+	// again before the certificate it checks in with expires.
+	var renewals *renew.Service
+	switch {
+	case !renewalCfg.Enabled:
+		log.Info("device certificate renewal is off", "expired_grace_days", renewalCfg.ExpiredGraceDays)
+	case pki.RenewalProfile == nil:
+		return fmt.Errorf("renewal.enabled is not available in ca.mode %s", cfg.CA.Mode)
+	default:
+		var anchors []*x509.Certificate
+		for _, der := range pki.Anchors {
+			c, err := x509.ParseCertificate(der)
+			if err != nil {
+				return fmt.Errorf("renewal: parse CA chain: %w", err)
+			}
+			anchors = append(anchors, c)
+		}
+		renewals, err = renew.New(db, commander, renew.Options{
+			RenewBefore:  time.Duration(renewalCfg.RenewBeforeDays) * 24 * time.Hour,
+			ExpiredGrace: expiredGrace,
+			ServerURL:    cfg.Server.PublicURL + cfg.Server.MDMPath,
+			Hosts:        renewalCfg.ServerHosts,
+			Anchors:      anchors,
+			Profile:      pki.RenewalProfile,
+			KeyCheck:     renewalKeyCheck(pki.Challenges),
+			ManualOnly:   renewalCfg.ManualOnly,
+		}, log)
+		if err != nil {
+			return err
+		}
+		core.OnLifecycle(renewals)
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				renewals.Sweep(ctx)
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+		log.Info("device certificate renewal enabled", "renew_before_days", renewalCfg.RenewBeforeDays, "expired_grace_days", renewalCfg.ExpiredGraceDays, "extra_hosts", len(renewalCfg.ServerHosts), "manual_only", renewalCfg.ManualOnly)
+	}
 
 	// Login abuse controls (MDM-AUTH-001): session idle timeout + absolute cap
 	// come from the login policy; a bare [auth.login] table still yields working
@@ -83,6 +174,9 @@ func runServe(ctx context.Context, args []string) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				if pki.Challenges != nil {
+					pki.Challenges.Prune(ctx)
+				}
 				if n, err := sessions.DeleteExpired(ctx); err != nil {
 					log.Warn("session cleanup failed", "err", err)
 				} else if n > 0 {
@@ -94,7 +188,15 @@ func runServe(ctx context.Context, args []string) error {
 	// Assignment reconciler: pushes assigned profiles when devices enroll and
 	// when admins change groups/assignments. Event-driven — no polling loop.
 	reconciler := assign.New(db, commander, log)
-	core.OnPushable(reconciler.DeviceNowPushable)
+	// Directory targeting runs ahead of the reconciler on enrollment: bind the
+	// verified owner, apply group/OU rules, then push. Without a verified
+	// directory it still binds owners and reconciles manual memberships.
+	var targetingDirectory targeting.Directory
+	if directoryProvider != nil {
+		targetingDirectory = directoryProvider
+	}
+	targeter := targeting.New(db, targetingDirectory, reconciler, log)
+	core.OnPushable(targeter.DeviceNowPushable)
 
 	authn, err := buildAuthenticator(cfg, db, log)
 	if err != nil {
@@ -103,17 +205,132 @@ func runServe(ctx context.Context, args []string) error {
 
 	console, err := web.New(sessions, authn, db, commander, reconciler,
 		web.Config{
-			PublicURL:      cfg.Server.PublicURL,
-			Organization:   pki.Org,
-			SCEPURL:        pki.SCEPURL,
-			SCEPChallenge:  pki.Challenge,
-			CAAnchorsDER:   pki.Anchors,
-			TrustedProxies: cfg.Server.TLS.TrustedProxies,
+			PublicURL:           cfg.Server.PublicURL,
+			OwnerEnrollment:     ownerEnrollment(cfg.CA),
+			OwnerUnverified:     cfg.CA.Mode == config.CAExternal,
+			Organization:        pki.Org,
+			SCEPURL:             pki.SCEPURL,
+			SCEPChallenge:       pki.Challenge,
+			CAAnchorsDER:        pki.Anchors,
+			TrustedProxies:      cfg.Server.TLS.TrustedProxies,
+			CAMode:              string(cfg.CA.Mode),
+			TLSMode:             string(cfg.Server.TLS.Mode),
+			LDAPEnabled:         cfg.Auth.LDAP.Enabled,
+			DirectoryConfigured: cfg.Auth.LDAP.Enabled && cfg.Auth.LDAP.DirectoryID != "",
+			AlertsConfigured:    cfg.Alerts.Enabled(),
+			OpenEnrollment:      cfg.Enrollment.AllowOpen,
+			RoleMappings:        roleMappings(cfg),
 		}, log)
 	if err != nil {
 		return err
 	}
+	// Browser first-run: open only until the first local account exists, gated
+	// by a token file beside the database that only the host user can read.
+	setupGate := auth.NewSetupGate(db.SQL(), cfg.Storage.Path)
+	if open, err := setupGate.Prepare(ctx); err != nil {
+		return err
+	} else if open {
+		log.Warn("no administrator exists: first-time setup is open", "url", strings.TrimRight(cfg.Server.PublicURL, "/")+"/setup", "token_file", setupGate.TokenPath())
+	}
+	console.SetSetup(setupGate)
+	if directoryProvider != nil {
+		console.SetDirectory(directoryProvider)
+		console.SetTargeting(targeter)
+	}
 	console.SetLoginThrottle(loginThrottle)
+	// Local-account management in the console (admin-only). Directory-backed
+	// (LDAP/OIDC) identities are owned by their provider and stay outside this.
+	console.SetUsers(auth.NewLocalStore(db.SQL()))
+	mfaKey, err := auth.OpenMFAKey(ctx, db.SQL(), cfg.Storage.Path)
+	if err != nil {
+		return err
+	}
+	mfa, err := auth.NewMFAStore(db.SQL(), sessions, mfaKey)
+	if err != nil {
+		return err
+	}
+	console.SetMFA(mfa)
+	if renewals != nil {
+		console.SetIdentityPolicy(expiredGrace, renewals, !renewalCfg.ManualOnly)
+	} else {
+		console.SetIdentityPolicy(expiredGrace, nil, false)
+	}
+	if cfg.VPN.Enabled {
+		vpnKey, err := keyfile.Open(cfg.Storage.Path+".vpn", "VPN", func() (bool, error) {
+			n, err := db.CountSealedVPNKeys(ctx)
+			return n > 0, err
+		})
+		if err != nil {
+			return err
+		}
+		vpnServers, err := vpn.NewServers(db, vpnKey)
+		if err != nil {
+			return err
+		}
+		console.SetVPN(vpnServers)
+		vpnCfg := cfg.VPN.WithDefaults()
+		policy := issue.Policy{LeafValidity: time.Duration(vpnCfg.LeafValidityDays) * 24 * time.Hour, Backdate: 5 * time.Minute}
+		var vpnCA issue.CABackend
+		var issuedHere func(*x509.Certificate) bool
+		var missing string
+		// vpnSCEP builds the endpoint devices use for VPN certificates on keys
+		// they make. Its recipient is whichever identity the CA side has: the
+		// RA certificate for an external CA, the CA itself for Cairn's own.
+		var vpnSCEP func(scepserver.CSRSignerContext) (http.Handler, error)
+		switch {
+		case directoryProvider == nil:
+			missing = "a verified LDAP directory (auth.ldap with directory_id) is required to name certificate owners."
+		case vpnCfg.Issuer.Backend == "scep":
+			if vpnCA, err = vpnSCEPIssuer(vpnCfg.Issuer); err != nil {
+				return err
+			}
+			// The SCEP CA sets the lifetime; accept it up to the configured ceiling.
+			policy.MaxLeafValidity = time.Duration(vpnCfg.Issuer.MaxLeafValidityDays) * 24 * time.Hour
+			vpnSCEP = func(signer scepserver.CSRSignerContext) (http.Handler, error) {
+				return vpnDeviceSCEPHandler(vpnCfg.Issuer, signer)
+			}
+		case pki.Authority == nil:
+			missing = "no certificate authority is configured for VPN certificates. Cairn's own CA is off in ca.mode " + string(cfg.CA.Mode) + "; set [vpn.issuer] backend = \"scep\" to use an external one."
+		default:
+			vpnCA = pki.Authority.EmbeddedBackend()
+			caCert := pki.Authority.Certificate()
+			issuedHere = func(leaf *x509.Certificate) bool { return leaf.CheckSignatureFrom(caCert) == nil }
+			vpnSCEP = pki.Authority.SCEPHandlerWith
+		}
+		if missing != "" {
+			console.SetVPNIssuer(nil, db, missing)
+			log.Warn("VPN server records enabled; issuing is off", "reason", missing)
+		} else {
+			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, vpnCA, commander,
+				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType, IssuedHere: issuedHere,
+					DeviceSCEPURL: cfg.Server.PublicURL + "/scep/vpn", Sign: profileSigner(pki.Signer)}, log)
+			if err != nil {
+				return err
+			}
+			if deps.VPNSCEP, err = vpnSCEP(vpnService); err != nil {
+				return fmt.Errorf("vpn: device SCEP endpoint: %w", err)
+			}
+			console.SetVPNIssuer(vpnService, db, "")
+			go func() {
+				t := time.NewTicker(time.Hour)
+				defer t.Stop()
+				for {
+					vpnService.Sweep(ctx)
+					select {
+					case <-ctx.Done():
+						return
+					case <-t.C:
+					}
+				}
+			}()
+			log.Info("VPN profiles enabled", "ca", vpnCfg.Issuer.Backend, "leaf_validity_days", vpnCfg.LeafValidityDays, "key_type", vpnCfg.KeyType)
+		}
+	}
+	// Evidence-gated quarantine release. Only the embedded CA can produce the
+	// fence and enumeration manifests; other backends leave holds read-only.
+	console.SetQuarantineResolver(quarantine.New(db, pki.Authority, cfg.RADIUS.AcceptancePoints))
+	console.SetRadiusIngestToken(cfg.RADIUS.IngestToken)
+	console.SetAPNS(push.RequestManager{Root: filepath.Join(pushcertDir(cfg), "requests")}, db)
 
 	// OIDC single sign-on (redirect flow) is wired separately from the
 	// username/password authenticator chain.
@@ -127,6 +344,26 @@ func runServe(ctx context.Context, args []string) error {
 
 	deps.UI = console
 	log.Info("admin console ready", "path", "/admin")
+
+	// Out-of-band alerts: hourly checks for certificate expiry, quarantine and
+	// backup freshness, with transitions, reminders and a heartbeat posted to
+	// the webhook. Without a webhook the conditions are still recorded for the
+	// dashboard, so the console shows them either way.
+	var notifier *alert.Notifier
+	if cfg.Alerts.Enabled() {
+		notifier = alert.NewNotifier(cfg.Alerts.WebhookURL)
+		log.Info("alerts enabled", "heartbeat_hours", cfg.Alerts.WithDefaults().HeartbeatHours, "backup_dir", cfg.Alerts.BackupDir)
+	} else {
+		log.Warn("alerts.webhook_url not set: expiry, quarantine and backup alerts stay on the dashboard only")
+	}
+	checker := alert.New(db, notifier, cfg.Alerts, log)
+	identityPolicy := alert.IdentityPolicy{ExpiredGrace: expiredGrace}
+	if renewals != nil {
+		identityPolicy.Renewing = !renewalCfg.ManualOnly
+		identityPolicy.Blocked = func(c sqlite.RenewalCandidate) string { return renewals.Status(c).Blocked }
+	}
+	checker.SetIdentityPolicy(identityPolicy)
+	go checker.Loop(ctx, time.Hour)
 
 	srv := server.New(cfg, log, db, deps)
 	httpSrv := &http.Server{
@@ -170,9 +407,15 @@ func runServe(ctx context.Context, args []string) error {
 
 // grantRedeemer adapts *sqlite.DB to enroll.Redeemer (translating the storage
 // Redemption type to the enroll one).
-type grantRedeemer struct{ db *sqlite.DB }
+type grantRedeemer struct {
+	db       *sqlite.DB
+	resolver grantResolver
+}
 
 func (g grantRedeemer) RedeemGrant(ctx context.Context, rawToken string) (enroll.Redemption, error) {
+	if _, err := g.resolver.validate(ctx, rawToken); err != nil {
+		return enroll.Redemption{}, err
+	}
 	r, err := g.db.RedeemGrant(ctx, rawToken)
 	if err != nil {
 		return enroll.Redemption{}, err
@@ -188,4 +431,56 @@ func publicHost(publicURL string) string {
 		return u.Hostname()
 	}
 	return publicURL
+}
+
+func (g grantRedeemer) InspectGrant(ctx context.Context, rawToken string) error {
+	info, err := g.resolver.validate(ctx, rawToken)
+	if err != nil {
+		return err
+	}
+	grant, err := g.db.GetGrant(ctx, info.ID)
+	if err != nil {
+		return err
+	}
+	if grant.Status() != "active" {
+		return sqlite.ErrGrantInvalid
+	}
+	return nil
+}
+
+// roleMappings flattens the configured group→role rules for the Users page,
+// sorted for a stable display, with each enabled provider's default role last.
+func roleMappings(cfg config.Config) []web.RoleMapping {
+	var out []web.RoleMapping
+	add := func(provider string, rules map[string]string, def string) {
+		keys := make([]string, 0, len(rules))
+		for k := range rules {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			out = append(out, web.RoleMapping{Provider: provider, Source: k, Role: rules[k]})
+		}
+		if def == "" {
+			def = "user"
+		}
+		out = append(out, web.RoleMapping{Provider: provider, Role: def})
+	}
+	if cfg.Auth.LDAP.Enabled {
+		add("ldap", cfg.Auth.LDAP.GroupRoles, cfg.Auth.LDAP.DefaultRole)
+	}
+	if cfg.Auth.OIDC.Enabled {
+		o := cfg.Auth.OIDC.WithDefaults()
+		add("oidc", o.GroupRoles, o.DefaultRole)
+	}
+	return out
+}
+
+// ownerEnrollment reports whether an enrollment link decides who gets a
+// certificate. It does when Cairn issues or relays the request, and with an
+// external CA only when that CA looks up Cairn's one-time challenges; with a
+// shared challenge the CA would issue to anyone who has read it.
+func ownerEnrollment(ca config.CA) bool {
+	return ca.Mode.Embedded() || ca.Mode == config.CABroker ||
+		(ca.Mode == config.CAExternal && ca.External.Lookup.Enabled)
 }

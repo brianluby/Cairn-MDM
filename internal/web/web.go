@@ -11,10 +11,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nickpdawson/cairn-mdm/internal/auth"
+	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/storage/sqlite"
+	"github.com/nickpdawson/cairn-mdm/internal/targeting"
 )
 
 //go:embed templates/*.html assets/*
@@ -27,6 +30,17 @@ const SessionCookie = "__Host-cairn_session"
 // Authenticator verifies local credentials.
 type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) (*auth.Identity, error)
+}
+
+// UserAdmin manages local console accounts. *auth.LocalStore implements it.
+// Directory-backed identities (LDAP/OIDC) are owned by their provider and are
+// deliberately outside this interface.
+type UserAdmin interface {
+	CreateUser(ctx context.Context, username, password string, role auth.Role, displayName string) error
+	SetPassword(ctx context.Context, username, password string) error
+	ListUsers(ctx context.Context) ([]auth.UserSummary, error)
+	DeleteUser(ctx context.Context, username string) error
+	CountUsers(ctx context.Context) (int, error)
 }
 
 // DeviceSource provides the inventory for the console.
@@ -96,6 +110,58 @@ type DeployStore interface {
 	GroupDeployStatus(ctx context.Context, groupID int64) ([]sqlite.GroupProfileStatus, error)
 }
 
+// QuarantineStore reads quarantined certificate issuances — enrollments held after
+// an ambiguous CA outcome, awaiting resolution. *sqlite.DB satisfies it.
+type QuarantineStore interface {
+	ListQuarantined(ctx context.Context) ([]sqlite.Issuance, error)
+}
+
+// OwnershipStore reads verified device ownership and the directory-derived
+// memberships that follow from it. *sqlite.DB satisfies it.
+type OwnershipStore interface {
+	GetDeviceOwner(ctx context.Context, deviceID string) (sqlite.DeviceOwner, error)
+	DeviceDirectoryMemberships(ctx context.Context, deviceID string) ([]sqlite.DirectoryMembership, error)
+	DeviceDirectoryEvaluation(ctx context.Context, deviceID string) (sqlite.DirectoryEvaluation, error)
+	GroupDirectoryDevices(ctx context.Context, groupID int64) ([]sqlite.Device, error)
+}
+
+// RoleMapping is one configured group→role rule, or a provider's default role
+// when Source is empty.
+type RoleMapping struct {
+	Provider string // ldap | oidc
+	Source   string // group DN or claim value; "" for the default
+	Role     string
+}
+
+// alertAction maps an alert key to the console page that resolves it.
+func alertAction(key string) string {
+	switch {
+	case strings.HasPrefix(key, "apns."):
+		return "/admin/apns"
+	case strings.HasPrefix(key, "backup."):
+		return "/admin/settings"
+	case strings.HasPrefix(key, "device-cert."), strings.HasPrefix(key, "identity."), key == "renewal.refused":
+		return "/admin/devices"
+	case key == "issuance.quarantined":
+		return "/admin/quarantine"
+	case strings.HasPrefix(key, "vpn"):
+		return "/admin/vpn"
+	default:
+		return ""
+	}
+}
+
+// AlertStore reads remembered alert conditions for the dashboard.
+type AlertStore interface {
+	ListAlertStates(ctx context.Context) ([]sqlite.AlertState, error)
+}
+
+// Targeting re-evaluates directory rules for devices on operator request.
+type Targeting interface {
+	RefreshAndReconcile(ctx context.Context, deviceID string) (targeting.Outcome, error)
+	RefreshAll(ctx context.Context) (targeting.Summary, error)
+}
+
 // Store bundles everything the console reads and writes; *sqlite.DB implements
 // all of it.
 type Store interface {
@@ -107,6 +173,9 @@ type Store interface {
 	GrantStore
 	AuditStore
 	DeployStore
+	QuarantineStore
+	OwnershipStore
+	AlertStore
 }
 
 // Commander runs device actions from the console.
@@ -124,13 +193,27 @@ type Reconciler interface {
 
 // Config holds display settings and the defaults the profile builders prefill.
 type Config struct {
-	PublicURL string // for showing the enrollment URL
+	PublicURL       string // for showing the enrollment URL
+	OwnerEnrollment bool   // only CA modes with the authoritative Cairn issuance boundary
+	OwnerUnverified bool   // the CA issues on its own, so an enrolled device gets no verified owner
 
 	// Builder defaults, from the wired PKI:
 	Organization  string   // reverse-DNS identifier root for built profiles
 	SCEPURL       string   // device-identity SCEP endpoint
 	SCEPChallenge string   // its static challenge (may be empty)
 	CAAnchorsDER  [][]byte // Cairn's trust anchors (embedded CA cert or external chain)
+
+	// Environment facts for the setup checklist and Settings page (display only).
+	CAMode              string // generate | import | broker | external
+	TLSMode             string // acme | files | proxy
+	LDAPEnabled         bool
+	DirectoryConfigured bool // auth.ldap.directory_id set
+	AlertsConfigured    bool // alerts.webhook_url set
+	OpenEnrollment      bool // enrollment.allow_open: bare /enroll is served
+
+	// RoleMappings lists how directory and SSO identities obtain console roles
+	// (display only; the mappings live in cairn.toml).
+	RoleMappings []RoleMapping
 
 	// TrustedProxies lists reverse proxies (IP or CIDR) whose X-Forwarded-For
 	// header Cairn trusts for client-IP attribution. Empty = trust none: the
@@ -142,23 +225,43 @@ type Config struct {
 
 // App is the admin console.
 type App struct {
-	sessions   *auth.SessionStore
-	auth       Authenticator
-	devices    DeviceSource
-	settings   SettingsSource
-	apnsTopics APNSTopicSource
-	profiles   ProfileStore
-	groups     GroupStore
-	grants     GrantStore
-	audit      AuditStore
-	deploys    DeployStore
-	cmd        Commander
-	rec        Reconciler   // may be nil (no auto-push)
-	oidc       OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
-	cfg        Config
-	trusted    []*net.IPNet // parsed cfg.TrustedProxies; nil = trust no proxy
-	tmpl       *template.Template
-	log        *slog.Logger
+	mfa              *auth.MFAStore
+	setup            *auth.SetupGate // may be nil (no browser first-run)
+	directory        DirectoryResolver
+	apnsRequests     *push.RequestManager
+	apnsCertificates push.CertificateStore
+	sessions         *auth.SessionStore
+	auth             Authenticator
+	devices          DeviceSource
+	settings         SettingsSource
+	apnsTopics       APNSTopicSource
+	profiles         ProfileStore
+	groups           GroupStore
+	grants           GrantStore
+	audit            AuditStore
+	deploys          DeployStore
+	quarantine       QuarantineStore
+	ownership        OwnershipStore
+	alerts           AlertStore
+	resolver         QuarantineResolver // may be nil (read-only quarantine page)
+	radiusToken      string             // bearer token for the RADIUS rejection ingest endpoint
+	targeting        Targeting          // may be nil (no directory targeting)
+	vpn              VPNServers         // may be nil (VPN profiles disabled); set via SetVPN
+	vpnIssuer        VPNIssuer          // may be nil (no CA or directory for VPN certificates)
+	vpnIdentities    VPNIdentityStore   // may be nil with vpnIssuer
+	vpnIssuerMissing string             // why vpnIssuer is nil, for the console
+
+	identityGrace     time.Duration // how long an expired identity certificate may still check in
+	renewals          Renewals      // may be nil (renewal off)
+	renewalsAutomatic bool
+	cmd               Commander
+	rec               Reconciler   // may be nil (no auto-push)
+	oidc              OIDCProvider // may be nil (OIDC disabled); set via SetOIDC
+	users             UserAdmin    // may be nil (user management disabled); set via SetUsers
+	cfg               Config
+	trusted           []*net.IPNet // parsed cfg.TrustedProxies; nil = trust no proxy
+	tmpl              *template.Template
+	log               *slog.Logger
 }
 
 // New builds the console. rec may be nil to disable assignment auto-push.
@@ -169,7 +272,7 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	}
 	a := &App{
 		sessions: sessions, auth: authn,
-		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store,
+		devices: store, settings: store, apnsTopics: store, profiles: store, groups: store, grants: store, audit: store, deploys: store, quarantine: store, ownership: store, alerts: store,
 		cmd: cmd, rec: rec, cfg: cfg, trusted: trusted, log: log,
 	}
 	// oidcEnabled lets the login template render the SSO button only when an
@@ -177,6 +280,7 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	// after SetOIDC has (or has not) run during startup.
 	tmpl, err := template.New("").Funcs(funcMap).Funcs(template.FuncMap{
 		"oidcEnabled": func() bool { return a.oidc != nil },
+		"vpnEnabled":  func() bool { return a.vpn != nil },
 	}).ParseFS(files, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -185,11 +289,32 @@ func New(sessions *auth.SessionStore, authn Authenticator, store Store, cmd Comm
 	return a, nil
 }
 
+// SetTargeting installs the directory-targeting service behind the console's
+// refresh actions. Nil hides those actions.
+func (a *App) SetTargeting(t Targeting) { a.targeting = t }
+
+// SetUsers installs (or clears, with nil) the local-account admin backend.
+// When nil the user-management pages render an "unavailable" notice.
+func (a *App) SetUsers(u UserAdmin) { a.users = u }
+
 // Register mounts the console routes on mux. Implementing this interface keeps
 // the server package from importing web.
 func (a *App) Register(mux *http.ServeMux) {
+	mux.Handle("GET /account/mfa", a.requireRole(auth.RoleUser, a.handleMFA))
+	mux.Handle("POST /account/mfa/{action}", a.audited(a.requireRole(auth.RoleUser, a.handleMFAAction)))
+	mux.Handle("GET /admin/directory", a.requireRole(auth.RoleAdmin, a.handleDirectory))
+	mux.Handle("POST /admin/directory/rules", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectorySave)))
+	mux.Handle("POST /admin/directory/preview", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryPreview)))
+	mux.Handle("POST /admin/directory/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryDelete)))
+	mux.Handle("POST /admin/directory/refresh", a.audited(a.requireRole(auth.RoleAdmin, a.handleDirectoryRefreshAll)))
+	mux.Handle("POST /admin/devices/{id}/directory-refresh", a.audited(a.requireRole(auth.RoleAdmin, a.handleDeviceDirectoryRefresh)))
 	// Static assets.
 	mux.Handle("GET /assets/", http.FileServerFS(files))
+
+	// First-run setup: available only while no local account exists and only
+	// with the host token. Both routes 404 once setup has completed.
+	mux.HandleFunc("GET /setup", a.handleSetupForm)
+	mux.Handle("POST /setup", a.audited(http.HandlerFunc(a.handleSetupComplete)))
 
 	// Public auth routes. The mutating ones (POST /login, POST /logout) are
 	// wrapped with a.audited so every sign-in/sign-out is recorded.
@@ -208,6 +333,7 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("GET /admin/activity", a.requireRole(auth.RoleOperator, a.handleActivity))
 	mux.Handle("GET /admin/devices", a.requireRole(auth.RoleOperator, a.handleDevices))
 	mux.Handle("GET /admin/devices/{id}", a.requireRole(auth.RoleOperator, a.handleDeviceDetail))
+	mux.Handle("POST /admin/devices/{id}/renew", a.audited(a.requireRole(auth.RoleAdmin, a.handleDeviceRenew)))
 	mux.Handle("POST /admin/devices/{id}/refresh", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceRefresh)))
 	mux.Handle("POST /admin/devices/{id}/install", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceInstall)))
 	mux.Handle("POST /admin/devices/{id}/remove", a.audited(a.requireRole(auth.RoleOperator, a.handleDeviceRemove)))
@@ -230,8 +356,37 @@ func (a *App) Register(mux *http.ServeMux) {
 	// reconciler, which pushes profiles — admin-only, like the library.
 	// Enrollment grants — operators create/revoke single-use enroll links.
 	mux.Handle("GET /admin/enrollment", a.requireRole(auth.RoleOperator, a.handleEnrollment))
-	mux.Handle("POST /admin/enrollment", a.audited(a.requireRole(auth.RoleOperator, a.handleGrantCreate)))
+	mux.Handle("POST /admin/enrollment", a.audited(a.requireRole(auth.RoleAdmin, a.handleGrantCreate)))
+	mux.Handle("POST /admin/enrollment/preview", a.audited(a.requireRole(auth.RoleAdmin, a.handleEnrollmentPreview)))
 	mux.Handle("POST /admin/enrollment/{id}/revoke", a.audited(a.requireRole(auth.RoleOperator, a.handleGrantRevoke)))
+
+	// Quarantined issuances (ambiguous CA outcomes held for resolution). Admin-only,
+	// security-sensitive. Read-only for now; the guided resolution flow lands with
+	// the ResolveQuarantine backend.
+	mux.Handle("GET /admin/quarantine", a.requireRole(auth.RoleAdmin, a.handleQuarantine))
+	mux.Handle("GET /admin/quarantine/{id}", a.requireRole(auth.RoleAdmin, a.handleQuarantineDetail))
+	mux.Handle("POST /admin/quarantine/{id}/{step}", a.audited(a.requireRole(auth.RoleAdmin, a.handleQuarantineStep)))
+	// RADIUS acceptance points report observed Access-Rejects here (bearer token).
+	mux.Handle("POST /api/v1/radius/rejections", a.audited(http.HandlerFunc(a.handleRadiusRejection)))
+
+	mux.Handle("POST /admin/devices/{id}/commands/{uuid}/retry-push", a.audited(a.requireRole(auth.RoleOperator, a.handleNotificationRetry)))
+	mux.Handle("GET /admin/apns", a.requireRole(auth.RoleAdmin, a.handleAPNS))
+	mux.Handle("POST /admin/apns/requests", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSCreate)))
+	mux.Handle("GET /admin/apns/requests/{id}", a.requireRole(auth.RoleAdmin, a.handleAPNSRequest))
+	mux.Handle("POST /admin/apns/requests/{id}/submit", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSSubmit)))
+	mux.Handle("POST /admin/apns/requests/{id}/attachment", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSAttachment)))
+	mux.Handle("GET /admin/apns/requests/{id}/download", a.requireRole(auth.RoleAdmin, a.handleAPNSDownload))
+	mux.Handle("POST /admin/apns/requests/{id}/certificate", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSCertificate)))
+	mux.Handle("POST /admin/apns/requests/{id}/install", a.audited(a.requireRole(auth.RoleAdmin, a.handleAPNSInstall)))
+
+	// Local user management + a read-only settings view. Admin-only, and every
+	// mutation is audited.
+	mux.Handle("GET /admin/users", a.requireRole(auth.RoleAdmin, a.handleUsers))
+	mux.Handle("POST /admin/users", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserCreate)))
+	mux.Handle("POST /admin/users/{username}/passwd", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserPasswd)))
+	mux.Handle("POST /admin/users/{username}/role", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserRole)))
+	mux.Handle("POST /admin/users/{username}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleUserDelete)))
+	mux.Handle("GET /admin/settings", a.requireRole(auth.RoleAdmin, a.handleSettings))
 
 	mux.Handle("GET /admin/groups", a.requireRole(auth.RoleOperator, a.handleGroups))
 	mux.Handle("POST /admin/groups", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupCreate)))
@@ -239,6 +394,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("POST /admin/groups/{id}/delete", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupDelete)))
 	mux.Handle("POST /admin/groups/{id}/devices", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupDeviceChange)))
 	mux.Handle("POST /admin/groups/{id}/profiles", a.audited(a.requireRole(auth.RoleAdmin, a.handleGroupProfileChange)))
+
+	a.registerVPN(mux)
 
 	// Bare "/" redirects to the console.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +467,8 @@ func clearSessionCookie(w http.ResponseWriter) {
 }
 
 var funcMap = template.FuncMap{
-	"nullStr": nullStr,
+	"nullStr":     nullStr,
+	"alertAction": alertAction,
 }
 
 // nullStr renders a nullable timestamp/string column as its value or an em dash.

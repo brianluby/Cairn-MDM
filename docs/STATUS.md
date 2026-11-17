@@ -1,5 +1,39 @@
 # Cairn — build status
 
+Current completion work: [requirements and acceptance matrix](completion-prd.md),
+[APNs lifecycle guide](apns-lifecycle.md), [directory profile targeting](directory-profile-targeting.md),
+[enrollment and recovery](enrollment-onboarding.md), [backup and restore](backup-restore.md)
+[quarantine resolution](quarantine-resolution.md), [certificate lifecycle](certificate-lifecycle.md) and [VPN profiles](vpn-profiles.md). The dated phase records below are
+historical evidence, not a current beta-release verdict.
+
+## November 2026: beta candidate (v0.2.0-beta.1)
+
+Built since v0.1.1, with the evidence for each item in the
+[acceptance matrix](completion-prd.md):
+
+- Enrollment authorization: owner-bound, single-use links created with fresh
+  MFA; issuance state machine with quarantine; embedded two-tier CA and a SCEP
+  broker in front of an external CA; revocation and CRL. Proven end to end in
+  an in-process HTTP test, not yet on hardware.
+- MFA (authenticator codes, recovery codes, administrator approvals), browser
+  first-run setup, LDAP/AD owner lookup, and profile rules by AD group or OU.
+- Durable command queue with notification retry; APNs request and renewal
+  workflow in the console.
+- Backup bundles, restore rehearsal, webhook alerts and heartbeat.
+- VPN profiles: OpenVPN with a certificate per device; native IKEv2 with
+  password sign-in by download and certificate sign-in on a device-made key.
+- Device identity certificates: one expiry rule for every platform, a grace
+  period for expired devices, and renewal with an external CA. One-time SCEP
+  challenges an external CA checks with Cairn.
+
+On real devices, November 16, 2026 (external CA: OpenXPKI): identity renewal on
+two Macs, three iPhones and an iPad; IKEv2 password and EAP-TLS profiles
+connected from an iPhone.
+
+Not done: EAP-TLS Wi-Fi on hardware, independent review of enrollment
+authorization and renewal, renewal for the embedded CA and broker, a new
+enrollment through a one-time challenge, and the release gate (RELEASE-1).
+
 ## Phase 0 — skeleton ✅
 Single Go binary scaffold: `serve`/`migrate`/`version` CLI, TOML config with
 env overrides and file/env-only secrets, pure-Go SQLite storage with an embedded
@@ -65,7 +99,7 @@ https (ATS), and extensiblesso `Type` must be `Credential` (capitalized).
 ## Hardening sprint (2026-07-31/08-01) — third-party review + EAP-TLS plan
 
 Full plan + status: `docs/remediation-plan.md` (source of truth). All deployed to
-CT 226 + live-verified. Reference: `sol_mdmreview_20260731.md`.
+the production host and live-verified.
 
 - **Stage 0** ✅ — DB/WAL/SHM 0600, session tokens hashed at rest, HTTP security
   headers + no-store + timeouts + body limits + same-origin, no-echo password
@@ -93,11 +127,10 @@ outbox (claim/lease/retry), one-off install/remove-profile UI, versioned
 profiles + installed-vs-desired, per-serial migration tracker, `cairn backup` CLI.
 
 ## Production cutover ✅ DONE 2026-07-31 (DZsec, soaking)
-Rehearsal (fail-closed importer) → live import into CT 226 (12 devices, 5 users,
+Rehearsal (fail-closed importer) → live import into the production host (12 devices, 5 users,
 17 enrollments, 33 cert associations, 1 APNs cert; verify passed) → NPM host
 repoint → canary ping-all confirmed. Third-party post-cutover review (2026-08-03)
-returned: conversion PASS, keep Cairn live. Runbook:
-`~/Development/Notes/runbooks/cairn_dzsec_migration_20260731.md`. Migration
+returned: conversion PASS, keep Cairn live. Migration
 exception recorded: 257 queued-but-undelivered v1 commands were intentionally
 abandoned (`-allow-pending`) — queued commands are not migrated by design; the
 fleet re-derives desired state from assignments. Soak in progress; v1 nanomdm
@@ -111,11 +144,14 @@ held stopped-but-intact for rollback (repoint NPM back + `docker start nanomdm`)
   throttling and audit attribution resolve the real client via X-Forwarded-For
   from trusted peers only (untrusted peers can't spoof). `internal/web/proxy.go`,
   test in `proxy_test.go`.
-- **Backup** — nightly in-guest `cairn backup` systemd timer on CT 226 (14-copy
-  retention) + off-host copy; PBS job for CT 226 pending (Proxmox-side).
+- **Backup** — nightly in-guest `cairn backup` systemd timer on the production host (14-copy
+  retention) + off-host copy; hypervisor-level backup job pending.
 
 ## Remaining
-- **Open security gate — enrollment issuance trust (v1.0).** Grants gate profile
+- **Open security gate — enrollment issuance trust (v1.0).** *(Written August
+  2026. Since then the embedded-issue and broker paths and one-time challenges
+  for an external CA have been built; what remains is independent review and
+  hardware proof. See the November section above.)* Grants gate profile
   delivery, not certificate *issuance*; in external mode the CA authenticates on
   its own SCEP challenge, so a device cert's subject/SAN is not yet
   authority-attested. **Cairn must own enrollment authorization** — embedded
@@ -130,7 +166,7 @@ held stopped-but-intact for rollback (repoint NPM back + `docker start nanomdm`)
 - **Phase 2 polish (optional)** — live SSE command results, "install/remove
   profile now" one-off actions from the device page.
 - **Soak wrap-up** — remaining migrated devices to first check-in or retire;
-  then v1 teardown (secret rotation, lock down maverick MySQL 3306, stop
+  then v1 teardown (secret rotation, lock down the old server's MySQL port, stop
   mdm-admin :8081).
 - **OIDC** — authorization-code flow implemented (`internal/auth/oidc`,
   `/auth/oidc/login` + `/callback`); live-verify against Authentik outstanding.

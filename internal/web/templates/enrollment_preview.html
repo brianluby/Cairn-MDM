@@ -1,0 +1,28 @@
+<!doctype html><html lang="en"><head>{{template "head" .}}</head><body>{{template "topbar" .}}<main>
+<h1>Confirm device owner</h1>
+<div class="card" style="padding:24px">
+<p>Owner: <strong>{{.Preview.Owner.UPN}}</strong> ({{.Preview.Owner.AccountName}})</p>
+<p>Device: {{.Preview.Label}} · {{.Preview.Platform}}</p><p>Link expires after {{.Preview.Hours}} hour(s). This confirmation expires after five minutes.</p>
+<p>You authorize this enrollment as {{.User.Username}}. The owner opens the link on their device and approves installation; they do not sign in to Cairn.</p>
+{{if .OwnerUnverified}}{{else if .Preview.GroupID}}<p>Explicit Cairn group: <strong>{{.Preview.GroupName}}</strong>. The device joins it once it enrolls and is bound to this owner.</p>{{end}}
+</div>
+
+<h2>Profiles this device will receive</h2>
+{{if .OwnerUnverified}}<div class="card" style="padding:24px">
+<p>None. The device enrolls with management only.</p>
+<p class="sub">The certificate authority issues this device's certificate itself, so Cairn will not record a verified owner for it. Directory rules{{if .Preview.GroupID}} and the group {{.Preview.GroupName}}{{end}} are not applied. Add the device to groups from its page after it enrolls.</p>
+{{if .PreviewProfiles}}<p class="sub">For reference only, not deployed by this link: {{.Preview.Owner.UPN}} matches rules{{if .Preview.GroupID}} or the chosen group{{end}} that assign {{range $i, $p := .PreviewProfiles}}{{if $i}}, {{end}}{{$p.Profile.Name}}{{end}}.</p>{{end}}
+</div>
+{{else}}<div class="card">
+{{if .Matches}}<p class="sub">Directory rules checked now for {{.Preview.Owner.UPN}}; they are evaluated again after the device enrolls.</p>
+<ul>{{range .Matches}}<li>{{.Scope.Name}}: {{if .Matches}}matches{{else}}does not match{{end}} ({{.Scope.Kind}}, {{.Scope.Mode}})</li>{{end}}</ul>{{else}}<p class="sub">No directory rules are saved. <a href="/admin/directory">Add directory profile rules</a> to assign profiles by AD group or OU.</p>{{end}}
+{{range .Conflicts}}<p class="callout error" role="alert">{{.}}. Resolve this in the profile library before creating the link.</p>{{end}}
+{{range .PreviewProfiles}}<h3>{{.Profile.Name}}</h3><p class="mono sub">{{.Profile.Identifier}}</p><ul>{{range .Sources}}<li>{{.}}</li>{{end}}</ul>{{else}}<p>No profiles are assigned to this owner's matched groups{{if .Preview.GroupID}} or the chosen Cairn group{{end}}. The device will enroll with management only.</p>{{end}}
+<p class="sub">Profiles are pushed after the device enrolls and acknowledges management. Pushing a Wi-Fi profile does not prove the device joined the network.</p>
+</div>{{end}}
+
+<div class="card" style="padding:24px">
+{{if .IssuanceReady}}<form method="post" action="/admin/enrollment"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="preview" value="{{.Token}}"><button class="btn">Create single-use link</button> <a href="/admin/enrollment">Change owner or device</a></form>
+{{else if .Conflicts}}<p role="status">The link cannot be created while profile identifiers conflict.</p><p><a href="/admin/enrollment">Change owner or device</a></p>
+{{else}}<p role="status">No link was created. This server's certificate authority issues to anyone with the shared challenge, so a link would not control who enrolls. Turn on one-time challenges (<span class="mono">ca.external.challenge_lookup</span>) to create links.</p><p><a href="/admin/enrollment">Preview another owner</a></p>{{end}}
+</div></main></body></html>

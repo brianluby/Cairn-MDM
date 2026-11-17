@@ -163,3 +163,31 @@ func TestSessionUnknownToken(t *testing.T) {
 		t.Errorf("Get(empty) err = %v, want ErrNoSession", err)
 	}
 }
+
+func TestSessionPreservesDirectoryReferenceWithoutPromotingLegacyIdentity(t *testing.T) {
+	s := testSessionStore(t)
+	ctx := context.Background()
+	directory := &DirectoryIdentity{DirectoryID: "test-directory", ObjectID: "0102030405060708090a0b0c0d0e0f10", UPN: "owner@example.org", AccountName: "owner"}
+	created, err := s.Create(ctx, Identity{Username: "owner", Provider: "ldap", Role: RoleUser, Directory: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := NewSessionStore(s.db, time.Hour).Get(ctx, created.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Identity.Directory == nil || *resumed.Identity.Directory != *directory {
+		t.Fatalf("lost directory reference: %+v", resumed.Identity)
+	}
+	legacy, err := s.Create(ctx, Identity{Username: "owner@example.org", Provider: "ldap", Role: RoleUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err = s.Get(ctx, legacy.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Identity.Directory != nil {
+		t.Fatal("mutable name promoted into directory identity")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -52,6 +53,14 @@ func (s *SessionStore) SetMaxLifetime(d time.Duration) {
 
 // Create starts a new session for id and returns it (token + CSRF token).
 func (s *SessionStore) Create(ctx context.Context, id Identity) (*Session, error) {
+	directory := ""
+	if id.Directory != nil {
+		encoded, err := json.Marshal(id.Directory)
+		if err != nil {
+			return nil, err
+		}
+		directory = string(encoded)
+	}
 	token := randomToken()
 	csrf := randomToken()
 	expires := time.Now().Add(s.ttl).UTC()
@@ -59,14 +68,23 @@ func (s *SessionStore) Create(ctx context.Context, id Identity) (*Session, error
 	// Only the hash of the token is persisted; the raw token lives solely in the
 	// caller's cookie (MDM-AUTH-001). A stolen database therefore yields no
 	// usable session tokens.
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO app_sessions (token, username, role, display_name, provider, csrf_token, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		hashToken(token), id.Username, string(id.Role), id.DisplayName, providerOr(id.Provider), csrf,
-		expires.Format(time.RFC3339))
+	query := `INSERT INTO app_sessions (token, username, role, display_name, provider, csrf_token, expires_at, directory_identity, auth_subject)
+ SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?`
+	args := []any{hashToken(token), id.Username, string(id.Role), id.DisplayName, providerOr(id.Provider), csrf, expires.Format(time.RFC3339), directory, mfaPrincipal(id)}
+	if id.localCredentialHash != "" {
+		query += ` WHERE EXISTS(SELECT 1 FROM app_users WHERE username=? AND password_hash=? AND role=? AND subject_id=?)`
+		args = append(args, id.Username, id.localCredentialHash, string(id.Role), id.SubjectID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
+	if n, err := result.RowsAffected(); err != nil {
+		return nil, err
+	} else if n != 1 {
+		return nil, ErrInvalidCredentials
+	}
+
 	return &Session{Token: token, Identity: id, CSRF: csrf, ExpiresAt: expires}, nil
 }
 
@@ -76,17 +94,23 @@ func (s *SessionStore) Get(ctx context.Context, token string) (*Session, error) 
 		return nil, ErrNoSession
 	}
 	var (
-		username, role, display, provider, csrf, expires, created string
+		username, role, display, provider, csrf, expires, created, directory, principal string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT username, role, display_name, provider, csrf_token, expires_at, created_at
+		`SELECT username, role, display_name, provider, csrf_token, expires_at, created_at, directory_identity, auth_subject
 		 FROM app_sessions WHERE token = ?`, hashToken(token)).
-		Scan(&username, &role, &display, &provider, &csrf, &expires, &created)
+		Scan(&username, &role, &display, &provider, &csrf, &expires, &created, &directory, &principal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoSession
 	}
 	if err != nil {
 		return nil, err
+	}
+	var directoryIdentity *DirectoryIdentity
+	if directory != "" {
+		if err = json.Unmarshal([]byte(directory), &directoryIdentity); err != nil {
+			return nil, ErrNoSession
+		}
 	}
 	now := time.Now()
 	exp, _ := time.Parse(time.RFC3339, expires)
@@ -125,7 +149,7 @@ func (s *SessionStore) Get(ctx context.Context, token string) (*Session, error) 
 
 	return &Session{
 		Token:     token,
-		Identity:  Identity{Username: username, DisplayName: display, Role: Role(role), Provider: provider},
+		Identity:  Identity{Username: username, DisplayName: display, Role: Role(role), Provider: provider, Directory: directoryIdentity, SubjectID: localSubject(principal)},
 		CSRF:      csrf,
 		ExpiresAt: exp,
 	}, nil

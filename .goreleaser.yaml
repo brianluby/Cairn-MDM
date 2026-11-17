@@ -69,14 +69,30 @@ nfpms:
       preinstall: packaging/scripts/preinstall.sh
 
 dockers:
-  - image_templates:
+  - id: versioned
+    image_templates:
       - "ghcr.io/nickpdawson/cairn-mdm:{{ .Version }}"
-      - "ghcr.io/nickpdawson/cairn-mdm:latest"
     dockerfile: packaging/Dockerfile.goreleaser
     build_flag_templates:
       - "--label=org.opencontainers.image.version={{.Version}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.source=https://github.com/nickpdawson/cairn-mdm"
+  # The latest tag follows full releases only: a prerelease tag such as
+  # v0.2.0-beta.1 is not pushed here.
+  - id: latest
+    image_templates:
+      - "ghcr.io/nickpdawson/cairn-mdm:latest"
+    skip_push: auto
+    dockerfile: packaging/Dockerfile.goreleaser
+    build_flag_templates:
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.source=https://github.com/nickpdawson/cairn-mdm"
+
+# A tag with a prerelease part becomes a GitHub prerelease, which the
+# installer's "latest" lookup skips.
+release:
+  prerelease: auto
 
 checksum:
   name_template: "checksums.txt"

@@ -31,6 +31,8 @@ path = "/var/lib/cairn/cairn.db"
 # generate — self-sign a device CA on first boot (zero-PKI default)
 # import   — run the embedded SCEP CA but sign with your cert+key
 # external — delegate SCEP to OpenXPKI / NDES; Cairn does not issue
+# broker   — devices ask Cairn, which checks the enrollment link and relays to
+#            an external SCEP CA (see docs/enrollment-authorization.md)
 mode = "generate"
 # [ca.import]
 # cert_file = "/etc/cairn/ca.crt"
@@ -39,11 +41,23 @@ mode = "generate"
 # scep_url = "https://scep.example.org/scep/mdm"
 # ca_chain_file = "/etc/cairn/ca-chain.pem"
 # challenge_file = "/etc/cairn/scep-challenge"
+# One-time challenges for external mode, for a CA that can ask Cairn whether a
+# request's challenge is good. Replaces the static challenge above and lets the
+# console create enrollment links. See docs/certificate-lifecycle.md.
+# [ca.external.challenge_lookup]
+# enabled = true
+# secret_file = "/etc/cairn/scep-lookup-secret"   # 32 characters or more
+# allowed_sources = ["192.0.2.20"]                # the CA's address
 
 [enrollment]
 # false (default): enrollment requires a single-use grant link (/e/{token}).
 # true: also serve the bare, unauthenticated /enroll (low-stakes homelab only).
 allow_open = false
+# Settings of the management payload, written into enrollment profiles and into
+# the profile that renews a certificate. Both default to false. For devices
+# another server enrolled, set them to what their installed profile carries.
+# check_out_when_removed = true   # the device reports its profile's removal
+# bootstrap_token = true          # Cairn keeps a Mac's bootstrap token
 
 # Sign enrollment profiles so devices show a verified signer. For the green
 # "Verified" badge the cert must chain to a public root (e.g. Let's Encrypt).
@@ -54,6 +68,9 @@ allow_open = false
 [auth]
 # Local accounts are always on (break-glass). LDAP/AD is optional.
 # [auth.ldap]
+# Stable namespace for this directory. Preserve it across DC changes and restores.
+# Required for owner lookup; an empty value keeps legacy console-only login.
+# directory_id = "example-ad"
 # enabled = true
 # servers = ["ldaps://dc1.example.org:636", "ldaps://dc2.example.org:636"]
 # base_dn = "DC=example,DC=org"
@@ -69,6 +86,58 @@ allow_open = false
 # min_password_len = 8
 # idle_timeout_mins = 60
 # max_lifetime_mins = 720
+
+# Out-of-band alerts: POSTed to a webhook (ntfy topic URL or any endpoint that
+# accepts a text body). Sent on certificate expiry, quarantined issuances, stale
+# or missing backups, backup success/failure, plus a periodic heartbeat so
+# silence is not mistaken for health. Disabled until webhook_url is set.
+# [alerts]
+# webhook_url_file = "/etc/cairn/alert-webhook"   # or webhook_url / webhook_url_env
+# heartbeat_hours = 24
+# apns_warn_days = 30
+# backup_dir = "/var/backups/cairn"               # watched for bundle freshness
+# backup_max_age_hours = 36
+
+# Device certificate lifetime for the embedded CA. The embedded CA and broker
+# modes have no renewal: re-enroll a device before its certificate expires. The
+# console and alerts warn ahead.
+# [issuance]
+# leaf_validity_days = 365
+
+# Device identity certificates that near or pass expiry. expired_grace_days
+# applies in every CA mode; enabled needs ca.mode = "external". See
+# docs/certificate-lifecycle.md.
+# [renewal]
+# enabled = true
+# renew_before_days = 60
+# expired_grace_days = 0          # an expired device may check in for renewal only, this long
+# server_hosts = ["old-mdm.example.org"]   # other names devices check in through
+# manual_only = false             # true: renew only from a device's page
+
+# VPN profiles: OpenVPN and native IKEv2 server records in the console, with a
+# certificate per device. Needs a verified LDAP directory. The servers' shared
+# TLS keys are encrypted with a key file next to the database
+# (<storage.path>.vpn/key), which `cairn backup` includes. See
+# docs/vpn-profiles.md.
+# [vpn]
+# enabled = true
+# leaf_validity_days = 365
+# key_type = "rsa2048"            # or "p256"
+# [vpn.issuer]
+# backend = "embedded"            # Cairn's own CA, or "scep" for an external one
+# scep_url = "https://ca.example.org/scep/vpn"
+# ra_cert_file = "/etc/cairn/vpn-ra.crt"
+# ra_key_file = "/etc/cairn/vpn-ra.key"
+# ca_chain_file = "/etc/cairn/ca-chain.pem"
+# max_leaf_validity_days = 400
+
+# RADIUS acceptance points that rely on Cairn-issued certificates. Releasing a
+# quarantined issuance requires each listed server to report an observed
+# Access-Reject for every enumerated serial through POST /api/v1/radius/rejections
+# (bearer token below). Leave unset for an MDM-only deployment.
+# [radius]
+# acceptance_points = ["radius-a.example.org", "radius-b.example.org"]
+# ingest_token_file = "/etc/cairn/radius-ingest-token"
 
 [log]
 level = "info"

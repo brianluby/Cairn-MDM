@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <p><a href="/admin/vpn">← VPN</a></p>
+    <h1>{{if .New}}{{if .Form.IKEv2}}Add IKEv2 server{{else}}Add OpenVPN server{{end}}{{else}}{{.Form.Name}}{{end}}</h1>
+
+    {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
+    {{if .Error}}<div class="card callout error">{{.Error}}</div>{{end}}
+    {{if .Skipped}}
+    <div class="card callout">
+      Read from the file. Check each field, then save. Left out:
+      {{range $i, $s := .Skipped}}{{if $i}}, {{end}}<span class="mono">{{$s}}</span>{{end}}.
+    </div>
+    {{end}}
+
+    <p class="sub">Saving needs an MFA code verified in the last five minutes
+    (<a href="/account/mfa">Account security</a>).</p>
+
+    {{if and .New (not .Form.IKEv2)}}
+    <div class="card" style="padding:24px">
+      <h2 style="margin-top:0">Start from a client file</h2>
+      <form method="post" action="/admin/vpn/import">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p><label>Contents of an .ovpn file exported for this server<br>
+          <textarea name="ovpn" rows="6" cols="80" spellcheck="false" required></textarea></label></p>
+        <p class="sub">Fills in the form below. Nothing is saved yet, and any client certificate or key in the file is dropped.</p>
+        <p><button class="btn" type="submit">Read file</button></p>
+      </form>
+    </div>
+    {{end}}
+
+    <div class="card" style="padding:24px">
+      <form method="post" action="{{if .New}}/admin/vpn/new{{else}}/admin/vpn/{{.Form.ID}}{{end}}">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+
+        <h2 style="margin-top:0">Server</h2>
+        <p><label>Name<br><input type="text" name="name" value="{{.Form.Name}}" required size="40" maxlength="100"></label>
+          <span class="sub">{{if .Form.IKEv2}}Shown in Settings on the device.{{else}}Shown in OpenVPN Connect and in Settings on the device.{{end}}</span></p>
+        {{if .New}}
+        <p><label>Identifier<br><input type="text" name="slug" value="{{.Form.Slug}}" size="40" pattern="[a-z0-9][a-z0-9-]*" maxlength="63"></label>
+          <span class="sub">Lowercase letters, digits and hyphens. Leave empty to derive it from the name. It cannot be changed later.</span></p>
+        {{else}}
+        <p>Identifier<br><span class="mono">{{.Form.Slug}}</span></p>
+        {{end}}
+{{if .Form.IKEv2}}
+        <input type="hidden" name="kind" value="ikev2">
+        <p><label>Server address<br><input type="text" name="remote_address" value="{{.Form.RemoteAddress}}" required size="40" placeholder="vpn.example.org"></label></p>
+        <p><label>Server identifier<br><input type="text" name="remote_identifier" value="{{.Form.RemoteIdentifier}}" size="40"></label>
+          <span class="sub">The IKE identity the server presents. It must be a name in the server certificate. Leave empty to use the address.</span></p>
+        <p><label>Server certificate name<br><input type="text" name="server_cert_cn" value="{{.Form.ServerCertCN}}" size="40"></label>
+          <span class="sub">The common name (CN) inside the server certificate, usually the server's host name. It is not the label a firewall or certificate manager lists the certificate under. Leave empty to use the identifier.</span></p>
+        <p><label>Server certificate issuer<br><input type="text" name="server_cert_issuer_cn" value="{{.Form.ServerCertIssuerCN}}" required size="40" placeholder="Example Issuing CA"{{if .KnownCAs}} list="known-cas" autocomplete="off"{{end}}></label>
+          {{if .KnownCAs}}<datalist id="known-cas">{{range .KnownCAs}}<option value="{{.}}"></option>{{end}}</datalist>{{end}}
+          <span class="sub">The common name of the CA that issued the server certificate.{{if .KnownCAs}} Pick one of the CAs devices get at enrollment, or type another name.{{end}}</span></p>
+        <p><label>CA chain that signed the server certificate (PEM), optional<br>
+          <textarea name="ca_pem" rows="6" cols="80" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----">{{.Form.CAPEM}}</textarea></label>
+          <span class="sub">When given, the issuer above is checked against it.</span></p>
+        <p><label><input type="checkbox" name="install_ca"{{if .Form.InstallCA}} checked{{end}}> Install this chain with every profile</label>
+          <span class="sub">Leave this off when devices already trust the CA, for example from their enrollment profile.</span></p>
+
+        <h2>Sign-in</h2>
+        <p><label>Devices sign in with<br>
+          <select name="sign_in">
+            <option value="password"{{if eq .Form.SignIn "password"}} selected{{end}}>Account name and password (EAP-MSCHAPv2)</option>
+            <option value="eap-tls"{{if eq .Form.SignIn "eap-tls"}} selected{{end}}>Certificate over EAP (EAP-TLS)</option>
+            <option value="certificate"{{if eq .Form.SignIn "certificate"}} selected{{end}}>Certificate (IKE certificate authentication)</option>
+          </select></label>
+          <span class="sub">A password profile is downloaded from this page and installed by hand, because a device cannot store a password for a VPN that MDM installed. A certificate profile is sent from a device's page; the device makes its own key and the key never leaves it.</span></p>
+
+        <p><label><input type="checkbox" name="keep_password"{{if .Form.KeepPassword}} checked{{end}}> Trial: push password profiles with an empty password field</label>
+          <span class="sub">Password sign-in only. An empty password field is reported to make a device ask once and keep the password even for a profile MDM installed. If that holds on your devices, the profile can be sent from a device's page; if not, leave this off and use the download. The profile never holds the password itself.</span></p>
+
+        <h2>Encryption</h2>
+        <p><label>Encryption<br>
+          <select name="encryption">
+            {{range $v := .Options.Encryption}}<option value="{{$v}}"{{if eq $.Form.Encryption $v}} selected{{end}}>{{$v}}</option>{{end}}
+          </select></label></p>
+        <p><label>Integrity<br>
+          <select name="integrity">
+            {{range $v := .Options.Integrity}}<option value="{{$v}}"{{if eq $.Form.Integrity $v}} selected{{end}}>{{$v}}</option>{{end}}
+          </select></label></p>
+        <p><label>Diffie-Hellman group<br>
+          <select name="dh_group">
+            {{range $v := .Options.DHGroups}}<option value="{{$v}}"{{if eq $.Form.DHGroup $v}} selected{{end}}>{{$v}}</option>{{end}}
+          </select></label>
+          <span class="sub">The same three settings are used for the IKE and the child security association. They must match a proposal on the server.</span></p>
+        <p><label><input type="checkbox" name="pfs"{{if .Form.PFS}} checked{{end}}> Perfect forward secrecy</label>
+          <span class="sub">Needs a PFS group on the server's phase 2.</span></p>
+
+        <h2>On Demand</h2>
+        <p><label><input type="checkbox" name="on_demand"{{if .Form.OnDemand}} checked{{end}}> Connect on demand on Wi-Fi and cellular</label>
+          <span class="sub">With password sign-in it starts working after the user has connected once by hand and the device has kept the password.</span></p>
+        <p><label>Trusted Wi-Fi networks, one name per line<br>
+          <textarea name="trusted_ssids" rows="4" cols="40" spellcheck="false">{{.Form.TrustedSSIDs}}</textarea></label>
+          <span class="sub">On these networks the VPN disconnects.</span></p>
+        <p><label><input type="checkbox" name="lock_on_demand"{{if .Form.LockOnDemand}} checked{{end}}> Stop the user switching On Demand off</label>
+          <span class="sub">Leave this off unless every network the device meets lets the VPN through; a hotel sign-in page will not.</span></p>
+
+        <h2>Traffic</h2>
+        <p><label><input type="checkbox" name="split_tunnel"{{if .Form.SplitTunnel}} checked{{end}}> Let traffic the tunnel does not carry use the local network</label>
+          <span class="sub">Off, every connection goes through the VPN while it is up and anything the tunnel cannot carry is dropped, IPv6 on an IPv4-only server included. The device does not answer others on the same Wi-Fi. Carrier calling, AirDrop and Continuity stay outside the tunnel and keep working. Turn this on only for a server that is meant to carry some networks and leave the rest alone.</span></p>
+
+        {{else}}
+        <p><label>Addresses, one per line: host port udp or tcp<br>
+          <textarea name="remotes" rows="3" cols="60" spellcheck="false" required placeholder="vpn.example.org 443 udp">{{.Form.Remotes}}</textarea></label>
+          <span class="sub">Each address becomes its own connection on the device, with the same certificate. Add a TCP address for networks that block UDP. A fourth value sets the tunnel MTU for that address only.</span></p>
+        <p><label>Server certificate name<br><input type="text" name="verify_x509_name" value="{{.Form.VerifyX509Name}}" required size="40"></label>
+          <span class="sub">The exact common name of the server certificate. Clients refuse any other.</span></p>
+        <p><label>CA chain that signed the server certificate (PEM)<br>
+          <textarea name="ca_pem" rows="6" cols="80" spellcheck="false" required placeholder="-----BEGIN CERTIFICATE-----">{{.Form.CAPEM}}</textarea></label></p>
+
+        <h2>TLS key</h2>
+        <p><label>Type<br>
+          <select name="tls_key_mode">
+            <option value="tls-auth"{{if eq .Form.TLSKeyMode "tls-auth"}} selected{{end}}>tls-auth</option>
+            <option value="tls-crypt"{{if eq .Form.TLSKeyMode "tls-crypt"}} selected{{end}}>tls-crypt</option>
+            <option value=""{{if eq .Form.TLSKeyMode ""}} selected{{end}}>None</option>
+          </select></label></p>
+        <p><label>Key direction (tls-auth only)<br>
+          <select name="key_direction">
+            <option value="1"{{if ne .Form.KeyDirection "0"}} selected{{end}}>1 (client side of a pfSense server)</option>
+            <option value="0"{{if eq .Form.KeyDirection "0"}} selected{{end}}>0</option>
+          </select></label></p>
+        <p><label>Static key<br>
+          <textarea name="tls_key" rows="6" cols="80" spellcheck="false" autocomplete="off" placeholder="-----BEGIN OpenVPN Static key V1-----">{{.Form.TLSKey}}</textarea></label>
+          <span class="sub">{{if .Form.HasStoredKey}}A key is stored and is not shown. Leave this empty to keep it, or paste a new one to replace it.{{else}}The server's shared key. It is encrypted before it is stored and goes into every profile.{{end}}</span></p>
+
+        <h2>Connection</h2>
+        <p><label>Cipher<br><input type="text" name="cipher" value="{{.Form.Cipher}}" size="24" placeholder="AES-256-GCM"></label></p>
+        <p><label>Auth digest<br><input type="text" name="auth" value="{{.Form.Auth}}" size="24" placeholder="SHA256"></label></p>
+        <p><label>Tunnel MTU<br><input type="text" name="tun_mtu" value="{{.Form.TunMTU}}" size="8" inputmode="numeric"></label>
+          <span class="sub">Leave empty for the client default.</span></p>
+        <p><label><input type="checkbox" name="user_auth"{{if .Form.UserAuth}} checked{{end}}> The server also asks for a username and password</label></p>
+        <p><label><input type="checkbox" name="on_demand"{{if .Form.OnDemand}} checked{{end}}> Connect on demand on Wi-Fi and cellular</label>
+          <span class="sub">Only for a server that needs no password.</span></p>
+        <p><label>Other client options, one per line<br>
+          <textarea name="extra" rows="3" cols="60" spellcheck="false">{{.Form.Extra}}</textarea></label></p>
+
+        {{end}}
+        <p style="margin-top:20px"><button class="btn" type="submit">Save</button></p>
+      </form>
+    </div>
+
+    {{if and (not .New) .Form.IKEv2 (eq .Form.SignIn "password")}}
+    <h2>Download a profile</h2>
+    <div class="card" style="padding:24px">
+      {{if .CanIssue}}
+      <form method="post" action="/admin/vpn/{{.Form.ID}}/download">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p><label>Account<br><input type="text" name="account" required size="24" placeholder="jsmith" autocomplete="off"></label>
+          <span class="sub">The directory account that will sign in. Its name goes into the profile; no password does.</span></p>
+        <p><button class="btn" type="submit">Download profile</button></p>
+      </form>
+      <p class="sub">Send the file to that person, by AirDrop for one. They open it, then install it under Settings > General > VPN &amp; Device Management.
+      After installing, they store their password under Settings > VPN > (i). Downloading needs an MFA code verified in the last five minutes.</p>
+      {{else}}<p class="sub">Profiles cannot be made until VPN issuing is set up.</p>{{end}}
+    </div>
+    {{end}}
+
+    {{if not .New}}
+    <h2>Delete</h2>
+    <div class="card" style="padding:24px">
+      <form method="post" action="/admin/vpn/{{.Form.ID}}/delete">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p>Deleting the server stops new profiles from being issued for it. Profiles already on devices stay installed and keep working.</p>
+        <p><button class="btn danger" type="submit">Delete server</button></p>
+      </form>
+    </div>
+    {{end}}
+  </main>
+</body>
+</html>

@@ -58,6 +58,10 @@ func main() {
 		err = runImport(ctx, args)
 	case "backup":
 		err = runBackup(ctx, args)
+	case "restore":
+		err = runRestore(ctx, args)
+	case "vpn":
+		err = runVPN(ctx, args)
 	case "version", "-v", "--version":
 		fmt.Println(version.Info())
 	case "help", "-h", "--help":
@@ -89,7 +93,9 @@ Commands:
   ca         manage the certificate authority (export)
   admin      manage console accounts (add, passwd, list, del)
   import     migrate a NanoMDM MySQL deployment (zero re-enrollment)
-  backup     write a consistent SQLite backup (online VACUUM INTO)
+  backup     write a verified backup bundle (database snapshot, MFA key, config, manifest)
+  restore    rehearse a restore from a bundle, or restore into an empty directory
+  vpn        check the certificate authority configured for VPN certificates (check-issuer)
   version    print build information
   help       show this help
 

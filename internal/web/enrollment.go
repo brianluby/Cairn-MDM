@@ -1,13 +1,15 @@
 package web
 
 import (
+	"context"
 	"encoding/base64"
+	"github.com/nickpdawson/cairn-mdm/internal/auth"
+	"github.com/nickpdawson/cairn-mdm/internal/directory"
 	"html/template"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 
@@ -26,9 +28,16 @@ func (a *App) renderEnrollment(w http.ResponseWriter, r *http.Request, created m
 	if err != nil {
 		a.log.Error("list grants", "err", err)
 	}
+	groups, err := a.groups.ListGroups(r.Context())
+	if err != nil {
+		a.log.Error("list groups", "err", err)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "strict-origin")
 	a.render(w, r, http.StatusOK, "enrollment.html", map[string]any{
 		"Title":   "Enrollment",
 		"Grants":  grants,
+		"Groups":  groups,
 		"Created": created,
 		"Flash":   r.URL.Query().Get("flash"),
 		"Error":   r.URL.Query().Get("error"),
@@ -45,45 +54,41 @@ func (a *App) handleGrantCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	f := r.PostFormValue
-
-	platform := f("platform")
-	switch platform {
-	case "macos", "ios", "any":
-	default:
-		platform = "any"
-	}
-	maxUses, _ := strconv.Atoi(f("max_uses"))
-	if maxUses <= 0 {
-		maxUses = 1
-	}
-	hours, _ := strconv.Atoi(f("expires_hours"))
-	if hours <= 0 {
-		hours = 24
-	}
-	expiresAt := time.Now().Add(time.Duration(hours) * time.Hour).UTC().Format("2006-01-02 15:04:05")
-
-	raw, hash := sqlite.NewGrantToken()
-	id, err := a.grants.CreateGrant(r.Context(), sqlite.Grant{
-		Label:          strings.TrimSpace(f("label")),
-		Platform:       platform,
-		Owner:          strings.TrimSpace(f("owner")),
-		CreatedBy:      sessionFrom(r).Identity.Username,
-		ExpiresAt:      expiresAt,
-		MaxUses:        maxUses,
-		ExpectedSerial: strings.TrimSpace(f("expected_serial")),
-	}, hash)
-	if err != nil {
-		a.log.Error("create grant", "err", err)
-		http.Redirect(w, r, "/admin/enrollment?error="+url.QueryEscape("Creating the grant failed."), http.StatusSeeOther)
+	if !a.enrollmentActor(w, r) {
 		return
 	}
+	if !a.cfg.OwnerEnrollment {
+		http.Error(w, "This server cannot create enrollment links: its certificate authority issues to anyone with the shared challenge. Turn on one-time challenges (ca.external.challenge_lookup) first.", 503)
+		return
+	}
+	store, ok := a.grants.(authorizedGrantStore)
+	if !ok {
+		http.Error(w, "Enrollment authorization unavailable", 503)
+		return
+	}
+	preview, err := store.GetEnrollmentPreview(r.Context(), sessionFrom(r).Token, r.PostFormValue("preview"))
+	if err != nil {
+		http.Error(w, "Preview expired or already used. Preview the owner again.", 409)
+		return
+	}
+	checked, err := a.directory.EvaluateScopes(r.Context(), preview.Owner, nil)
+	if err != nil || checked == nil {
+		http.Error(w, "Owner verification unavailable. No link created.", 503)
+		return
+	}
+	raw, hash := sqlite.NewGrantToken()
+	id, err := store.CreateAuthorizedGrant(r.Context(), sessionFrom(r).Token, r.PostFormValue("preview"), hash, checked.Owner)
+	if err != nil {
+		http.Error(w, "Authorization changed or expired. Verify MFA and preview the owner again.", 409)
+		return
+	}
+	hours := preview.Hours
 
 	link := strings.TrimRight(a.cfg.PublicURL, "/") + "/e/" + raw
-	a.log.Info("enrollment grant created", "id", id, "owner", f("owner"), "platform", platform,
+	a.log.Info("enrollment grant created", "id", id, "owner", checked.Owner.UPN, "platform", preview.Platform,
 		"user", sessionFrom(r).Identity.Username) // never logs the raw token
 
-	created := map[string]any{"Link": link, "QR": qrDataURI(link), "ExpiresHours": hours, "MaxUses": maxUses}
+	created := map[string]any{"Link": link, "QR": qrDataURI(link), "ExpiresHours": hours}
 	a.renderEnrollment(w, r, created)
 }
 
@@ -116,4 +121,114 @@ func qrDataURI(s string) template.URL {
 		return ""
 	}
 	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(png))
+}
+
+type authorizedGrantStore interface {
+	SaveEnrollmentPreview(context.Context, string, sqlite.EnrollmentPreview) (string, error)
+	GetEnrollmentPreview(context.Context, string, string) (sqlite.EnrollmentPreview, error)
+	CreateAuthorizedGrant(context.Context, string, string, string, directory.DirectoryIdentity) (int64, error)
+}
+
+func (a *App) enrollmentActor(w http.ResponseWriter, r *http.Request) bool {
+	s := sessionFrom(r)
+	if s == nil || s.Identity.Role != auth.RoleAdmin || a.mfa == nil || a.mfa.Fresh(r.Context(), s.Token) != nil {
+		http.Error(w, "Administrator access and fresh MFA required. Open Account security to verify your code.", 403)
+		return false
+	}
+	if a.directory == nil {
+		http.Error(w, "Configure a verified LDAP directory before enrolling an owner.", 503)
+		return false
+	}
+	if !a.directoryAdminCurrent(r) {
+		http.Error(w, "Current directory administrator authorization unavailable.", 403)
+		return false
+	}
+	return true
+}
+func (a *App) handleEnrollmentPreview(w http.ResponseWriter, r *http.Request) {
+	limitForm(w, r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", 400)
+		return
+	}
+	if !a.checkCSRF(r) {
+		http.Error(w, "invalid CSRF token", 403)
+		return
+	}
+	if !a.enrollmentActor(w, r) {
+		return
+	}
+	platform := r.PostFormValue("platform")
+	hours, e := strconv.Atoi(r.PostFormValue("expires_hours"))
+	if e != nil || hours < 1 || hours > 24 || (platform != "macos" && platform != "ios") {
+		http.Error(w, "Choose Mac or iPhone/iPad and an expiry from 1 to 24 hours.", 400)
+		return
+	}
+	var explicitGroup sqlite.Group
+	if raw := strings.TrimSpace(r.PostFormValue("group_id")); raw != "" {
+		gid, e := strconv.ParseInt(raw, 10, 64)
+		if e == nil {
+			explicitGroup, e = a.groups.GetGroup(r.Context(), gid)
+		}
+		if e != nil {
+			http.Error(w, "Choose an existing Cairn group or leave it blank.", 400)
+			return
+		}
+	}
+	owner, e := a.directory.ResolveOwner(r.Context(), strings.TrimSpace(r.PostFormValue("owner")))
+	if e != nil || owner == nil {
+		http.Error(w, "Cannot resolve an enabled, eligible AD owner.", 422)
+		return
+	}
+	// Owner verification and rule preview share one directory round: the rule
+	// results are display only, and the same evaluation runs again after enrollment.
+	var rules []sqlite.DirectoryProfileRule
+	if rs, ok := a.groups.(directoryRuleStore); ok {
+		if rules, e = rs.ListDirectoryProfileRules(r.Context()); e != nil {
+			http.Error(w, "Cannot load directory rules.", 503)
+			return
+		}
+	}
+	scopes := make([]auth.DirectoryScope, len(rules))
+	for i, rule := range rules {
+		scopes[i] = rule.Scope
+	}
+	result, e := a.directory.EvaluateScopes(r.Context(), *owner, scopes)
+	if e != nil || result == nil || len(result.Matches) != len(rules) {
+		http.Error(w, "Owner verification unavailable.", 503)
+		return
+	}
+	profiles, conflicts, e := a.rulePreviewProfiles(r.Context(), rules, result, explicitGroup.ID)
+	if e != nil {
+		http.Error(w, "Cannot read assigned profiles.", 503)
+		return
+	}
+	p := sqlite.EnrollmentPreview{Owner: result.Owner, Platform: platform, Hours: hours, Label: strings.TrimSpace(r.PostFormValue("label")), GroupID: explicitGroup.ID, GroupName: explicitGroup.Name}
+	if len(p.Label) > 200 {
+		http.Error(w, "Device label must be at most 200 bytes.", 400)
+		return
+	}
+	store, ok := a.grants.(authorizedGrantStore)
+	if !ok {
+		http.Error(w, "Enrollment authorization unavailable", 503)
+		return
+	}
+	token, e := store.SaveEnrollmentPreview(r.Context(), sessionFrom(r).Token, p)
+	if e != nil {
+		http.Error(w, "Cannot save preview", 503)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "strict-origin")
+	if a.cfg.OwnerUnverified {
+		// Nothing the rules assign is deployed by this link, so a clash
+		// between those profiles is no reason to refuse it.
+		conflicts = nil
+	}
+	a.render(w, r, 200, "enrollment_preview.html", map[string]any{
+		"Title": "Confirm device owner", "Preview": p, "Token": token,
+		"IssuanceReady":   a.cfg.OwnerEnrollment && len(conflicts) == 0,
+		"OwnerUnverified": a.cfg.OwnerUnverified,
+		"Matches":         result.Matches, "PreviewProfiles": profiles, "Conflicts": conflicts,
+	})
 }

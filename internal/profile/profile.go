@@ -20,10 +20,31 @@ import (
 // which Apple accepts.
 type Payload map[string]any
 
+// Management holds the settings of the management payload a site chooses.
+// They go into every enrollment profile, and into the profile that renews a
+// device's certificate, so a renewal does not change them.
+type Management struct {
+	// CheckOutWhenRemoved makes a device tell the server when its enrollment
+	// profile is removed.
+	CheckOutWhenRemoved bool
+	// BootstrapToken declares that the server keeps a Mac's bootstrap token.
+	BootstrapToken bool
+}
+
 // EnrollmentParams describes an enrollment profile to build.
 type EnrollmentParams struct {
+	Management
+
 	Organization string // PayloadOrganization + reverse-DNS identifier root, e.g. "cairn.example.com"
 	DisplayName  string // top-level profile display name
+
+	// ProfileIdentifier overrides the top-level PayloadIdentifier. A device
+	// replaces an installed profile only with one that carries the same
+	// identifier, so renewing an enrollment made by another server has to
+	// reuse that server's.
+	ProfileIdentifier string
+	// OrganizationName overrides the PayloadOrganization shown on the device.
+	OrganizationName string
 
 	CAAnchorsDER [][]byte // CA certificate(s) (DER) to install as trust anchors
 
@@ -97,6 +118,12 @@ func BuildEnrollment(p EnrollmentParams) (map[string]any, error) {
 		"SignMessage":             true, // device signs check-ins (Mdm-Signature header)
 		"AccessRights":            8191, // all rights
 	}
+	if p.BootstrapToken {
+		mdm["ServerCapabilities"] = []any{"com.apple.mdm.per-user-connections", "com.apple.mdm.bootstraptoken"}
+	}
+	if p.CheckOutWhenRemoved {
+		mdm["CheckOutWhenRemoved"] = true
+	}
 
 	display := p.DisplayName
 	if display == "" {
@@ -105,13 +132,21 @@ func BuildEnrollment(p EnrollmentParams) (map[string]any, error) {
 
 	payloads = append(payloads, scep, mdm)
 
+	identifier := p.ProfileIdentifier
+	if identifier == "" {
+		identifier = id("enroll")
+	}
+	organization := p.OrganizationName
+	if organization == "" {
+		organization = p.Organization
+	}
 	return map[string]any{
 		"PayloadType":         "Configuration",
 		"PayloadVersion":      1,
-		"PayloadIdentifier":   id("enroll"),
+		"PayloadIdentifier":   identifier,
 		"PayloadUUID":         newUUID(),
 		"PayloadDisplayName":  display,
-		"PayloadOrganization": p.Organization,
+		"PayloadOrganization": organization,
 		"PayloadContent":      payloads,
 	}, nil
 }

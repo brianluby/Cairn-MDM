@@ -25,12 +25,17 @@ type Readiness interface {
 // Deps are the optional subsystem handlers the server mounts. A nil handler is
 // simply not mounted.
 type Deps struct {
-	MDM         http.Handler // NanoMDM check-in/command handler (mounted at mdm_path)
-	SCEP        http.Handler // embedded-CA SCEP handler (mounted at /scep)
-	Enroll      http.Handler // bare enrollment handler (mounted at GET /enroll; default-denied)
-	EnrollGrant http.Handler // grant-based enrollment (mounted at GET /e/{token})
-	CA          http.Handler // CA trust-anchor download (mounted at GET /ca)
-	UI          UIRegistrar  // admin console; registers its own routes
+	MDM     http.Handler // NanoMDM check-in/command handler (mounted at mdm_path)
+	SCEP    http.Handler // embedded-CA SCEP handler (mounted at /scep)
+	VPNSCEP http.Handler // SCEP for VPN certificates on device-made keys (mounted at /scep/vpn)
+	// SCEPChallenge answers an external CA asking whether a request's one-time
+	// challenge is good (mounted at GET /scep-challenge/{name}/{keyid}/{challenge}).
+	SCEPChallenge http.Handler
+	Enroll        http.Handler // bare enrollment handler (mounted at GET /enroll; default-denied)
+	EnrollGrant   http.Handler // grant-based enrollment (mounted at GET /e/{token})
+	CA            http.Handler // CA trust-anchor download (mounted at GET /ca)
+	CRL           http.Handler // certificate revocation list (mounted at GET /crl; public)
+	UI            UIRegistrar  // admin console; registers its own routes
 }
 
 // UIRegistrar registers admin-console routes on the server mux. Implementing
@@ -77,7 +82,9 @@ func (s *Server) secureHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
+		// Send only the origin, never bearer-token paths. no-referrer makes
+		// ordinary browser form POSTs send Origin:null and breaks CSRF checks.
+		h.Set("Referrer-Policy", "strict-origin")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		h.Set("Content-Security-Policy", csp)
 		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
@@ -96,7 +103,7 @@ func sensitivePath(p string) bool {
 	switch {
 	case p == "/admin" || strings.HasPrefix(p, "/admin/"):
 		return true
-	case p == "/login" || p == "/logout":
+	case p == "/login" || p == "/logout" || strings.HasPrefix(p, "/account/"):
 		return true
 	case p == "/enroll" || strings.HasPrefix(p, "/enroll/"):
 		return true
@@ -127,16 +134,37 @@ func (s *Server) routes() {
 		s.mux.Handle("/scep/", s.deps.SCEP)
 	}
 
+	if s.deps.SCEPChallenge != nil {
+		s.mux.Handle("GET /scep-challenge/{name}/{keyid}/{challenge}", s.deps.SCEPChallenge)
+	}
+
+	if s.deps.VPNSCEP != nil {
+		// The SCEP handler's router matches "/scep" only, so the request is
+		// handed to it under that path.
+		inner := s.deps.VPNSCEP
+		s.mux.HandleFunc("/scep/vpn", func(w http.ResponseWriter, r *http.Request) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path, r2.URL.RawPath = "/scep", ""
+			inner.ServeHTTP(w, r2)
+		})
+	}
+
 	if s.deps.Enroll != nil {
 		s.mux.Handle("GET /enroll", s.deps.Enroll)
 	}
 
 	if s.deps.EnrollGrant != nil {
 		s.mux.Handle("GET /e/{token}", s.deps.EnrollGrant)
+		s.mux.Handle("POST /e/{token}", s.deps.EnrollGrant)
 	}
 
 	if s.deps.CA != nil {
 		s.mux.Handle("GET /ca", s.deps.CA)
+	}
+
+	if s.deps.CRL != nil {
+		// CRLs are public (they only reveal revoked serials), so this is unauthenticated.
+		s.mux.Handle("GET /crl", s.deps.CRL)
 	}
 
 	if s.deps.UI != nil {

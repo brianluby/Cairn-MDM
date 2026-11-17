@@ -18,9 +18,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	goldap "github.com/go-ldap/ldap/v3"
 
@@ -37,7 +39,7 @@ type Conn interface {
 }
 
 // Dialer opens a connection to one server URL.
-type Dialer func(serverURL string) (Conn, error)
+type Dialer func(context.Context, string) (Conn, error)
 
 // Provider authenticates console logins against a directory.
 type Provider struct {
@@ -50,7 +52,7 @@ type Provider struct {
 // (TLS, with optional extra CA) and ldap:// (plaintext or StartTLS).
 func New(cfg config.LDAPCfg, log *slog.Logger) (*Provider, error) {
 	if cfg.UserFilter == "" {
-		cfg.UserFilter = "(&(objectClass=user)(sAMAccountName=%s))"
+		cfg.UserFilter = "(&(objectClass=user)(|(sAMAccountName=%s)(userPrincipalName=%s)))"
 	}
 	if cfg.DefaultRole == "" {
 		cfg.DefaultRole = string(auth.RoleUser)
@@ -73,35 +75,50 @@ func New(cfg config.LDAPCfg, log *slog.Logger) (*Provider, error) {
 	}
 
 	p := &Provider{cfg: cfg, log: log}
-	p.dial = func(serverURL string) (Conn, error) {
+	p.dial = func(ctx context.Context, serverURL string) (Conn, error) {
 		u, err := url.Parse(serverURL)
-		if err != nil {
-			return nil, err
+		if err != nil || u.Hostname() == "" || (u.Scheme != "ldaps" && u.Scheme != "ldap") || (u.Scheme == "ldap" && !cfg.StartTLS) {
+			return nil, errors.New("LDAP requires ldaps:// or ldap:// with StartTLS")
 		}
-		var opts []goldap.DialOpt
-		if u.Scheme == "ldaps" && tlsCfg != nil {
-			// Pin ServerName to the URL host so the directory cert is verified
-			// against the hostname (an explicit RootCAs pool otherwise leaves
-			// ServerName empty, which disables hostname verification).
-			c := tlsCfg.Clone()
-			c.ServerName = u.Hostname()
-			opts = append(opts, goldap.DialWithTLSConfig(c))
-		}
-		// For ldaps:// without an extra CA bundle, goldap.DialURL derives
-		// ServerName from the URL host and verifies against system roots.
-		conn, err := goldap.DialURL(serverURL, opts...)
-		if err != nil {
-			return nil, err
-		}
-		if u.Scheme == "ldap" && cfg.StartTLS {
-			// StartTLS must also verify the cert against the hostname: set
-			// ServerName from the URL host (InsecureSkipVerify stays false).
-			c := &tls.Config{ServerName: u.Hostname()}
-			if tlsCfg != nil {
-				c = tlsCfg.Clone()
-				c.ServerName = u.Hostname()
+		port := u.Port()
+		if port == "" {
+			if u.Scheme == "ldaps" {
+				port = "636"
+			} else {
+				port = "389"
 			}
-			if err := conn.StartTLS(c); err != nil {
+		}
+		raw, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
+		if err != nil {
+			return nil, err
+		}
+		// A deadline covers TLS negotiation as well as every LDAP operation.
+		if deadline, ok := ctx.Deadline(); ok {
+			if err = raw.SetDeadline(deadline); err != nil {
+				raw.Close()
+				return nil, err
+			}
+		}
+		stop := context.AfterFunc(ctx, func() { raw.Close() })
+		defer stop()
+		c := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname()}
+		if tlsCfg != nil {
+			c.RootCAs = tlsCfg.RootCAs
+		}
+		var transport net.Conn = raw
+		if u.Scheme == "ldaps" {
+			secure := tls.Client(raw, c)
+			if err = secure.HandshakeContext(ctx); err != nil {
+				raw.Close()
+				return nil, err
+			}
+			transport = secure
+		}
+		conn := goldap.NewConn(transport, u.Scheme == "ldaps")
+		conn.Start()
+		conn.SetTimeout(10 * time.Second)
+		if u.Scheme == "ldap" {
+			if err = conn.StartTLS(c); err != nil {
 				conn.Close()
 				return nil, err
 			}
@@ -123,9 +140,22 @@ func (p *Provider) Authenticate(ctx context.Context, username, password string) 
 		return nil, auth.ErrInvalidCredentials
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	var lastErr error
 	for _, server := range p.cfg.Servers {
-		id, err := p.authenticateVia(server, username, password)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		attempt, cancelAttempt := context.WithTimeout(ctx, 10*time.Second)
+		id, err := p.authenticateVia(attempt, server, username, password)
+		cancelAttempt()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return nil, context.DeadlineExceeded
+		}
 		if err == nil {
 			return id, nil
 		}
@@ -142,12 +172,14 @@ func (p *Provider) Authenticate(ctx context.Context, username, password string) 
 	return nil, fmt.Errorf("ldap: all servers failed: %w", lastErr)
 }
 
-func (p *Provider) authenticateVia(server, username, password string) (*auth.Identity, error) {
-	conn, err := p.dial(server)
+func (p *Provider) authenticateVia(ctx context.Context, server, username, password string) (*auth.Identity, error) {
+	conn, err := p.dial(ctx, server)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 
 	// Locate the user with the service account.
 	if err := conn.Bind(p.cfg.BindDN, p.cfg.BindPassword); err != nil {
@@ -157,7 +189,7 @@ func (p *Provider) authenticateVia(server, username, password string) (*auth.Ide
 	res, err := conn.Search(goldap.NewSearchRequest(
 		p.cfg.BaseDN, goldap.ScopeWholeSubtree, goldap.NeverDerefAliases,
 		2, 10, false, filter,
-		[]string{"dn", "sAMAccountName", "displayName", "cn", "memberOf"}, nil,
+		identityAttributes, nil,
 	))
 	if err != nil {
 		return nil, fmt.Errorf("user search: %w", err)
@@ -179,6 +211,22 @@ func (p *Provider) authenticateVia(server, username, password string) (*auth.Ide
 		return nil, fmt.Errorf("user bind: %w", err)
 	}
 
+	// With a directory ID the login also derives the verified owner identity. A
+	// disabled or expired account is refused outright. An account that merely
+	// lacks a routable UPN (user@domain) may still use the console, but carries
+	// no verified identity: it cannot register MFA against the directory or
+	// authorize enrollments until the UPN is fixed in AD.
+	var directory *auth.DirectoryIdentity
+	if p.cfg.DirectoryID != "" {
+		directory, err = directoryIdentity(entry, p.cfg.DirectoryID, time.Now())
+		switch {
+		case errors.Is(err, ErrAccountDisabled), errors.Is(err, ErrAccountExpired):
+			return nil, auth.ErrInvalidCredentials
+		case err != nil:
+			p.log.Warn("ldap login without verified directory identity", "user", username, "reason", err.Error())
+			directory = nil
+		}
+	}
 	display := entry.GetAttributeValue("displayName")
 	if display == "" {
 		display = entry.GetAttributeValue("cn")
@@ -189,6 +237,7 @@ func (p *Provider) authenticateVia(server, username, password string) (*auth.Ide
 	}
 	return &auth.Identity{
 		Username:    acct,
+		Directory:   directory,
 		DisplayName: display,
 		Role:        p.mapRole(entry.GetAttributeValues("memberOf")),
 		Provider:    "ldap",
@@ -215,7 +264,12 @@ func (p *Provider) mapRole(memberOf []string) auth.Role {
 // are not case-normalized in memberOf).
 func lookupDN(m map[string]string, dn string) (string, bool) {
 	for k, v := range m {
-		if strings.EqualFold(k, dn) {
+		configured, err := goldap.ParseDN(k)
+		if err != nil {
+			continue
+		}
+		actual, err := goldap.ParseDN(dn)
+		if err == nil && configured.EqualFold(actual) {
 			return v, true
 		}
 	}

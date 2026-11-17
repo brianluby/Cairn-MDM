@@ -18,9 +18,11 @@ import (
 // runAdmin manages local console accounts: add, passwd, list, del.
 func runAdmin(ctx context.Context, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: cairn admin <add|passwd|list|del> [flags]")
+		return fmt.Errorf("usage: cairn admin <add|passwd|list|del|testauth|mfa-bootstrap> [flags]")
 	}
 	switch args[0] {
+	case "mfa-bootstrap":
+		return runMFABootstrap(ctx, args[1:])
 	case "add":
 		return runAdminAdd(ctx, args[1:])
 	case "passwd":
@@ -32,7 +34,7 @@ func runAdmin(ctx context.Context, args []string) error {
 	case "testauth":
 		return runAdminTestAuth(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown admin subcommand %q (want: add, passwd, list, del, testauth)", args[0])
+		return fmt.Errorf("unknown admin subcommand %q (want: add, passwd, list, del, testauth, mfa-bootstrap)", args[0])
 	}
 }
 
@@ -191,14 +193,6 @@ func runAdminPasswd(ctx context.Context, args []string) error {
 		fmt.Printf("password: %s\n", pw)
 	}
 
-	// Invalidate the user's existing sessions so the old password can't outlive
-	// the reset (best-effort; a failure here doesn't undo the password change).
-	sessions := auth.NewSessionStore(db.SQL(), 0)
-	if n, err := sessions.DeleteByUsername(ctx, *username); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not revoke existing sessions for %q: %v\n", *username, err)
-	} else if n > 0 {
-		fmt.Printf("revoked %d active session(s) for %q\n", n, *username)
-	}
 	return nil
 }
 

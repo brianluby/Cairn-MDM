@@ -8,7 +8,7 @@
     <form class="filters" method="get" action="/admin/devices">
       <input type="search" name="q" value="{{.Q}}" placeholder="Search name, serial, or model">
       <label><input type="checkbox" name="enrolled" value="1" {{if .Enrolled}}checked{{end}}> Enrolled only</label>
-      <button type="submit">Search</button>
+      <button class="btn" type="submit">Search</button>
       {{if or .Q .Enrolled}}<a href="/admin/devices">Clear</a>{{end}}
     </form>
     <div class="card">
@@ -16,7 +16,7 @@
       {{if .Devices}}
       <table>
         <thead>
-          <tr><th>Device</th><th>Model</th><th>OS</th><th>Enrolled</th><th>Last seen</th></tr>
+          <tr><th>Device</th><th>Owner</th><th>Model</th><th>OS</th><th>Profiles</th><th>Last seen</th></tr>
         </thead>
         <tbody>
           {{range .Devices}}
@@ -26,9 +26,10 @@
               <a href="/admin/devices/{{.ID}}">{{.DisplayName}}</a>
               <div class="sub mono">{{.Serial}}</div>
             </td>
+            <td class="sub mono">{{with index $.Owners .ID}}{{.}}{{else}}—{{end}}</td>
             <td>{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
             <td>{{.Product}} {{.OSVersion}}</td>
-            <td class="sub">{{nullStr .EnrolledAt}}</td>
+            <td class="sub">{{with index $.Counts .ID}}{{.Installed}} installed{{if .Pending}} · {{.Pending}} pending{{end}}{{if .Failed}} · <span class="dot off"></span>{{.Failed}} failed{{end}}{{else}}—{{end}}</td>
             <td class="sub">{{nullStr .LastSeen}}</td>
           </tr>
           {{end}}

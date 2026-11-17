@@ -13,7 +13,7 @@
     {{if .Flash}}<div class="card callout" style="margin-top:0">{{.Flash}}</div>{{end}}
 
     <div class="card" style="margin-top:16px">
-      <table>
+      <table class="kv">
         <tbody>
           <tr><th style="width:180px">Status</th><td>{{if .Device.Enrolled}}Enrolled{{else}}Checked out{{end}}</td></tr>
           <tr><th>Enrollment ID</th><td class="mono">{{.Device.ID}}</td></tr>
@@ -26,18 +26,170 @@
           <tr><th>Last seen</th><td class="sub">{{nullStr .Device.LastSeen}}</td></tr>
           <tr><th>Last inventory</th><td class="sub">{{nullStr .Device.InventoryAt}}</td></tr>
           <tr><th>Token updated</th><td class="sub">{{nullStr .Device.TokenUpdatedAt}}</td></tr>
+          <tr><th>Owner</th><td>
+            {{with .Owner}}<strong>{{.Owner.UPN}}</strong>{{if .Owner.AccountName}} ({{.Owner.AccountName}}){{end}}
+            <div class="sub">Verified from the certificate issued for enrollment grant {{.GrantID}} · bound {{.BoundAt}}</div>
+            {{else}}<span class="sub">No verified owner. This device did not enroll through an owner-authorized link; directory rules do not apply to it.</span>{{end}}
+          </td></tr>
           <tr><th>Groups</th><td>
             {{if .Groups}}{{range .Groups}}<a class="tag" href="/admin/groups/{{.ID}}">{{.Name}}</a> {{end}}{{else}}—{{end}}
+          </td></tr>
+          <tr><th>Directory groups</th><td>
+            {{if .DirectoryMemberships}}{{range .DirectoryMemberships}}<div><a class="tag" href="/admin/groups/{{.GroupID}}">{{.GroupName}}</a> <span class="sub">via {{.Scope.Kind}} {{.Scope.Name}} ({{.Scope.Mode}})</span></div>{{end}}{{else}}<span class="sub">None</span>{{end}}
+            {{with .DirectoryEvaluation}}<div class="sub">{{if eq .Status "ok"}}Rules evaluated {{nullStr .EvaluatedAt}}.{{else}}Directory unavailable at {{.AttemptedAt}}; previous memberships kept.{{if .Detail}} {{.Detail}}{{end}}{{end}}</div>{{else}}{{if .Owner}}<div class="sub">Directory rules have not been evaluated for this device yet.</div>{{end}}{{end}}
           </td></tr>
         </tbody>
       </table>
     </div>
 
     <h2>Actions</h2>
-    <form method="post" action="/admin/devices/{{.Device.ID}}/refresh">
+    {{with .Refresh}}<p class="sub">Last refresh request {{.SentAt}}:
+      {{if .Pending}}<span class="dot wait"></span> waiting for the device ({{.Status}}{{if .NotificationStatus}}; push {{.NotificationStatus}}, {{.NotificationAttempts}} attempt(s){{end}}). An offline device answers when it next connects.
+      {{else if eq .Status "Acknowledged"}}<span class="dot on"></span> answered {{nullStr .ResultAt}}; inventory above is from that answer.
+      {{else}}<span class="dot off"></span> {{.Status}}{{if .Error}}: {{.Error}}{{end}} at {{nullStr .ResultAt}}.{{end}}</p>{{end}}
+    <form method="post" action="/admin/devices/{{.Device.ID}}/refresh" style="display:inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="intent" value="{{.Intent}}">
       <button class="btn" type="submit">Refresh device info</button>
     </form>
+    {{if and .DirectoryRefresh (.User.Role.AtLeast "admin")}}
+    <form method="post" action="/admin/devices/{{.Device.ID}}/directory-refresh" style="display:inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button class="btn" type="submit">Re-evaluate directory rules</button>
+    </form>
+    {{end}}
+
+    <h2>Identity certificate</h2>
+    {{with .Presented}}
+    <div class="card">
+      <p style="margin:12px 16px"{{if $.PresentedExpired}} class="expired"{{end}}>
+        {{if eq $.Identity.State "refused"}}<span class="dot off"></span> <strong>Expired {{.NotAfter.Format "2006-01-02"}}.</strong> Cairn refuses this device's check-ins, so no command or profile reaches it. Remove the management profile on the device and enroll it again with a new link.
+        {{else if eq $.Identity.State "grace"}}<span class="dot off"></span> <strong>Expired {{.NotAfter.Format "2006-01-02"}}.</strong> Until {{$.Identity.GraceUntil.Format "2006-01-02"}} this device can check in to be renewed and receives nothing else. {{if $.Identity.InProgress}}A renewal is in progress; reload this page to see the next step.{{else if $.Identity.Renewing}}Cairn renews it when it next checks in.{{else if $.Identity.CanRenew}}Start the renewal below.{{else if $.Identity.Off}}Renewal is off, so enroll it again before then.{{end}}
+        {{else}}<span class="dot on"></span> The certificate this device checks in with expires <strong>{{.NotAfter.Format "2006-01-02"}}</strong> ({{$.PresentedDays}} days). {{if $.Identity.InProgress}}A renewal is in progress; reload this page to see the next step.{{else if $.Identity.Renewing}}Cairn renews it before then.{{else if $.Identity.CanRenew}}Renew it below before then; after that date it cannot be reached.{{else if $.Identity.Off}}Enroll the device again before then; after that date it cannot be reached.{{end}}{{end}}</p>
+      <p class="sub" style="margin:0 16px 12px">Serial <span class="mono">{{.Serial}}</span>, issued by {{.Issuer}}.{{if .LastAccepted}} Last accepted check-in {{.LastAccepted}} UTC.{{end}}{{if .LastRefused}} Last refused {{.LastRefused}} UTC ({{.Refusals}} refused).{{end}}</p>
+      {{if $.Identity.Blocked}}<p class="sub" style="margin:0 16px 12px"><strong>This device cannot be renewed.</strong> {{$.Identity.Blocked}}</p>{{end}}
+      {{if $.Identity.Attempts}}
+      <table>
+        <thead><tr><th>Renewal started</th><th>Step</th><th>By</th><th>Detail</th></tr></thead>
+        <tbody>
+          {{range $.Identity.Attempts}}
+          <tr>
+            <td class="date">{{.StartedAt}}</td>
+            <td>{{if eq .State "lookup"}}Waiting for the device's profile list{{else if eq .State "sent"}}Enrollment profile sent{{else if eq .State "installed"}}Profile installed; waiting for the new certificate{{else if eq .State "renewed"}}<span class="dot on"></span> Renewed{{else}}<span class="dot off"></span> Failed{{end}}</td>
+            <td>{{.Actor}}</td>
+            <td class="sub">{{.Error}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{end}}
+      {{if and $.Identity.CanRenew ($.User.Role.AtLeast "admin")}}
+      <form method="post" action="/admin/devices/{{$.Device.ID}}/renew" style="margin:12px 16px">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button class="btn" type="submit">Renew certificate now</button>
+      </form>
+      {{end}}
+    </div>
+    {{end}}
+    <div class="card">
+      {{if .Certificates}}
+      <table>
+        <thead><tr><th>Serial</th><th>Expires</th><th>Status</th></tr></thead>
+        <tbody>
+          {{range .Certificates}}
+          <tr>
+            <td class="mono">{{.Serial}}</td>
+            <td class="date">{{.NotAfter.Format "2006-01-02"}}</td>
+            <td>{{if .Revoked}}<span class="dot off"></span> revoked{{else}}<span class="dot on"></span> in use{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">Renewal is not available in this release. Before expiry, create a new enrollment link for the owner and re-enroll the device; the old certificate is then retired through revocation.</p>
+      {{else}}
+      <div class="empty">No embedded-CA identity certificate is associated with this device (external CA, imported, or not yet enrolled through an owner-authorized link).</div>
+      {{end}}
+      {{if .RenewalAttempts}}
+      <div class="callout error" role="alert" style="margin:0 16px 16px">
+        <p>This device tried to renew its certificate {{len .RenewalAttempts}} time(s) recently and was refused. Issue a new enrollment link.</p>
+        <ul>{{range .RenewalAttempts}}<li class="sub">{{.ObservedAt}} · signer {{.SignerSerial}} expiring {{.SignerExpires}}</li>{{end}}</ul>
+      </div>
+      {{end}}
+    </div>
+
+    {{if .VPN}}
+    <h2>VPN</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Server</th><th>Profile on this device</th>{{if .User.Role.AtLeast "admin"}}<th>Actions</th>{{end}}</tr></thead>
+        <tbody>
+          {{range .VPN}}
+          <tr>
+            <td>{{.Server.Name}}<div class="sub mono">{{.Server.Slug}}</div></td>
+            <td>
+              {{if .Offered}}<div><span class="dot wait"></span> Profile sent for {{.Offered}}; waiting for the device to ask for its certificate</div>{{end}}
+              {{with .Latest}}
+                {{if eq .State "ISSUED"}}
+                  {{if eq .DeployStatus "installed"}}<span class="dot on"></span> Installed for {{.Owner.AccountName}}
+                  {{else if eq .DeployStatus "sent"}}<span class="dot wait"></span> Waiting for the device to collect it ({{.Owner.AccountName}})
+                  {{else}}<span class="dot off"></span> Not installed{{if .FailReason}}: {{.FailReason}}{{end}}. No device holds this certificate.{{end}}
+                  <div class="sub">Certificate <span class="mono">{{.CertSerial}}</span>, expires {{.ExpiresOn}}</div>
+                {{else if eq .State "QUARANTINED"}}<span class="dot off"></span> Held for review: {{.FailReason}}. Nothing was sent.
+                {{else if eq .State "FAILED"}}<span class="dot off"></span> No certificate issued: {{.FailReason}}
+                {{else if eq .State "REVOKED"}}<span class="dot off"></span> Certificate <span class="mono">{{.CertSerial}}</span> revoked{{if not .RevokedAt.Valid}} in Cairn; not yet confirmed at the certificate authority{{end}}
+                {{else if eq .State "SUPERSEDED"}}<span class="dot off"></span> Replaced
+                {{else}}<span class="dot wait"></span> Requesting a certificate{{end}}
+              {{else}}{{if and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password")}}<span class="sub">Password sign-in: {{if .Server.IKEv2.KeepPassword}}on trial as a pushed profile; a sent profile shows in the command history. It can also be downloaded{{else}}installed by hand. Download a profile for the user{{end}} from <a href="/admin/vpn/{{.Server.ID}}">this server's page</a>.</span>
+              {{else if not .Offered}}<span class="sub">No VPN profile sent.</span>{{end}}{{end}}
+            </td>
+            {{if $.User.Role.AtLeast "admin"}}
+            <td>
+              {{if $.VPNCanIssue}}
+              {{if not (and .Server.IsIKEv2 (eq .Server.IKEv2.SignIn "password") (not .Server.IKEv2.KeepPassword))}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/issue" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                {{if not $.Owner}}<label>Account <input type="text" name="account" required size="16" placeholder="jsmith" autocomplete="off"></label>{{end}}
+                <button class="btn" type="submit">{{if .Latest}}Send new profile{{else}}Send profile{{end}}</button>
+              </form>
+              {{end}}
+              {{if .Offered}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/withdraw" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">Withdraw profile</button>
+              </form>
+              {{end}}
+              {{if and .Server.IsIKEv2 (not .Latest) (not .Server.IKEv2.UsesCertificate)}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.Server.ID}}/remove" style="display:inline"
+                    onsubmit="return confirm('Remove the {{.Server.Name}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">Remove pushed profile</button>
+              </form>
+              {{end}}
+              {{with .Latest}}{{if eq .State "ISSUED"}}
+              {{if eq .DeployStatus "installed"}}
+              <form method="post" action="/admin/devices/{{$.Device.ID}}/vpn/{{.ServerID}}/remove" style="display:inline"
+                    onsubmit="return confirm('Remove the {{.ServerName}} profile from {{$.Device.DisplayName}}? The device loses this VPN connection.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">Remove profile</button>
+              </form>
+              {{end}}
+              <form method="post" action="/admin/vpn/identities/{{.ID}}/revoke" style="display:inline"
+                    onsubmit="return confirm('Revoke certificate {{.CertSerial}}? Use this for a lost or stolen device.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn danger" type="submit">Revoke certificate</button>
+              </form>
+              {{end}}{{end}}
+              {{else}}<span class="sub">{{$.VPNIssuerMissing}}</span>{{end}}
+            </td>
+            {{end}}
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub" style="margin:8px 16px 16px">{{if .Owner}}The certificate is issued to this device's verified owner.{{else}}This device has no verified owner, so name the directory account the certificate is for. {{end}}
+      Sending needs an MFA code verified in the last five minutes. For an OpenVPN server on an iPhone or iPad, install OpenVPN Connect first and make the first connection from that app. An IKEv2 server needs no app.</p>
+    </div>
+    {{end}}
 
     <h2>Profiles</h2>
     <div class="card">
@@ -52,6 +204,7 @@
             <td>
               {{.ProfileName}}
               <div class="sub mono">{{.ProfileIdentifier}}</div>
+              {{with index $.Affects .ProfileIdentifier}}<div class="sub">Provides: {{.}}</div>{{end}}
             </td>
             <td>
               <span class="dot {{if eq .Status "installed"}}on{{else if eq .Status "failed"}}off{{else}}wait{{end}}"></span>
@@ -60,8 +213,9 @@
             <td class="sub">{{.UpdatedAt}}</td>
             <td style="text-align:right">
               <form method="post" action="/admin/devices/{{$.Device.ID}}/remove"
-                    onsubmit="return confirm('Send a RemoveProfile command for this profile?')">
+                    onsubmit="return confirm('Remove {{.ProfileName}} from {{$.Device.DisplayName}}?{{with index $.Affects .ProfileIdentifier}} This takes away: {{.}}. The device may not be able to reach Cairn afterwards.{{end}}')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="intent" value="{{$.Intent}}-{{.ProfileID}}">
                 <input type="hidden" name="identifier" value="{{.ProfileIdentifier}}">
                 <button class="btn link" type="submit">Remove</button>
               </form>
@@ -71,13 +225,14 @@
         </tbody>
       </table>
       {{else}}
-      <div class="empty">No group-assigned profiles deployed to this device.</div>
+      <div class="empty">No group-assigned profiles deployed to this device. Manual and directory group memberships both count.</div>
       {{end}}
     </div>
     {{if .Library}}
     <form method="post" action="/admin/devices/{{.Device.ID}}/install" style="margin-top:12px">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <select name="profile_id" required>
+      <input type="hidden" name="intent" value="{{.Intent}}">
+      <select name="profile_id" required aria-label="Profile to install">
         <option value="" disabled selected>Install a profile…</option>
         {{range .Library}}<option value="{{.ID}}">{{.Name}} ({{.Identifier}})</option>{{end}}
       </select>
@@ -90,7 +245,7 @@
       {{if .Commands}}
       <table>
         <thead>
-          <tr><th>Command</th><th>Status</th><th>Sent</th><th>Result</th></tr>
+          <tr><th>Command</th><th>Status</th><th>APNs notification</th><th>Queued</th><th>Result</th></tr>
         </thead>
         <tbody>
           {{range .Commands}}
@@ -104,6 +259,9 @@
               {{.Status}}
               {{if .Error}}<div class="sub">{{.Error}}</div>{{end}}
             </td>
+            <td class="sub">{{if .NotificationStatus}}{{.NotificationStatus}} ({{.NotificationAttempts}} attempts){{with .NotificationError}}<br>{{.}}{{end}}{{else}}Not scheduled{{end}}
+            {{if and .Pending (eq .NotificationStatus "exhausted")}}<form method="post" action="/admin/devices/{{$.Device.ID}}/commands/{{.CommandUUID}}/retry-push">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="intent" value="{{$.Intent}}"><button class="btn" type="submit">Retry notification</button></form>{{end}}</td>
             <td class="sub">{{.SentAt}}</td>
             <td class="sub">{{nullStr .ResultAt}}</td>
           </tr>
@@ -111,7 +269,7 @@
         </tbody>
       </table>
       {{else}}
-      <div class="empty">No commands sent to this device yet.</div>
+      <div class="empty">No commands queued for this device yet.</div>
       {{end}}
     </div>
   </main>

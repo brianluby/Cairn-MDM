@@ -28,17 +28,37 @@
       </div>
     </div>
 
+    <h2>Alerts</h2>
+    <div class="card">
+      {{if .Alerts}}
+      <table>
+        <thead><tr><th>Condition</th><th>Since</th><th>Action</th></tr></thead>
+        <tbody>
+          {{range .Alerts}}
+          <tr><td><span class="dot off"></span> {{.Message}}<div class="sub mono">{{.Key}}</div></td><td class="sub">{{.ChangedAt}}</td><td>{{with alertAction .Key}}<a class="btn" href="{{.}}">{{if eq . "/admin/apns"}}Open APNs{{else if eq . "/admin/quarantine"}}Open quarantine{{else if eq . "/admin/devices"}}Open devices{{else}}Open settings{{end}}</a>{{end}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No active alerts.</div>
+      {{end}}
+      <p class="sub" style="margin:8px 16px 16px">
+        {{if .AlertsConfigured}}Webhook alerts enabled.{{if .LastHeartbeat}} Last heartbeat {{.LastHeartbeat}}.{{else}} No heartbeat sent yet.{{end}}{{else}}Webhook alerts are not configured (alerts.webhook_url); conditions appear here only. See <a href="/admin/settings">Settings</a>.{{end}}
+      </p>
+    </div>
+
     {{with .APNs}}
     {{if .Loaded}}
-    <h2>APNs certificates</h2>
-    <div class="card">
-      <table>
+    <h2 id="apns-heading">APNs certificates</h2>
+    <div class="card table-scroll" role="region" aria-labelledby="apns-heading" tabindex="0">
+      <table class="apns-table">
+        <colgroup><col><col class="expiry-column"><col class="days-column"><col class="status-column"></colgroup>
         <thead><tr><th>Topic</th><th>Expires</th><th>Days left</th><th>Status</th></tr></thead>
         <tbody>
           {{range .Topics}}
           <tr class="apns-{{.Severity}}">
-            <td class="mono">{{.Topic}}{{with .Subject}}<div class="sub mono">{{.}}</div>{{end}}</td>
-            <td>{{.Expires}}</td>
+            <td><div class="mono">{{.Topic}}</div>{{with .Subject}}<details class="certificate-details"><summary>Certificate details</summary><div class="sub mono">{{.}}</div></details>{{end}}</td>
+            <td class="date">{{.Expires}}</td>
             <td>{{.Days}}</td>
             <td>
               <span class="badge sev-{{.Severity}}">{{if .Warn}}⚠️ {{end}}{{.Label}}</span>
@@ -55,7 +75,12 @@
       <span>📲</span>
       <div>
         <div>Enroll a device</div>
+        {{if .OpenEnrollment}}
         <div class="url">{{.EnrollmentURL}}</div>
+        <div class="sub">Open enrollment is on (enrollment.allow_open): anyone who can reach this URL can enroll.</div>
+        {{else}}
+        <div class="sub">Each device enrolls through a single-use link. <a href="/admin/enrollment">Create an enrollment link</a>, then send it to the device's owner or open it on the device.</div>
+        {{end}}
       </div>
     </div>
 

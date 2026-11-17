@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  <main>
+    <h1>Set up Cairn</h1>
+    <p>No administrator exists yet. Create the first one here. To prove you control this server, enter the setup token from the file Cairn wrote beside its database.</p>
+    {{if .Error}}<div class="card callout error" role="alert">{{.Error}}</div>{{end}}
+
+    <h2>1. Read the setup token on the host</h2>
+    <div class="card" style="padding:24px">
+      <p>On the Cairn host, as the user that runs Cairn:</p>
+      <pre class="mono">cat {{.TokenPath}}</pre>
+      <p class="sub">The file is readable only by that user. It is deleted once setup completes. Restarting Cairn keeps the same token.</p>
+    </div>
+
+    <h2>2. Create the first administrator</h2>
+    <div class="card" style="padding:24px">
+      <form method="post" action="/setup">
+        <p><label for="token">Setup token</label><br><input id="token" name="token" autocomplete="off" required size="70" class="mono" pattern="[0-9a-fA-F]{64}"></p>
+        <p><label for="username">Administrator username</label><br><input id="username" name="username" autocomplete="username" required maxlength="64" value="{{.Username}}"></p>
+        <p><label for="password">Password (at least 12 characters)</label><br><input id="password" name="password" type="password" autocomplete="new-password" required minlength="12"></p>
+        <p><label for="confirm">Confirm password</label><br><input id="confirm" name="confirm" type="password" autocomplete="new-password" required minlength="12"></p>
+        <button class="btn" type="submit">Create administrator and sign in</button>
+      </form>
+      <p class="sub">Next you will register an authenticator app. Actions that issue certificates require it.</p>
+    </div>
+
+    <h2>Environment checks</h2>
+    <div class="card">
+      <table class="kv">
+        <tbody>
+          {{range .Checks}}
+          <tr>
+            <th style="width:220px">{{.Name}}</th>
+            <td><span class="dot {{if eq .Status "ok"}}on{{else if eq .Status "warn"}}off{{else}}wait{{end}}"></span> {{.Detail}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="sub">Public URL, TLS and CA mode come from cairn.toml and change on restart. The push certificate is loaded in the console after setup.</p>
+    </div>
+  </main>
+</body>
+</html>

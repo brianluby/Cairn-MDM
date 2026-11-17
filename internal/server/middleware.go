@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,18 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// logPath is the request path as it goes into the log. A challenge lookup
+// carries the device's challenge as its last segment; it is left out.
+func logPath(p string) string {
+	const lookup = "/scep-challenge/"
+	if strings.HasPrefix(p, lookup) {
+		if i := strings.LastIndexByte(p, '/'); i+1 < len(p) {
+			return p[:i] + "/[challenge]"
+		}
+	}
+	return p
+}
+
 // accessLog logs one line per request at debug (health probes) or info level.
 func (s *Server) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +38,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 
 		attrs := []any{
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", logPath(r.URL.Path),
 			"status", rec.status,
 			"dur_ms", time.Since(start).Milliseconds(),
 			"remote", r.RemoteAddr,

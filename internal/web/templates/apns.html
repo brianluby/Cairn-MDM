@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head>{{template "head" .}}</head><body>{{template "topbar" .}}
+<main><h1>APNs certificates</h1>
+<p>Apple push certificates let Cairn contact enrolled devices. Renew each existing certificate before it expires.</p>
+<div class="card"><table><thead><tr><th>Topic</th><th>Expires</th></tr></thead><tbody>
+{{range .Topics}}<tr><td class="mono">{{.Topic}}</td><td>{{.NotAfter}}</td></tr>{{else}}<tr><td colspan="2">No certificates installed.</td></tr>{{end}}
+</tbody></table></div>
+<h2>Prepare a request</h2>
+<form method="post" action="/admin/apns/requests" class="card" style="padding:24px">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<p><label for="topic">Certificate</label><select id="topic" name="topic">
+<option value="">Initial issuance for a new fleet</option>{{range .Topics}}<option value="{{.Topic}}">Renew {{.Topic}}</option>{{end}}
+</select></p>
+<p><label for="email">Email registered with mdmcert.download</label><input id="email" type="email" name="email" required maxlength="254"></p>
+<p><label for="apple_account">Apple Account reference (optional)</label><input id="apple_account" name="apple_account" maxlength="254" autocomplete="off"></p>
+<p>Cairn keeps the request keys. You sign in to Apple separately; never enter an Apple password here.</p>
+<button class="btn primary" type="submit">Prepare request</button></form>
+<h2>Saved requests</h2><ul>{{range .Requests}}<li><a href="/admin/apns/requests/{{.ID}}">{{.CreatedAt.Format "2006-01-02 15:04 UTC"}} — {{.Email}}</a> · {{if .RenewTopic}}Renew {{.RenewTopic}}{{else}}Initial issuance{{end}}</li>{{else}}<li>No saved requests.</li>{{end}}</ul>
+</main></body></html>

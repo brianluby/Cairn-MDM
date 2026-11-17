@@ -74,7 +74,7 @@ func TestGrantExpiredAndRevoked(t *testing.T) {
 
 	// Revoked grant cannot be redeemed.
 	rawRev, hashRev := NewGrantToken()
-	id, _ := db.CreateGrant(ctx, Grant{ExpiresAt: future(), MaxUses: 5, CreatedBy: "a"}, hashRev)
+	id, _ := db.CreateGrant(ctx, Grant{ExpiresAt: future(), MaxUses: 1, CreatedBy: "a"}, hashRev)
 	if err := db.RevokeGrant(ctx, id); err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +114,44 @@ func TestGrantConcurrentRedeemNoDoubleSpend(t *testing.T) {
 	wg.Wait()
 	if wins != 1 {
 		t.Fatalf("concurrent redemptions succeeded %d times, want exactly 1", wins)
+	}
+}
+
+// Grants are single-use: CreateGrant pins max_uses to 1 regardless of the
+// requested value (the issuance model binds one certificate per grant).
+func TestGrantSingleUseEnforced(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	_, hash := NewGrantToken()
+	id, err := db.CreateGrant(ctx, Grant{ExpiresAt: future(), MaxUses: 25, CreatedBy: "a"}, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := db.GetGrant(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.MaxUses != 1 {
+		t.Errorf("MaxUses = %d, want 1 (single-use enforced)", g.MaxUses)
+	}
+}
+
+// Durable single-use: the DB trigger blocks a multi-use grant even via direct SQL
+// (rollback-safe — enforcement lives in the schema, not the application binary).
+func TestSingleUseTriggerBlocksMultiUse(t *testing.T) {
+	ctx := context.Background()
+	db := newGrantDB(t)
+	_, hash := NewGrantToken()
+	if _, err := db.sql.ExecContext(ctx,
+		`INSERT INTO enrollment_grants (token_hash, expires_at, max_uses) VALUES (?, ?, 5)`,
+		hash, future()); err == nil {
+		t.Fatal("trigger should reject a direct insert with max_uses <> 1")
+	}
+	// A single-use direct insert is allowed.
+	_, hash2 := NewGrantToken()
+	if _, err := db.sql.ExecContext(ctx,
+		`INSERT INTO enrollment_grants (token_hash, expires_at, max_uses) VALUES (?, ?, 1)`,
+		hash2, future()); err != nil {
+		t.Fatalf("single-use direct insert should be allowed: %v", err)
 	}
 }

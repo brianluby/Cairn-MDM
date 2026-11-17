@@ -1,14 +1,15 @@
 # Backing up and restoring Cairn
 
 Cairn's entire state is small and file-based. A correct backup is: the SQLite
-database (captured consistently), the config, and the two on-disk certs. Losing
+database (captured consistently), the config, certificates, and the MFA encryption key. Losing
 the database loses enrollments — treat it like the crown jewel it is.
 
 ## What to back up
 
-| Item | Path (DZsec CT 226) | Why |
+| Item | Path (reference deployment) | Why |
 |---|---|---|
 | Database | `/var/lib/cairn/cairn.db` (+ `-wal`, `-shm`) | Devices, enrollments, cert-auth associations, **APNs push cert/key**, embedded CA (generate/import mode), sessions, profiles, grants, audit |
+| MFA key (candidate schema 027 onward) | `<storage.path>.mfa/key`, normally `/var/lib/cairn/cairn.db.mfa/key` | Decrypts confirmed and pending authenticator secrets; restore the matching key with the DB; directory 0700 and file 0600 |
 | Config | `/etc/cairn/cairn.toml` | Wiring; references the cert/challenge files |
 | Signing cert | `/etc/cairn/sign.crt` / `sign.key` | Profile-signing identity (re-issuable from LE, but back it up) |
 | External SCEP chain / challenge | `/etc/cairn/dzsec-ca-chain.pem`, `/etc/cairn/scep-challenge` | External-mode enrollment trust + challenge |
@@ -17,7 +18,52 @@ the database loses enrollments — treat it like the crown jewel it is.
 The DB already contains the APNs cert+key and (in embedded modes) the CA key,
 so the DB backup is confidential — store it encrypted, mode 0600.
 
-## Consistent database backup (no downtime)
+## Backup bundle (recommended)
+
+```
+cairn backup -config /etc/cairn/cairn.toml -out /var/backups/cairn/cairn-$(date +%F-%H%M).tar.gz
+```
+
+One `tar.gz`, mode 0600, containing: `cairn.db` (an online `VACUUM INTO`
+snapshot, integrity-checked), `mfa/key`, `config/cairn.toml` and every file the
+configuration references (TLS and signing certificates and keys, CA import or
+broker material, chain and secret files), plus `manifest.json` with the build,
+schema versions, SHA-256 of every member, record counts (devices, pushable,
+profiles, groups, grants, quarantined, MFA factors, local users) and the APNs
+topics with expiry. The command then extracts the bundle into a scratch
+directory and re-checks hashes, integrity and counts before reporting success.
+A referenced file that is missing is recorded as a note, not an error; a
+database with MFA factors but no key file is noted and fails verification. With
+`alerts.webhook_url` set, success or failure is posted to the webhook, so a
+timer that stops firing is caught by the stale-backup alert and a failing run
+is announced immediately.
+
+`packaging/systemd/cairn-backup.{service,timer}` run this nightly at 02:30 into
+`/var/backups/cairn` and keep 14 bundles. Copy bundles off-host; they contain
+private keys. `-db-only` keeps the older single-file snapshot behavior.
+
+## Restore rehearsal
+
+```
+cairn restore -bundle /var/backups/cairn/cairn-2026-11-09-0230.tar.gz -rehearse
+```
+
+Extracts into a temporary directory, verifies every hash, runs
+`PRAGMA integrity_check`, compares record counts and schema versions with the
+manifest, checks that the MFA key is present when factors exist and that no
+APNs certificate in the bundle has already expired, then deletes the scratch
+directory (`-keep -workdir DIR` to inspect it). It never touches the live
+database or starts a server. Rehearse monthly and after every upgrade.
+
+To restore for real, `cairn restore -bundle FILE -into /path/to/empty/dir`
+verifies first and refuses a bundle with problems or a non-empty target. It
+writes `cairn.db`, `cairn.db.mfa/key` and `config/…` with 0600 permissions.
+Point `storage.path` at the restored database, review the restored
+`cairn.toml` and referenced files, run `cairn migrate`, then start. Never start
+a restored copy where it can reach production devices unless it is the
+production replacement.
+
+## Consistent database backup (manual alternative)
 
 SQLite in WAL mode must not be copied with a plain `cp` while Cairn is running —
 you can capture a torn state. Use one of:
@@ -81,8 +127,35 @@ old binary can't read, the pre-upgrade DB. Schema migrations are additive
 (`ADD COLUMN`, new tables), so an older binary generally still reads a
 newer DB, but back up first regardless.
 
+Rehearsed November 9, 2026, offline on a copy of the production database as it
+stood under `c25eb67` (15 schema versions, 12 devices, 34 certificate
+associations, 2 topics): the completion candidate's `migrate` took it to 32
+versions with every count unchanged and integrity ok; `cairn backup` then
+produced a bundle that `restore -rehearse` verified; the `c25eb67` binary run
+against the upgraded database applied no migrations, read both APNs topics and
+the local accounts, and left the schema at 32 with integrity ok. So a binary
+rollback after this upgrade does not require a database rollback. The
+rehearsal never started a server against the copied data.
+
 ## Schedule (recommendation)
 
 Nightly `VACUUM INTO` + config tar to `/var/backups`, synced off-host (the
 existing backup path / PBS). Keep ≥14 daily + ≥8 weekly. **Test a real restore
 into a scratch instance quarterly** — an untested backup is a hope, not a backup.
+
+## MFA key and recovery state
+
+The completion candidate creates `<storage.path>.mfa/key` at server startup, or
+when host bootstrap first runs. `cairn backup` includes it in the bundle and
+verification fails when factors exist without it. The key is not
+rotated during routine operation. A database backup alone cannot recover MFA.
+Restore the matching directory/key before starting the restored service, owned
+by the service user, directory mode 0700 and key mode 0600. Startup refuses to
+create a replacement key when encrypted MFA state exists.
+
+Restoring an old database also restores old MFA counters, sessions, approval
+codes and recovery-code hashes. Before exposing a restored instance, invalidate
+sessions and outstanding registrations and reset affected factors through a
+reviewed recovery procedure. Do not assume a database restore preserves
+single-use history from after the backup. End-to-end restore qualification is
+still a release gate; never test a restored copy against production devices.
