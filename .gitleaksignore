@@ -1,0 +1,3 @@
+# The mdmcert.download vendor client key: published, the same for every user
+# of that service, and not an operator credential.
+625a19824763cc3071787ab1c56756482aefdb41:internal/push/request.go:generic-api-key:30
