@@ -21,7 +21,7 @@ import (
 )
 
 // Device-keyed issuance is for clients that can use an identity from the
-// system keychain (the native IKEv2 client). The device makes the key and asks
+// system keychain (the native IKEv2 client and Wi-Fi). The device makes the key and asks
 // Cairn's SCEP endpoint for a certificate, presenting a challenge that Cairn
 // put in that device's profile and that works once, for one key. The
 // certificate content comes from the offer and the directory; from the request
@@ -57,10 +57,13 @@ func (s *Service) offerDeviceKey(ctx context.Context, deviceID string, server Se
 	if err != nil {
 		return none, err
 	}
-	profile, err := RenderIKEv2(s.opts.Organization, server, IKEv2Identity{
-		DeviceID: deviceID, Username: owner.AccountName,
-		SCEP: &SCEPEnrollment{URL: s.opts.DeviceSCEPURL, Challenge: challenge, CommonName: owner.AccountName, Email: owner.UPN},
-	})
+	enrollment := &SCEPEnrollment{URL: s.opts.DeviceSCEPURL, Challenge: challenge, CommonName: owner.AccountName, Email: owner.UPN}
+	var profile []byte
+	if server.IsWiFi() {
+		profile, err = RenderWiFi(s.opts.Organization, server, WiFiIdentity{DeviceID: deviceID, SCEP: enrollment})
+	} else {
+		profile, err = RenderIKEv2(s.opts.Organization, server, IKEv2Identity{DeviceID: deviceID, Username: owner.AccountName, SCEP: enrollment})
+	}
 	if err == nil {
 		err = s.cmd.SendInstallProfileAs(ctx, commandUUID, profile, deviceID)
 	}
@@ -70,7 +73,7 @@ func (s *Service) offerDeviceKey(ctx context.Context, deviceID string, server Se
 		}
 		return none, fmt.Errorf("vpn: the profile could not be queued: %w", err)
 	}
-	s.log.Info("vpn: IKEv2 profile queued; the device will request its certificate", "offer", offerID, "device", deviceID, "server", server.Slug, "owner", owner.UPN, "actor", actor)
+	s.log.Info("vpn: profile queued; the device will request its certificate", "offer", offerID, "device", deviceID, "server", server.Slug, "owner", owner.UPN, "actor", actor)
 	return sqlite.VPNIdentity{ServerID: server.ID, DeviceID: deviceID, Owner: owner, Actor: actor}, nil
 }
 
@@ -131,7 +134,7 @@ func (s *Service) signDeviceKey(ctx context.Context, m *scep.CSRReqMessage) (lea
 		return nil, "device is no longer enrolled", errOfferRefused
 	}
 	server, err := s.servers.Get(ctx, offer.ServerID)
-	if err != nil || !server.IsIKEv2() || !server.IKEv2.UsesCertificate() {
+	if err != nil || !(server.IsWiFi() || server.IsIKEv2() && server.IKEv2.UsesCertificate()) {
 		return nil, "server record no longer takes certificates", errOfferRefused
 	}
 	owner := offer.Owner

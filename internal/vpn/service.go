@@ -210,6 +210,11 @@ func (s *Service) send(ctx context.Context, deviceID string, server Server, owne
 	if server.IsIKEv2() {
 		return s.sendIKEv2(ctx, deviceID, server, owner, actor)
 	}
+	// With Cairn's SCEP endpoint set up, the device makes its own Wi-Fi key.
+	// Without it, Cairn makes the key and sends it inside the profile.
+	if server.IsWiFi() && s.opts.DeviceSCEPURL != "" {
+		return s.offerDeviceKey(ctx, deviceID, server, owner, actor)
+	}
 
 	// One undelivered key per device and server at a time.
 	earlier, err := s.store.DeviceVPNIdentities(ctx, deviceID)

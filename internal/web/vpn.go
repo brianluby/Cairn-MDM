@@ -472,6 +472,9 @@ func (a *App) handleVPNIssue(w http.ResponseWriter, r *http.Request) {
 			msg = "VPN profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
 		} else if serr == nil && s.IsWiFi() {
 			msg = "Wi-Fi profile for " + v.Owner.AccountName + " queued. It installs when the device next connects."
+			if v.ID == 0 { // an offer: no certificate exists until the device asks
+				msg = "Wi-Fi profile for " + v.Owner.AccountName + " queued. When it installs, the device makes a key and asks Cairn for its certificate."
+			}
 		}
 	}
 	http.Redirect(w, r, back+"?flash="+url.QueryEscape(msg), http.StatusSeeOther)

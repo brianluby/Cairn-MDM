@@ -257,3 +257,52 @@ func TestCheckWiFiRefusesUnsafeProfiles(t *testing.T) {
 		t.Fatalf("good profile refused: %v", err)
 	}
 }
+
+func TestRenderWiFiWithADeviceMadeKeyHoldsNoKey(t *testing.T) {
+	chain, leaf, key := wifiPKI(t, "alice")
+	enrollment := &SCEPEnrollment{URL: "https://mdm.example.org/scep/vpn", Challenge: "one-time", CommonName: "alice", Email: "alice@example.org"}
+	out, err := RenderWiFi("org.example", wifiRecord(chain), WiFiIdentity{DeviceID: "PHONE1", SCEP: enrollment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, by := payloadsOf(t, out)
+	if len(by["com.apple.security.pkcs12"]) != 0 || len(by["com.apple.security.scep"]) != 1 {
+		t.Fatalf("payload types = %v, want a SCEP payload and no PKCS#12", by)
+	}
+	scep, wifi := by["com.apple.security.scep"][0], by["com.apple.wifi.managed"][0]
+	req := scep["PayloadContent"].(map[string]any)
+	if req["URL"] != enrollment.URL || req["Challenge"] != "one-time" || req["KeyIsExtractable"] != false ||
+		req["SubjectAltName"].(map[string]any)["rfc822Name"] != "alice@example.org" {
+		t.Fatalf("SCEP request = %v", req)
+	}
+	if wifi["PayloadCertificateUUID"] != scep["PayloadUUID"] {
+		t.Fatal("Wi-Fi payload does not refer to the SCEP identity")
+	}
+	if eap := wifi["EAPClientConfiguration"].(map[string]any); eap["UserName"] != "alice" {
+		t.Fatalf("UserName = %v, want the requested common name", eap["UserName"])
+	}
+
+	// A re-send in the other mode keeps the identifiers, so it replaces in place.
+	other, err := RenderWiFi("org.example", wifiRecord(chain), WiFiIdentity{DeviceID: "PHONE1", Leaf: leaf, Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	topA, _ := payloadsOf(t, out)
+	topB, _ := payloadsOf(t, other)
+	if topA["PayloadUUID"] != topB["PayloadUUID"] || topA["PayloadIdentifier"] != topB["PayloadIdentifier"] {
+		t.Fatal("the two identity modes render different profile identifiers")
+	}
+
+	bad := map[string]WiFiIdentity{
+		"both identities":       {DeviceID: "PHONE1", SCEP: enrollment, Leaf: leaf, Key: key},
+		"no identity":           {DeviceID: "PHONE1"},
+		"no challenge":          {DeviceID: "PHONE1", SCEP: &SCEPEnrollment{URL: enrollment.URL, CommonName: "alice"}},
+		"not an account name":   {DeviceID: "PHONE1", SCEP: &SCEPEnrollment{URL: enrollment.URL, Challenge: "x", CommonName: "alice smith"}},
+		"SCEP URL without http": {DeviceID: "PHONE1", SCEP: &SCEPEnrollment{URL: "mdm.example.org/scep", Challenge: "x", CommonName: "alice"}},
+	}
+	for name, id := range bad {
+		if _, err := RenderWiFi("org.example", wifiRecord(chain), id); err == nil {
+			t.Errorf("%s: profile rendered", name)
+		}
+	}
+}
