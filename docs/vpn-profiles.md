@@ -365,11 +365,18 @@ name, and should check that the account is enabled. Cairn checks the account
 when it issues; after that, refusing a disabled account or a revoked
 certificate is the RADIUS server's job.
 
-A device that already knows the network, from an older profile or a saved
-password, may keep using those settings. Remove the older profile first: the
-device page's "Installed on the device" card lists what the device reports,
-including profiles an earlier MDM server installed, and removes any that MDM
-installed.
+A device that already knows the network may keep using its old settings:
+
+- From an older profile: remove that profile first. The device page's
+  "Installed on the device" card lists what the device reports, including
+  profiles an earlier MDM server installed, and removes any that MDM installed.
+- From a network the user joined by password: the new profile installs, but
+  the device can stay on the saved settings and not report the install until
+  it reconnects. Turn Wi-Fi off and on, or choose "Forget This Network" before
+  sending the profile.
+
+A device that reaches Cairn only through this network needs another way
+online to receive the profile, such as a phone's hotspot.
 
 Limits:
 
