@@ -24,6 +24,15 @@ with Cairn before it issues. None of this has passed an independent review or
 the Wi-Fi hardware tests. See `SECURITY.md` and
 [completion requirements](docs/completion-prd.md).
 
+![Cairn dashboard: enrolled devices, alerts and the APNs certificate](docs/screenshots/dashboard.png)
+
+More of the console, with an invented fleet:
+[devices](docs/screenshots/devices.png) ·
+[VPN, Wi-Fi and profiles on one device](docs/screenshots/device.png) ·
+[a group and its profiles](docs/screenshots/group.png) ·
+[Wi-Fi networks and certificates](docs/screenshots/wifi.png) ·
+[enrollment links](docs/screenshots/enrollment.png)
+
 ### What works today
 
 - **Enrollment.** Single-use, expiring links made by an administrator with a
@@ -121,6 +130,10 @@ the host; entering it creates the first administrator, signs you in and hands yo
 the authenticator approval code. The page lists what is still missing (push
 certificate, directory) and disappears once setup completes. The APNs request,
 decrypt and install steps are also available under the console's APNs page.
+
+mdmcert.download is one of three ways to get the push certificate request
+signed. An organization with an Apple Developer membership can also apply to
+sign its own; see [obtaining an MDM certificate](docs/obtain_mdm_cert_guide.md).
 
 `packaging/cairn.example.toml` documents the full config surface. Health
 endpoints: `GET /healthz` (liveness), `GET /readyz` (readiness), `GET /version`.
