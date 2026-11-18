@@ -17,6 +17,10 @@
   request, and can remove any that MDM installed, including ones an earlier
   MDM server left. The enrollment profile cannot be removed there. Adds
   migration 39.
+- Docs: screenshots of the console in the README, taken from an invented
+  fleet, and a guide to the three ways of getting an MDM push certificate
+  request signed, including an organization signing its own. See
+  [obtaining an MDM certificate](docs/obtain_mdm_cert_guide.md).
 
 ## v0.2.0-beta.1 (November 16, 2026)
 
