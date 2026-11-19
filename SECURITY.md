@@ -74,7 +74,11 @@ commands to managed devices. The main boundaries it defends:
   the MDM host.
 - **Device check-in (`/mdm`).** Every request is authenticated by the device's
   identity certificate (SCEP-issued) via `Mdm-Signature`/mTLS; certauth binds
-  each enrollment to its certificate hash(es).
+  each enrollment to its certificate hash(es). The certificate must chain to
+  the configured CA or to a CA listed in `[ca] identity_ca_files`; any other
+  is refused before enrollment sees it. With an external CA that also issues
+  certificates for other purposes, every certificate from that CA passes this
+  check, so give device identities their own issuing CA where you can.
 - **Secrets at rest.** The SQLite database (CA key, APNs key, session tokens)
   is enforced to mode 0600; config secrets are file/env-only, never inlined.
 - **Out of scope / operator responsibilities.** TLS termination and its cert

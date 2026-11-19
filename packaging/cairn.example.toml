@@ -34,6 +34,11 @@ path = "/var/lib/cairn/cairn.db"
 # broker   — devices ask Cairn, which checks the enrollment link and relays to
 #            an external SCEP CA (see docs/enrollment-authorization.md)
 mode = "generate"
+# Device check-ins are accepted only with a certificate from the CA configured
+# here. List further CAs whose devices this server also manages: the CA of a
+# NanoMDM server you imported from, or an earlier CA some devices still hold
+# certificates from.
+# identity_ca_files = ["/etc/cairn/old-mdm-ca.pem"]
 # [ca.import]
 # cert_file = "/etc/cairn/ca.crt"
 # key_file  = "/etc/cairn/ca.key"

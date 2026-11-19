@@ -79,6 +79,8 @@ func runServe(ctx context.Context, args []string) error {
 
 	deps := server.Deps{MDM: core.Handler()}
 
+	// Check-ins are refused until trustIdentityIssuers runs, after the CA is
+	// configured below.
 	// One verified-directory provider serves owner checks at redemption and
 	// issuance, console lookups and directory targeting. Absent a directory ID,
 	// owner-authorized grants fail closed everywhere.
@@ -97,6 +99,9 @@ func runServe(ctx context.Context, args []string) error {
 	// Configure SCEP + enrollment per ca.mode (generate | import | external).
 	pki, err := wirePKI(ctx, cfg, db, db, resolver, log, &deps)
 	if err != nil {
+		return err
+	}
+	if err = trustIdentityIssuers(core, pki.Anchors, cfg.CA.IdentityCAFiles, log); err != nil {
 		return err
 	}
 

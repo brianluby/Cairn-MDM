@@ -43,6 +43,11 @@ path = "/var/db/cairn/cairn.db"
 #            to your corporate root.
 # external — delegate issuance to a third-party SCEP server (OpenXPKI, NDES).
 mode = "generate"
+# Device check-ins are accepted only with a certificate from the CA configured
+# here. List further CAs whose devices this server also manages: the CA of a
+# NanoMDM server you imported from, or an earlier CA some devices still hold
+# certificates from.
+# identity_ca_files = ["/etc/cairn/old-mdm-ca.pem"]
 
 # [ca.import]
 # cert_file = "/etc/cairn/pki/issuing-ca.crt"
