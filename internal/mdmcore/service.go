@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -38,6 +39,9 @@ type Core struct {
 	// still check in, to be renewed and for nothing else. Zero refuses it.
 	expiredGrace time.Duration
 	now          func() time.Time
+	// issuers are the CA certificates a device identity certificate may chain
+	// to. Until TrustIssuers is called every check-in is refused.
+	issuers atomic.Pointer[x509.CertPool]
 }
 
 // Options tune the check-in service.
@@ -54,6 +58,53 @@ type IdentityObserver func(cert *x509.Certificate, accepted bool)
 
 // OnIdentity registers the observer for check-in certificates.
 func (c *Core) OnIdentity(fn IdentityObserver) { c.identity.Store(&fn) }
+
+// TrustIssuers sets the CA certificates that may have issued a device identity
+// certificate: the configured CA's chain, and any older CA whose devices were
+// imported. A check-in signed with a certificate from anywhere else is refused
+// before it reaches enrollment, so nobody can register a device, or answer as
+// one, with a certificate they made themselves.
+func (c *Core) TrustIssuers(certs []*x509.Certificate) {
+	pool := x509.NewCertPool()
+	for _, cert := range certs {
+		pool.AddCert(cert)
+	}
+	c.issuers.Store(pool)
+}
+
+var (
+	errNoIssuers     = errors.New("no identity certificate issuers are configured")
+	errUnknownIssuer = errors.New("identity certificate was not issued by a configured CA")
+)
+
+// issuedByTrusted reports whether leaf chains to a trusted issuer, through any
+// CA certificates the device sent along. Dates are the caller's business (the
+// expiry rule and its grace period), so the chain is judged at a moment inside
+// the certificate's own validity.
+func (c *Core) issuedByTrusted(leaf *x509.Certificate, bundled []*x509.Certificate) error {
+	roots := c.issuers.Load()
+	if roots == nil {
+		return errNoIssuers
+	}
+	intermediates := x509.NewCertPool()
+	for _, b := range bundled {
+		if b != leaf && b.IsCA {
+			intermediates.AddCert(b)
+		}
+	}
+	at := c.now()
+	if at.After(leaf.NotAfter) {
+		at = leaf.NotAfter
+	}
+	if at.Before(leaf.NotBefore) {
+		at = leaf.NotBefore
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: at,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		return fmt.Errorf("%w: %v", errUnknownIssuer, err)
+	}
+	return nil
+}
 
 // New assembles the NanoMDM service chain:
 //
@@ -99,7 +150,7 @@ func New(store storage.AllStorage, logger nlog.Logger, proj DeviceProjector, rec
 			(*fn)(cert, accepted)
 		}
 	}
-	verified := httpmdm.CertExtractMdmSignatureMiddleware(h, signatureVerifier(slog, observe, c.expiredGrace, c.now))
+	verified := httpmdm.CertExtractMdmSignatureMiddleware(h, signatureVerifier(slog, observe, c.expiredGrace, c.now, c.issuedByTrusted))
 	c.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		verified.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), checkInHostKey{}, r.Host)))
 	})
@@ -117,9 +168,13 @@ var errIdentityExpired = errors.New("identity certificate expired")
 // device gets the same answer: a certificate inside its validity is accepted,
 // one that expired within the grace period is accepted so the device can be
 // renewed, and anything older is refused and logged with the reason.
-func signatureVerifier(log *slog.Logger, observe IdentityObserver, grace time.Duration, now func() time.Time) httpmdm.MdmSignatureVerifierFunc {
+//
+// trusted decides whether the certificate came from a CA this server accepts.
+// A certificate that did not is refused like a bad signature: it proves
+// nothing about any device, so nothing is recorded against one.
+func signatureVerifier(log *slog.Logger, observe IdentityObserver, grace time.Duration, now func() time.Time, trusted func(leaf *x509.Certificate, bundled []*x509.Certificate) error) httpmdm.MdmSignatureVerifierFunc {
 	return func(header string, body []byte) (*x509.Certificate, error) {
-		cert, presented, err := verifySignature(header, body)
+		cert, presented, err := verifySignature(header, body, trusted)
 		if err == nil {
 			t := now()
 			switch {
@@ -145,7 +200,14 @@ func signatureVerifier(log *slog.Logger, observe IdentityObserver, grace time.Du
 				"expired", now().After(presented.NotAfter), "not_after", presented.NotAfter.UTC().Format(time.RFC3339))
 		}
 		if log != nil {
-			log.Warn("device check-in refused: signature not accepted; a device refused for an expired identity certificate must enroll again", attrs...)
+			msg := "device check-in refused: signature not accepted; a device refused for an expired identity certificate must enroll again"
+			if errors.Is(err, errUnknownIssuer) || errors.Is(err, errNoIssuers) {
+				msg = "device check-in refused: its certificate does not come from a CA this server accepts; if the device was enrolled under another CA, add that CA to [ca] identity_ca_files"
+				if presented != nil {
+					attrs = append(attrs, "issuer", presented.Issuer.CommonName)
+				}
+			}
+			log.Warn(msg, attrs...)
 		}
 		return nil, err
 	}
@@ -159,7 +221,7 @@ const clockSkew = 5 * time.Minute
 // certificate. It does not judge the certificate's dates; the caller does. On
 // failure presented is the device certificate found in the signature, if any,
 // so the refusal can name it.
-func verifySignature(header string, body []byte) (signer, presented *x509.Certificate, err error) {
+func verifySignature(header string, body []byte, trusted func(leaf *x509.Certificate, bundled []*x509.Certificate) error) (signer, presented *x509.Certificate, err error) {
 	sig, err := base64.StdEncoding.DecodeString(header)
 	if err != nil {
 		return nil, nil, err
@@ -196,6 +258,9 @@ func verifySignature(header string, body []byte) (signer, presented *x509.Certif
 		open.Certificates[i] = c
 	}
 	if err = open.Verify(); err != nil {
+		return nil, signer, err
+	}
+	if err = trusted(signer, p7.Certificates); err != nil {
 		return nil, signer, err
 	}
 	return signer, signer, nil

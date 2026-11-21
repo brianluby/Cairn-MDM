@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.2.0-beta.2 (November 21, 2026)
+
+Upgrade to this release: it fixes a hole in device check-in. Still a beta, with
+the same limits as beta.1.
+
+- **Security.** Device check-in accepted any certificate that signed its own
+  request. A client with a certificate it made itself could register as a new
+  device, or send Authenticate under an enrolled device's UDID and receive
+  commands queued for that device afterwards, profiles included. Check-in now
+  requires a certificate from the configured CA. Reported by Adam Zywicki.
+  **Upgrading:** if devices were imported from NanoMDM or enrolled under an
+  earlier CA, list that CA in `[ca] identity_ca_files` before you upgrade, or
+  those devices are refused. The server log names the issuer of every
+  certificate it refuses.
 - VPN certificates can be replaced before they expire without an
   administrator: `[vpn] renew_before_days` (off by default). The owner's
   account is checked in the directory first. See

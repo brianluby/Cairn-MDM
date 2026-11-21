@@ -62,7 +62,7 @@ SHA-256 against the published list, and installs `cairn` in `/usr/local/bin`.
 A beta is a GitHub prerelease, which "latest" skips, so name the version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/nickpdawson/Cairn-MDM/main/packaging/install.sh | sh -s -- v0.2.0-beta.1
+curl -fsSL https://raw.githubusercontent.com/nickpdawson/Cairn-MDM/main/packaging/install.sh | sh -s -- v0.2.0-beta.2
 ```
 
 Other ways:

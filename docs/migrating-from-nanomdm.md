@@ -40,11 +40,16 @@ the whole fleet must re-enroll:
    and push token are re-read and compared to the source, and every
    certificate association is re-checked. Any mismatch fails the run with
    `DO NOT CUT OVER`.
-4. **Repoint** the MDM hostname at Cairn.
-5. **Prove it**: send a DeviceInformation to every device (ping-all) and
+4. **Name the old CA.** Cairn accepts a check-in only with a certificate from
+   a CA it was told about. If the imported devices hold certificates from a
+   CA other than the one in Cairn's `[ca]` section, list that CA's
+   certificate in `[ca] identity_ca_files`, or every imported device is
+   refused. The server log names the issuer of each certificate it refuses.
+5. **Repoint** the MDM hostname at Cairn.
+6. **Prove it**: send a DeviceInformation to every device (ping-all) and
    watch for Acknowledged. Awake devices answer in seconds; sleeping ones
    within their next wake.
-6. **Hold the old stack intact** (stopped) for your soak window. Rollback is
+7. **Hold the old stack intact** (stopped) for your soak window. Rollback is
    repointing DNS back and starting it — the importer never writes to the
    source.
 

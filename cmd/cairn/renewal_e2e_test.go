@@ -54,6 +54,10 @@ func newRenewalCA(t *testing.T, name string) renewalCA {
 	return renewalCA{cert: cert, key: key}
 }
 
+// asDevice presents the CA certificate itself as a device certificate: one
+// that is self-signed, with a key its maker holds.
+func (ca renewalCA) asDevice() deviceIdentity { return deviceIdentity{cert: ca.cert, key: ca.key} }
+
 type deviceIdentity struct {
 	cert *x509.Certificate
 	key  *rsa.PrivateKey
@@ -125,6 +129,7 @@ func TestExpiredDeviceIsRenewedAndNothingElse(t *testing.T) {
 
 	nanoStore := db.NanoStorage(log)
 	core := mdmcore.New(nanoStore, mdmcore.NewLogAdapter(log), db, db, log, mdmcore.Options{ExpiredGrace: 180 * 24 * time.Hour})
+	core.TrustIssuers([]*x509.Certificate{ca.cert})
 	core.OnIdentity(func(c *x509.Certificate, ok bool) { _ = db.ObserveIdentityCertificate(ctx, c, ok) })
 	commander := mdmcore.NewCommander(nanoStore, vpnE2EPush{}).WithRecorder(db, log)
 	renewals, err := renew.New(db, commander, renew.Options{
@@ -358,6 +363,7 @@ func TestExpiredCertificateIsRefusedWithoutGrace(t *testing.T) {
 	now := time.Now()
 	current := ca.issue(t, "MAC.devices.example", now.Add(-time.Hour), now.Add(time.Hour))
 	core := mdmcore.New(db.NanoStorage(log), mdmcore.NewLogAdapter(log), db, db, log)
+	core.TrustIssuers([]*x509.Certificate{ca.cert})
 	transport := protocol.NewTransport(protocol.WithSignMessage(),
 		protocol.WithIdentityProvider(func(context.Context) (*x509.Certificate, crypto.PrivateKey, error) {
 			return current.cert, current.key, nil
@@ -416,5 +422,73 @@ func TestRenewalProfileCarriesAMintedChallenge(t *testing.T) {
 	}
 	if strings.Contains(string(plain), "CheckOutWhenRemoved") || strings.Contains(string(plain), "bootstraptoken") {
 		t.Fatal("settings that are off appear in the renewal profile")
+	}
+}
+
+// Reported by Adam Zywicki, November 2026: check-in accepted any certificate
+// that signed its own request. A client with a certificate it made itself
+// could register as a new device, or send Authenticate under an enrolled
+// device's UDID and then collect that device's commands.
+func TestCheckInRefusesCertificatesFromOtherIssuers(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := sqlite.Open(ctx, t.TempDir()+"/issuer.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ca := newRenewalCA(t, "Configured CA")
+	attackerCA := newRenewalCA(t, "Attacker CA")
+	now := time.Now()
+	core := mdmcore.New(db.NanoStorage(log), mdmcore.NewLogAdapter(log), db, db, log)
+	core.TrustIssuers([]*x509.Certificate{ca.cert})
+
+	authenticate := func(id deviceIdentity, udid string) int {
+		transport := protocol.NewTransport(protocol.WithSignMessage(),
+			protocol.WithIdentityProvider(func(context.Context) (*x509.Certificate, crypto.PrivateKey, error) { return id.cert, id.key, nil }),
+			protocol.WithMDMURLs("https://cairn.example.org/mdm", ""),
+			protocol.WithClient(hostClient{host: "cairn.example.org", handler: core.Handler()}))
+		body, _ := nanotest.PlistReader(&mdm.Authenticate{Enrollment: mdm.Enrollment{UDID: udid}, MessageType: mdm.MessageType{MessageType: "Authenticate"}, Topic: "com.apple.mgmt.External.x"})
+		resp, err := transport.DoCheckIn(ctx, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	// The attacker's certificate is the CA certificate itself: self-signed,
+	// with a key the attacker holds.
+	selfSigned := attackerCA.asDevice()
+	fromOtherCA := attackerCA.issue(t, "MAC.devices.example", now.Add(-time.Hour), now.Add(time.Hour))
+
+	if code := authenticate(ca.issue(t, "MAC.devices.example", now.Add(-time.Hour), now.Add(time.Hour)), "MAC-UDID"); code != 200 {
+		t.Fatalf("device with a certificate from the configured CA: %d", code)
+	}
+	for name, id := range map[string]deviceIdentity{"self-signed": selfSigned, "from another CA": fromOtherCA} {
+		// Each attempt is the certificate's first: once a certificate is tied
+		// to one enrollment it is refused for any other on that ground alone.
+		if code := authenticate(id, "MAC-UDID"); code != 400 {
+			t.Errorf("%s certificate authenticating as an enrolled device = %d, want 400", name, code)
+		}
+	}
+	for name, id := range map[string]deviceIdentity{"self-signed": newRenewalCA(t, "Second Attacker").asDevice(),
+		"from another CA": attackerCA.issue(t, "NEW.devices.example", now.Add(-time.Hour), now.Add(time.Hour))} {
+		if code := authenticate(id, "NEW-UDID-"+name[:4]); code != 400 {
+			t.Errorf("%s certificate registering a new device = %d, want 400", name, code)
+		}
+	}
+	devices, err := db.ListDevices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].ID != "MAC-UDID" {
+		t.Fatalf("devices after the refused check-ins = %d, want only MAC-UDID", len(devices))
+	}
+	var hashes int
+	if err = db.SQL().QueryRowContext(ctx, `SELECT count(*) FROM cert_auth`).Scan(&hashes); err != nil {
+		t.Fatal(err)
+	}
+	if hashes != 1 {
+		t.Fatalf("certificates associated with enrollments = %d, want 1", hashes)
 	}
 }

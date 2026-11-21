@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	kitlog "github.com/go-kit/kit/log"
@@ -23,6 +24,7 @@ import (
 	"github.com/nickpdawson/cairn-mdm/internal/directory"
 	"github.com/nickpdawson/cairn-mdm/internal/enroll"
 	"github.com/nickpdawson/cairn-mdm/internal/issue"
+	"github.com/nickpdawson/cairn-mdm/internal/mdmcore"
 	"github.com/nickpdawson/cairn-mdm/internal/profile"
 	"github.com/nickpdawson/cairn-mdm/internal/push"
 	"github.com/nickpdawson/cairn-mdm/internal/renew"
@@ -476,4 +478,47 @@ func (r renewalRecorder) RecordRenewalAttempt(ctx context.Context, a issue.Renew
 		SPKISHA256: a.SPKISHA256, SignerSerial: a.SignerSerial, SignerSHA256: a.SignerSHA256,
 		SignerSubject: a.SignerSubject, SignerExpires: a.SignerExpires, Reason: a.Reason,
 	})
+}
+
+// trustIdentityIssuers tells the check-in service which CAs may have issued a
+// device identity certificate: the configured CA's chain (the same certificates
+// the enrollment profile installs) and any listed in [ca] identity_ca_files.
+func trustIdentityIssuers(core *mdmcore.Core, anchorsDER [][]byte, extraFiles []string, log *slog.Logger) error {
+	var issuers []*x509.Certificate
+	var names []string
+	add := func(der []byte) error {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return err
+		}
+		issuers = append(issuers, cert)
+		names = append(names, cert.Subject.CommonName)
+		return nil
+	}
+	for _, der := range anchorsDER {
+		if err := add(der); err != nil {
+			return fmt.Errorf("device identity issuers: %w", err)
+		}
+	}
+	for _, file := range extraFiles {
+		pemBundle, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("ca.identity_ca_files: %w", err)
+		}
+		ders, err := ca.TrustAnchorsDER(pemBundle)
+		if err != nil {
+			return fmt.Errorf("ca.identity_ca_files: %s: %w", file, err)
+		}
+		for _, der := range ders {
+			if err = add(der); err != nil {
+				return fmt.Errorf("ca.identity_ca_files: %s: %w", file, err)
+			}
+		}
+	}
+	if len(issuers) == 0 {
+		return errors.New("no CA is configured to issue device identity certificates; every check-in would be refused")
+	}
+	core.TrustIssuers(issuers)
+	log.Info("device check-ins accept identity certificates from these CAs only", "issuers", strings.Join(names, "; "))
+	return nil
 }

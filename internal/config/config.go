@@ -460,10 +460,15 @@ type Storage struct {
 
 // CA configures certificate issuance for device identities.
 type CA struct {
-	Mode     CAMode        `toml:"mode"`
-	Import   CAImportCfg   `toml:"import"`
-	External CAExternalCfg `toml:"external"`
-	Broker   CABrokerCfg   `toml:"broker"`
+	Mode CAMode `toml:"mode"`
+	// IdentityCAFiles are PEM files of further CAs whose device identity
+	// certificates are accepted at check-in, beside the configured CA's own
+	// chain: the CA of a server these devices were imported from, or an
+	// earlier CA some devices still hold certificates from.
+	IdentityCAFiles []string      `toml:"identity_ca_files"`
+	Import          CAImportCfg   `toml:"import"`
+	External        CAExternalCfg `toml:"external"`
+	Broker          CABrokerCfg   `toml:"broker"`
 }
 
 // CAImportCfg supplies an existing CA cert+key for import mode. When RootCertFile is

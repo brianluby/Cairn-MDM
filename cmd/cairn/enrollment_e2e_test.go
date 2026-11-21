@@ -117,6 +117,9 @@ func TestOwnerAuthorizedEnrollmentEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = trustIdentityIssuers(core, pki.Anchors, nil, log); err != nil {
+		t.Fatal(err)
+	}
 	pusher := push.NewPusher(nanoStore, mdmcore.NewLogAdapter(log))
 	commander := mdmcore.NewCommander(nanoStore, pusher).WithRecorder(db, log)
 	reconciler := assign.New(db, commander, log)
