@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.2.0-beta.2 (November 21, 2026)
+
+Upgrade to this release: it fixes a hole in device check-in. Still a beta, with
+the same limits as beta.1.
+
 - **Security.** Device check-in accepted any certificate that signed its own
   request. A client with a certificate it made itself could register as a new
   device, or send Authenticate under an enrolled device's UDID and receive

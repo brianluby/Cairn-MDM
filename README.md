@@ -97,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/nickpdawson/Cairn-MDM/main/packagin
 ```
 
 A beta is a GitHub prerelease, which "latest" skips. To install one, name it:
-`... | sh -s -- v0.2.0-beta.1`.
+`... | sh -s -- v0.2.0-beta.2`.
 
 **Which setup fits you depends on whether you have LDAP/AD and where your
 certificates come from. Read [the install guide](docs/install.md) first.** In
