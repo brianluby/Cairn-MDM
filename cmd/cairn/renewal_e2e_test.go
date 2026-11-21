@@ -425,7 +425,7 @@ func TestRenewalProfileCarriesAMintedChallenge(t *testing.T) {
 	}
 }
 
-// Reported by Adam Zywicki, November 2026: check-in accepted any certificate
+// Reported privately, November 2026: check-in accepted any certificate
 // that signed its own request. A client with a certificate it made itself
 // could register as a new device, or send Authenticate under an enrolled
 // device's UDID and then collect that device's commands.

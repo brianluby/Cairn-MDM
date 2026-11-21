@@ -11,7 +11,7 @@ the same limits as beta.1.
   request. A client with a certificate it made itself could register as a new
   device, or send Authenticate under an enrolled device's UDID and receive
   commands queued for that device afterwards, profiles included. Check-in now
-  requires a certificate from the configured CA. Reported by Adam Zywicki.
+  requires a certificate from the configured CA. Reported privately.
   **Upgrading:** if devices were imported from NanoMDM or enrolled under an
   earlier CA, list that CA in `[ca] identity_ca_files` before you upgrade, or
   those devices are refused. The server log names the issuer of every
