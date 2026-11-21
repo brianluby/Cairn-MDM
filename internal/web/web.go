@@ -250,6 +250,9 @@ type App struct {
 	vpnIssuer        VPNIssuer          // may be nil (no CA or directory for VPN certificates)
 	vpnIdentities    VPNIdentityStore   // may be nil with vpnIssuer
 	vpnIssuerMissing string             // why vpnIssuer is nil, for the console
+	manualDevices    ManualDeviceStore  // may be nil (no page for devices outside MDM)
+	manualIssuer     ManualIssuer       // may be nil with manualDevices
+	manualWarnDays   int                // mark a manual device's certificate this long before expiry
 
 	identityGrace     time.Duration // how long an expired identity certificate may still check in
 	renewals          Renewals      // may be nil (renewal off)

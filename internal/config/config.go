@@ -126,6 +126,14 @@ type VPN struct {
 	// the device a new profile and certificate without an administrator. Zero,
 	// the default, leaves that to an administrator.
 	RenewBeforeDays int `toml:"renew_before_days"`
+	// ManualLeafValidityDays is the lifetime of a certificate on a device
+	// outside MDM (a HomePod, an Apple Vision Pro), which nothing renews. Zero
+	// means LeafValidityDays. An external CA sets the real lifetime; this is
+	// then the longest Cairn accepts for such a device.
+	ManualLeafValidityDays int `toml:"manual_leaf_validity_days"`
+	// ManualWarnDays is how long before such a certificate expires the console
+	// marks it. Default 30.
+	ManualWarnDays int `toml:"manual_warn_days"`
 	// KeyType is the key Cairn generates for each VPN certificate: "rsa2048"
 	// (default) or "p256".
 	KeyType string    `toml:"key_type"`
@@ -160,6 +168,12 @@ func (v VPN) WithDefaults() VPN {
 	}
 	if v.LeafValidityDays <= 0 {
 		v.LeafValidityDays = 365
+	}
+	if v.ManualLeafValidityDays <= 0 {
+		v.ManualLeafValidityDays = v.LeafValidityDays
+	}
+	if v.ManualWarnDays <= 0 {
+		v.ManualWarnDays = 30
 	}
 	if v.KeyType == "" {
 		v.KeyType = "rsa2048"

@@ -389,6 +389,52 @@ Limits:
   Wi-Fi.
 - Run on an iPhone and an iPad against FreeRADIUS.
 
+## Devices outside MDM
+
+Some devices cannot enroll: a HomePod has no MDM at all, an Apple Vision Pro
+enrolls only through Apple Business Manager, and an Apple Watch only through a
+supervised iPhone. They can still join a certificate Wi-Fi network with a
+profile installed by hand. The **Other devices** page handles these.
+
+1. Add the device: a name, its type, and the directory account its certificate
+   will name. The account is looked up in the directory, as for any other
+   certificate.
+2. Download its Wi-Fi profile. This needs an MFA code verified in the last five
+   minutes. Download it on the device that will install it, signed in to Cairn
+   there: Safari on the Vision Pro, or Safari on the iPhone a HomePod or watch
+   is paired with. That iPhone asks which device the profile is for.
+3. While the profile installs, the device makes its own key and asks Cairn for
+   the certificate, as an enrolled device does. No key is in the file.
+
+The file holds a one-time code. It works for one key, for ten minutes, and
+downloading again makes the earlier file useless. A copy of the file is worth
+nothing once the device has its certificate or the ten minutes have passed.
+
+What Cairn cannot do for these devices:
+
+- **Renew.** Nothing can be pushed to them. The page shows each certificate's
+  issue date, expiry and days left, and marks it `manual_warn_days` (default
+  30) before expiry. The dashboard alert for certificates near expiry covers
+  them too. Download and install a new profile to replace one; the old
+  certificate is then superseded.
+- **Remove.** Taking a device off the list changes nothing on the device. To
+  cut one off, revoke its certificate; your RADIUS servers must check
+  revocation for that to take effect. A device that still holds a certificate
+  cannot be taken off the list.
+- **Confirm the install.** Cairn records that it issued the certificate to the
+  key that asked. It does not learn whether the network accepted the device.
+
+Because nothing renews these certificates, they can be given a longer life:
+`[vpn] manual_leaf_validity_days` (default: the same as `leaf_validity_days`).
+With Cairn's own CA that is the lifetime. With an external SCEP CA the CA sets
+the lifetime, and this setting only raises what Cairn accepts back for such a
+device, so a longer life also needs a change at the CA.
+
+Not proven yet: whether a HomePod or a watch can request a certificate itself.
+Apple documents per-device certificates on a HomePod through a profile, without
+saying how the certificate gets there. If one cannot, the install fails on the
+device and no certificate is issued.
+
 ## Not built or not proven yet
 
 - A recorded device connection with an OpenVPN profile.

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "topbar" .}}
+  <main>
+    <h1>{{.Title}}</h1>
+
+    {{if .Flash}}<div class="card callout">{{.Flash}}</div>{{end}}
+
+    <p class="sub">Devices that cannot enroll in MDM: a HomePod, an Apple Vision Pro without Apple Business Manager, an Apple Watch.
+    Each gets a Wi-Fi profile you download and install by hand. The device makes its own key and asks Cairn for the certificate while the profile installs.
+    Cairn cannot renew the certificate or remove the profile; it shows when each certificate expires so you can replace it in time.</p>
+
+    {{if .IssuerMissing}}
+    <div class="card callout error">Certificates cannot be issued yet: {{.IssuerMissing}}</div>
+    {{end}}
+
+    <div class="card">
+      {{if .Devices}}
+      <table>
+        <thead><tr><th>Device</th><th>Account</th><th>Wi-Fi network</th><th>Certificate</th><th></th></tr></thead>
+        <tbody>
+          {{range $d := .Devices}}
+          {{range $i, $n := $d.Networks}}
+          <tr>
+            {{if eq $i 0}}
+            <td rowspan="{{len $d.Networks}}">{{$d.Name}}<div class="sub">{{$d.KindLabel}}</div></td>
+            <td rowspan="{{len $d.Networks}}">{{$d.Owner.AccountName}}<div class="sub mono">{{$d.Owner.UPN}}</div></td>
+            {{end}}
+            <td>{{$n.Server.Name}}<div class="sub mono">{{$n.Server.WiFi.SSID}}</div></td>
+            <td>
+              {{if $n.Current}}
+              <span class="mono">{{$n.Current.CertSerial}}</span>
+              <div class="sub">Issued {{$n.IssuedOn}}, expires {{$n.Expires}}</div>
+              {{if lt $n.DaysLeft 0}}<div class="sub expired">Expired. The device is off this network until you install a new profile.</div>
+              {{else if $n.Expiring}}<div class="sub expired">{{$n.DaysLeft}} days left. Download and install a new profile.</div>
+              {{else}}<div class="sub">{{$n.DaysLeft}} days left</div>{{end}}
+              {{else if $n.Pending}}<span class="sub">Profile downloaded, not installed yet.</span>
+              {{else}}<span class="sub">No certificate.</span>{{end}}
+            </td>
+            <td>
+              <form method="post" action="/admin/other-devices/{{$d.ID}}/wifi/{{$n.Server.ID}}/download" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">{{if $n.Current}}Download new Wi-Fi profile{{else}}Download Wi-Fi profile{{end}}</button>
+              </form>
+              {{if $n.Current}}
+              <form method="post" action="/admin/vpn/identities/{{$n.Current.ID}}/revoke" style="display:inline"
+                    onsubmit="return confirm('Revoke the certificate on {{$d.Name}}? It stops working on the network once the RADIUS servers have the new revocation list.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn danger" type="submit">Revoke certificate</button>
+              </form>
+              {{end}}
+            </td>
+          </tr>
+          {{else}}
+          <tr>
+            <td>{{$d.Name}}<div class="sub">{{$d.KindLabel}}</div></td>
+            <td>{{$d.Owner.AccountName}}</td>
+            <td colspan="3" class="sub">No Wi-Fi networks yet. Add one on the Wi-Fi page.</td>
+          </tr>
+          {{end}}
+          {{if not $d.Held}}
+          <tr>
+            <td colspan="5">
+              <form method="post" action="/admin/other-devices/{{$d.ID}}/remove"
+                    onsubmit="return confirm('Remove {{$d.Name}} from the list? Nothing changes on the device.')">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn" type="submit">Remove {{$d.Name}} from the list</button>
+              </form>
+            </td>
+          </tr>
+          {{end}}
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">No devices yet.</div>
+      {{end}}
+    </div>
+
+    <h2>Install a downloaded profile</h2>
+    <div class="card" style="padding:24px">
+      <p>A downloaded profile works once, for ten minutes. Download it on the device that will install it, signed in to Cairn there, so the file is never copied around.
+      Downloading again makes the earlier file useless.</p>
+      <p><strong>Apple Vision Pro.</strong> Open this page in Safari on the headset and download. Then open Settings, General, VPN &amp; Device Management, and install the profile.</p>
+      <p><strong>HomePod or Apple Watch.</strong> Set the device up on another network first. Open this page in Safari on the iPhone it is paired with and download. When the iPhone asks which device the profile is for, choose the HomePod or the watch.</p>
+      <p><strong>Apple TV.</strong> An Apple TV can enroll in MDM instead; use this only for one that cannot.</p>
+      <p class="sub">Downloading needs an MFA code verified in the last five minutes. The device must reach this server while the profile installs.</p>
+    </div>
+
+    <h2>Add a device</h2>
+    <div class="card" style="padding:24px">
+      <form method="post" action="/admin/other-devices">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <p><label>Name<br><input type="text" name="name" required maxlength="80" size="40" placeholder="Kitchen HomePod"></label></p>
+        <p><label>Type<br>
+          <select name="kind">{{range .Kinds}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></label></p>
+        <p><label>AD account name or UPN<br><input type="text" name="account" required size="40" autocomplete="off"></label>
+          <span class="sub">The certificate names this account, so the RADIUS server treats the device as this person's. Disabling the account stops new certificates for it.</span></p>
+        <p><button class="btn" type="submit">Add device</button></p>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

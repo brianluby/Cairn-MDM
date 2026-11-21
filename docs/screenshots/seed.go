@@ -216,6 +216,27 @@ func main() {
 		exec(`UPDATE command_history SET result_at=NULL WHERE device_id=? AND status='Sent'`, d.id)
 	}
 
+	// Devices that cannot enroll: one with a certificate close to expiry, one
+	// with plenty of time, one waiting for its first profile.
+	for _, m := range []struct {
+		name, kind string
+		owner      person
+		days       int
+	}{{"Kitchen HomePod", "homepod", sortiz, 21}, {"Maya's Vision Pro", "visionpro", mchen, 310}, {"Workshop HomePod", "homepod", tbeck, 0}} {
+		mid, err := db.CreateManualDevice(ctx, sqlite.ManualDevice{Name: m.name, Kind: m.kind, Owner: m.owner.identity(), CreatedBy: admin})
+		must(err)
+		if m.days == 0 {
+			continue
+		}
+		deviceID := sqlite.ManualDeviceID(mid)
+		der, spki, serial, notAfter := leaf(caCert, caKey, m.owner.account, m.days)
+		vid, err := db.BeginVPNIdentity(ctx, sqlite.VPNIdentity{ServerID: wifi, DeviceID: deviceID, Owner: m.owner.identity(), Actor: admin, SPKISHA256: spki, Backend: "embedded", CommandUUID: commandUUID(deviceID, "wifi")})
+		must(err)
+		must(db.CompleteVPNIdentity(ctx, vid, serial, der, notAfter))
+		must(db.HandOverVPNIdentity(ctx, vid))
+		exec(`UPDATE vpn_identities SET created_at=datetime('now',?) WHERE id=?`, fmt.Sprintf("-%d days", 365-m.days), vid)
+	}
+
 	_, hash := sqlite.NewGrantToken()
 	_, err = db.CreateGrant(ctx, sqlite.Grant{Label: "Priya's MacBook Air", Platform: "macos", Owner: pnair.identity().UPN, CreatedBy: admin,
 		ExpiresAt: time.Now().Add(20 * time.Hour).UTC().Format("2006-01-02 15:04:05")}, hash)

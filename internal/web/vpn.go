@@ -60,6 +60,7 @@ func (a *App) SetVPNIssuer(issuer VPNIssuer, identities VPNIdentityStore, why st
 }
 
 func (a *App) registerVPN(mux *http.ServeMux) {
+	a.registerManual(mux)
 	mux.Handle("GET /admin/vpn", a.requireRole(auth.RoleAdmin, a.handleVPN))
 	// Wi-Fi networks are the same records under their own page and addresses.
 	mux.Handle("GET /admin/wifi", a.requireRole(auth.RoleAdmin, a.handleWiFi))
@@ -379,6 +380,13 @@ func (a *App) accessPage(w http.ResponseWriter, r *http.Request, wifi bool) {
 				names[d.ID] = d.DisplayName()
 			}
 		}
+		if a.manualDevices != nil {
+			if devices, err := a.manualDevices.ListManualDevices(r.Context()); err == nil {
+				for _, d := range devices {
+					names[d.DeviceID()] = d.Name + " (not in MDM)"
+				}
+			}
+		}
 		serverNames := map[int64]string{}
 		for _, s := range servers {
 			serverNames[s.ID] = s.Name
@@ -412,6 +420,9 @@ type vpnIdentityRow struct {
 	ServerName string
 	Manual     bool // Cairn cannot revoke this one at its CA
 }
+
+// Home is the page that shows this device's certificates.
+func (v vpnIdentityRow) Home() string { return deviceHome(v.DeviceID) }
 
 // ExpiresOn is the certificate's last day, or "" when none was issued.
 func (v vpnIdentityRow) ExpiresOn() string {
@@ -629,7 +640,7 @@ func (a *App) handleVPNRevoke(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	back := "/admin/devices/" + url.PathEscape(v.DeviceID)
+	back := deviceHome(v.DeviceID)
 	if err := a.vpnIssuer.Revoke(r.Context(), v.ID, sessionFrom(r).Identity.Username); err != nil {
 		a.log.Error("vpn revoke", "identity", v.ID, "err", err)
 		http.Redirect(w, r, back+"?flash="+url.QueryEscape("Not revoked: "+vpnFormError(err)), http.StatusSeeOther)
