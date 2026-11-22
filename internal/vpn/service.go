@@ -43,6 +43,8 @@ type IdentityStore interface {
 	WithdrawVPNCommand(ctx context.Context, deviceID, commandUUID, why string) error
 	GetDeviceOwner(ctx context.Context, deviceID string) (sqlite.DeviceOwner, error)
 	GetDevice(ctx context.Context, id string) (sqlite.Device, error)
+	GetManualDevice(ctx context.Context, id int64) (sqlite.ManualDevice, error)
+	HandOverVPNIdentity(ctx context.Context, id int64) error
 }
 
 // Directory resolves and rechecks the account a certificate names.
@@ -78,6 +80,12 @@ type Options struct {
 	// RenewBefore is how long before expiry the sweep sends a device a new
 	// profile and certificate without an administrator. Zero leaves that off.
 	RenewBefore time.Duration
+	// ManualPolicy is the lifetime for certificates on devices outside MDM,
+	// which nothing renews. A zero LeafValidity means Policy.
+	ManualPolicy issue.Policy
+	// ManualOfferFor is how long a profile downloaded for such a device can
+	// still get its certificate. Zero means ten minutes.
+	ManualOfferFor time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -514,6 +522,11 @@ func (s *Service) reissueExpiring(ctx context.Context) {
 		return
 	}
 	for _, v := range current {
+		// Nothing can be sent to a device outside MDM; its expiry is shown
+		// on the console for an administrator to act on.
+		if _, manual := sqlite.ParseManualDeviceID(v.DeviceID); manual {
+			continue
+		}
 		if v.DeployStatus != "installed" || !s.renewalDue(v) {
 			continue
 		}

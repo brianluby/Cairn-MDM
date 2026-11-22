@@ -304,15 +304,25 @@ func runServe(ctx context.Context, args []string) error {
 		}
 		if missing != "" {
 			console.SetVPNIssuer(nil, db, missing)
+			console.SetManualDevices(db, nil, vpnCfg.ManualWarnDays)
 			log.Warn("VPN server records enabled; issuing is off", "reason", missing)
 		} else {
+			// A device outside MDM is never renewed, so its certificate may be
+			// given a longer life. With an external CA that sets the lifetime
+			// itself, this raises only what Cairn accepts back for such a device.
+			manualPolicy := policy
+			manualPolicy.LeafValidity = time.Duration(vpnCfg.ManualLeafValidityDays) * 24 * time.Hour
+			if manualPolicy.MaxLeafValidity > 0 && manualPolicy.MaxLeafValidity < manualPolicy.LeafValidity+24*time.Hour {
+				manualPolicy.MaxLeafValidity = manualPolicy.LeafValidity + 24*time.Hour
+			}
 			vpnService, err := vpn.NewService(vpnServers, db, directoryProvider, vpnCA, commander,
 				vpn.Options{Organization: pki.Org, Policy: policy, KeyType: vpnCfg.KeyType, IssuedHere: issuedHere,
 					DeviceSCEPURL: cfg.Server.PublicURL + "/scep/vpn", Sign: profileSigner(pki.Signer),
-					RenewBefore: time.Duration(vpnCfg.RenewBeforeDays) * 24 * time.Hour}, log)
+					RenewBefore: time.Duration(vpnCfg.RenewBeforeDays) * 24 * time.Hour, ManualPolicy: manualPolicy}, log)
 			if err != nil {
 				return err
 			}
+			console.SetManualDevices(db, vpnService, vpnCfg.ManualWarnDays)
 			if deps.VPNSCEP, err = vpnSCEP(vpnService); err != nil {
 				return fmt.Errorf("vpn: device SCEP endpoint: %w", err)
 			}

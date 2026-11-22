@@ -45,8 +45,9 @@ More of the console, with an invented fleet:
   [directory profile targeting](docs/directory-profile-targeting.md).
 - **VPN profiles.** OpenVPN profiles with a certificate per device, and native
   IKEv2 profiles: password sign-in as a download, certificate sign-in pushed by
-  MDM with a key the device makes and never gives up. See
-  [VPN profiles](docs/vpn-profiles.md).
+  MDM with a key the device makes and never gives up. Wi-Fi networks that sign
+  in with a certificate, including a hand-installed profile for devices that
+  cannot enroll, such as a HomePod. See [VPN profiles](docs/vpn-profiles.md).
 - **Certificates.** An embedded CA, your own CA's key (import), an external SCEP
   CA (OpenXPKI, NDES), or Cairn as a broker in front of one. With an external
   CA, Cairn renews device identity certificates before they expire and can hand
