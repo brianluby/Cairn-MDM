@@ -19,7 +19,7 @@
     <div class="card">
       {{if .Devices}}
       <table>
-        <thead><tr><th>Device</th><th>Account</th><th>Wi-Fi network</th><th>Certificate</th><th></th></tr></thead>
+        <thead><tr><th>Device</th><th>Account</th><th>Wi-Fi network</th><th>Certificate</th></tr></thead>
         <tbody>
           {{range $d := .Devices}}
           {{range $i, $n := $d.Networks}}
@@ -38,8 +38,8 @@
               {{else}}<div class="sub">{{$n.DaysLeft}} days left</div>{{end}}
               {{else if $n.Pending}}<span class="sub">Profile downloaded, not installed yet.</span>
               {{else}}<span class="sub">No certificate.</span>{{end}}
-            </td>
-            <td>
+              {{/* The buttons sit under the status, not in a column of their own: a fifth column is off-screen on a phone, and a phone is where a HomePod's profile is downloaded. */}}
+              <div style="margin-top:8px">
               <form method="post" action="/admin/other-devices/{{$d.ID}}/wifi/{{$n.Server.ID}}/download" style="display:inline">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
                 <button class="btn" type="submit">{{if $n.Current}}Download new Wi-Fi profile{{else}}Download Wi-Fi profile{{end}}</button>
@@ -51,18 +51,19 @@
                 <button class="btn danger" type="submit">Revoke certificate</button>
               </form>
               {{end}}
+              </div>
             </td>
           </tr>
           {{else}}
           <tr>
             <td>{{$d.Name}}<div class="sub">{{$d.KindLabel}}</div></td>
             <td>{{$d.Owner.AccountName}}</td>
-            <td colspan="3" class="sub">No Wi-Fi networks yet. Add one on the Wi-Fi page.</td>
+            <td colspan="2" class="sub">No Wi-Fi networks yet. Add one on the Wi-Fi page.</td>
           </tr>
           {{end}}
           {{if not $d.Held}}
           <tr>
-            <td colspan="5">
+            <td colspan="4">
               <form method="post" action="/admin/other-devices/{{$d.ID}}/remove"
                     onsubmit="return confirm('Remove {{$d.Name}} from the list? Nothing changes on the device.')">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -86,7 +87,7 @@
       <p><strong>Apple Vision Pro.</strong> Open this page in Safari on the headset and download. Then open Settings, General, VPN &amp; Device Management, and install the profile.</p>
       <p><strong>HomePod or Apple Watch.</strong> Set the device up on another network first. Open this page in Safari on the iPhone it is paired with and download. When the iPhone asks which device the profile is for, choose the HomePod or the watch.</p>
       <p><strong>Apple TV.</strong> An Apple TV can enroll in MDM instead; use this only for one that cannot.</p>
-      <p class="sub">Downloading needs an MFA code verified in the last five minutes. The device must reach this server while the profile installs.</p>
+      <p class="sub">Downloading needs an MFA code verified in the last five minutes. The device itself must reach this server over HTTPS while the profile installs; on a restricted network such as one for IoT devices, allow that first, or the install ends in a network error.</p>
     </div>
 
     <h2>Add a device</h2>

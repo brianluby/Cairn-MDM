@@ -410,6 +410,19 @@ The file holds a one-time code. It works for one key, for ten minutes, and
 downloading again makes the earlier file useless. A copy of the file is worth
 nothing once the device has its certificate or the ten minutes have passed.
 
+The device asks for the certificate itself, so it must reach Cairn's public
+URL over HTTPS from the network it is on when the profile installs. A HomePod
+on a restricted IoT network usually cannot. The install then fails after
+about a minute, the iPhone shows "A network error has occurred", and Cairn
+logs no request. Allow the device to reach Cairn, then download a new profile.
+
+Installing the profile does not move a HomePod to the new network. With the
+iPhone on that network, open the HomePod's settings in the Home app and move
+it there.
+
+Tested on a HomePod in November 2026. Not yet tested on a Vision Pro or a
+watch.
+
 What Cairn cannot do for these devices:
 
 - **Renew.** Nothing can be pushed to them. The page shows each certificate's

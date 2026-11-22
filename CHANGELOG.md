@@ -7,9 +7,10 @@
   download its Wi-Fi profile and install it by hand; the device makes its own
   key and asks Cairn for the certificate. The file works once, for ten
   minutes. Cairn tracks each certificate's expiry, since it cannot renew
-  these. `[vpn] manual_leaf_validity_days` sets a longer life for them. Not
-  yet run on a HomePod, Vision Pro or watch. Adds migration 40. See
+  these. `[vpn] manual_leaf_validity_days` sets a longer life for them. Tested
+  on a HomePod; not yet on a Vision Pro or watch. Adds migration 40. See
   [VPN profiles](docs/vpn-profiles.md#devices-outside-mdm).
+
 ## v0.2.0-beta.2 (November 21, 2026)
 
 Upgrade to this release: it fixes a hole in device check-in. Still a beta, with
